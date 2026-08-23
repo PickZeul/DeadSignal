@@ -14,7 +14,7 @@ constexpr LONG playerTop = playerCenterY - playerHeight / 2;
 constexpr float playerMoveSpeed = 60.0f;
 constexpr float playerHalfWidth = playerWidth / 2.0f;
 constexpr float playerHalfHeight = playerHeight / 2.0f;
-constexpr LONG wallLeft = 200;
+constexpr LONG wallLeft = 170;
 constexpr LONG wallTop = 60;
 constexpr LONG wallWidth = 8;
 constexpr LONG wallHeight = 60;
@@ -26,6 +26,8 @@ constexpr LONG enemyCenterX = 120;
 constexpr LONG enemyCenterY = 90;
 constexpr LONG enemyLeft = enemyCenterX - enemyWidth / 2;
 constexpr LONG enemyTop = enemyCenterY - enemyHeight / 2;
+constexpr LONG enemyVisionRange = 70;
+constexpr float enemyVisionSlope = 0.520567f;
 constexpr DWORD toneSampleRate = 8000;
 constexpr DWORD toneFrequency = 440;
 constexpr DWORD toneDurationMilliseconds = 250;
@@ -195,6 +197,28 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         framebuffer[y * framebufferWidth + framebufferWidth - 1] = 0x00808000;
     }
 
+    for (LONG x = 1; x <= enemyVisionRange; ++x)
+    {
+        LONG visionHalfHeight = static_cast<LONG>(x * enemyVisionSlope);
+        for (LONG y = -visionHalfHeight; y <= visionHalfHeight; ++y)
+        {
+            LONG pixelX = enemyCenterX + x;
+            LONG pixelY = enemyCenterY + y;
+            bool visionBlocked = false;
+            if (pixelX > wallLeft)
+            {
+                float wallAmount = static_cast<float>(wallLeft - enemyCenterX) / static_cast<float>(x);
+                float yAtWall = static_cast<float>(enemyCenterY) + static_cast<float>(y) * wallAmount;
+                visionBlocked = yAtWall >= wallTop && yAtWall < wallBottom;
+            }
+
+            if (!visionBlocked && pixelY >= 0 && pixelY < framebufferHeight)
+            {
+                framebuffer[pixelY * framebufferWidth + pixelX] = 0x00182040;
+            }
+        }
+    }
+
     for (LONG y = wallTop; y < wallBottom; ++y)
     {
         for (LONG x = wallLeft; x < wallRight; ++x)
@@ -244,6 +268,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 framebuffer[pixelY * framebufferWidth + pixelX]
                     = head ? 0x00FFFFFF : 0x0000A0FF;
             }
+        }
+    }
+
+    for (LONG y = 8; y < 12; ++y)
+    {
+        for (LONG x = 24; x < 28; ++x)
+        {
+            framebuffer[y * framebufferWidth + x] = 0x0000FF80;
         }
     }
 
@@ -368,6 +400,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     : wallBottom + playerHalfHeight;
             }
             playerY = nextPlayerY;
+            float visionX = playerX - enemyCenterX;
+            float visionY = playerY - enemyCenterY;
+            float visionDistanceY = visionY;
+            if (visionDistanceY < 0.0f)
+            {
+                visionDistanceY = -visionDistanceY;
+            }
+            bool playerInRawVision = visionX > 0.0f
+                && visionX <= enemyVisionRange
+                && visionDistanceY <= visionX * enemyVisionSlope;
+            bool playerVisionOccluded = false;
+            if (playerInRawVision && playerX > wallLeft)
+            {
+                float wallAmount = static_cast<float>(wallLeft - enemyCenterX) / visionX;
+                float yAtWall = enemyCenterY + visionY * wallAmount;
+                playerVisionOccluded = yAtWall >= wallTop && yAtWall < wallBottom;
+            }
+            bool playerInVision = playerInRawVision && !playerVisionOccluded;
             updateColor = (updateColor + 0x00050000) & 0x00FF0000;
 
             for (LONG pixel = 0; pixel < framebufferWidth * framebufferHeight; ++pixel)
@@ -387,6 +437,28 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 framebuffer[y * framebufferWidth + framebufferWidth / 2] = 0x00404040;
                 framebuffer[y * framebufferWidth] = 0x00008000;
                 framebuffer[y * framebufferWidth + framebufferWidth - 1] = 0x00808000;
+            }
+
+            for (LONG x = 1; x <= enemyVisionRange; ++x)
+            {
+                LONG visionHalfHeight = static_cast<LONG>(x * enemyVisionSlope);
+                for (LONG y = -visionHalfHeight; y <= visionHalfHeight; ++y)
+                {
+                    LONG pixelX = enemyCenterX + x;
+                    LONG pixelY = enemyCenterY + y;
+                    bool visionBlocked = false;
+                    if (pixelX > wallLeft)
+                    {
+                        float wallAmount = static_cast<float>(wallLeft - enemyCenterX) / static_cast<float>(x);
+                        float yAtWall = static_cast<float>(enemyCenterY) + static_cast<float>(y) * wallAmount;
+                        visionBlocked = yAtWall >= wallTop && yAtWall < wallBottom;
+                    }
+
+                    if (!visionBlocked && pixelY >= 0 && pixelY < framebufferHeight)
+                    {
+                        framebuffer[pixelY * framebufferWidth + pixelX] = 0x00182040;
+                    }
+                }
             }
 
             for (LONG y = wallTop; y < wallBottom; ++y)
@@ -440,6 +512,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         framebuffer[pixelY * framebufferWidth + pixelX]
                             = head ? 0x00FFFFFF : 0x0000A0FF;
                     }
+                }
+            }
+
+            DWORD visionMarkerColor = playerInVision ? 0x0000FF80 : 0x00202028;
+            for (LONG y = 8; y < 12; ++y)
+            {
+                for (LONG x = 24; x < 28; ++x)
+                {
+                    framebuffer[y * framebufferWidth + x] = visionMarkerColor;
                 }
             }
 
