@@ -22,9 +22,11 @@ Do not silently resolve a conflict by changing the project. Report the differenc
 
 ## Current Development Stage
 
-`B00 Empty Executable Baseline` is complete. The measured executable sizes were `9,728 bytes` for MSVC Release Win32 and `10,752 bytes` for MSVC Release x64. At B00, Win32 was `1,024 bytes` smaller than x64. This is only the current measurement result, not a final architecture decision; the final Architecture remains `미정`.
+`B00 Empty Executable Baseline` is complete. The measured executable sizes were `9,216 bytes` for MSVC Release Win32/x86 and `10,752 bytes` for MSVC Release x64.
 
-In the next stage, until explicitly requested, do not implement Window, Game Loop, Renderer, Input, Audio, Map, Player, Enemy, Combat, Save, or any other game system.
+`B01 Minimal Win32 Window` is complete. The measured executable sizes were `10,240 bytes` for MSVC Release Win32/x86 (`+1,024 bytes` from B00) and `12,288 bytes` for MSVC Release x64 (`+1,536 bytes` from B00). Both architectures passed build and manual execution validation. Window display, movement, resizing, minimize/maximize, and X-button exit behaved normally. The Release subsystem is Windows GUI and the user entry point is `wWinMain`.
+
+The final Architecture remains `미정`. Do not implement the next stage until explicitly requested.
 
 ## Development Principles
 
@@ -75,7 +77,7 @@ Base technical decisions on actual final build results, not estimates. Whenever 
 - Distinguish development/debug artifacts from the final submission. Do not count or exclude an artifact without stating the measurement rule.
 - Do not assume that the current Debug/Release configurations or current project defaults are the final size baseline.
 
-The solution currently exposes Win32 and x64 configurations. The project currently uses MSVC `v145`, Windows 10 SDK selection, C++20, Unicode, SDL checks, conformance mode, warning level 3, and the Console subsystem. These describe the checked-in project state only; they are not approved final specifications.
+The solution currently exposes Win32 and x64 configurations. The project currently uses MSVC `v145`, Windows 10 SDK selection, C++20, Unicode, SDL checks, conformance mode, and warning level 3. The Release configurations use the Windows GUI subsystem. These describe the checked-in project state only; they are not approved final specifications.
 
 ## Data Principles
 
