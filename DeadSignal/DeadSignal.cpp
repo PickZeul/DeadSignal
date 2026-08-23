@@ -3,18 +3,14 @@
 
 #pragma comment(lib, "winmm.lib")
 
-constexpr LONG framebufferWidth = 2;
-constexpr LONG framebufferHeight = 2;
+constexpr LONG framebufferWidth = 320;
+constexpr LONG framebufferHeight = 180;
 constexpr DWORD toneSampleRate = 8000;
 constexpr DWORD toneFrequency = 440;
 constexpr DWORD toneDurationMilliseconds = 250;
 constexpr DWORD toneSampleCount = toneSampleRate * toneDurationMilliseconds / 1000;
 
-DWORD framebuffer[framebufferWidth * framebufferHeight]
-{
-    0x00FF0000, 0x0000FF00,
-    0x000000FF, 0x00FFFFFF
-};
+DWORD framebuffer[framebufferWidth * framebufferHeight];
 
 bool wPressed = false;
 bool spacePressed = false;
@@ -62,12 +58,26 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         HDC deviceContext = BeginPaint(window, &paint);
         RECT clientArea{};
         GetClientRect(window, &clientArea);
+        FillRect(deviceContext, &clientArea, reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+
+        int clientWidth = clientArea.right - clientArea.left;
+        int clientHeight = clientArea.bottom - clientArea.top;
+        int destinationWidth = clientWidth;
+        int destinationHeight = clientWidth * framebufferHeight / framebufferWidth;
+        if (destinationHeight > clientHeight)
+        {
+            destinationHeight = clientHeight;
+            destinationWidth = clientHeight * framebufferWidth / framebufferHeight;
+        }
+
+        int destinationX = (clientWidth - destinationWidth) / 2;
+        int destinationY = (clientHeight - destinationHeight) / 2;
         StretchDIBits(
             deviceContext,
-            0,
-            0,
-            clientArea.right,
-            clientArea.bottom,
+            destinationX,
+            destinationY,
+            destinationWidth,
+            destinationHeight,
             0,
             0,
             framebufferWidth,
@@ -122,6 +132,38 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     if (!window)
     {
         return 0;
+    }
+
+    for (LONG pixel = 0; pixel < framebufferWidth * framebufferHeight; ++pixel)
+    {
+        framebuffer[pixel] = 0x00101018;
+    }
+
+    for (LONG x = 0; x < framebufferWidth; ++x)
+    {
+        framebuffer[(framebufferHeight / 2) * framebufferWidth + x] = 0x00404040;
+        framebuffer[x] = 0x00800000;
+        framebuffer[(framebufferHeight - 1) * framebufferWidth + x] = 0x00000080;
+    }
+
+    for (LONG y = 0; y < framebufferHeight; ++y)
+    {
+        framebuffer[y * framebufferWidth + framebufferWidth / 2] = 0x00404040;
+        framebuffer[y * framebufferWidth] = 0x00008000;
+        framebuffer[y * framebufferWidth + framebufferWidth - 1] = 0x00808000;
+    }
+
+    for (LONG y = 8; y < 16; ++y)
+    {
+        for (LONG x = 8; x < 16; ++x)
+        {
+            framebuffer[y * framebufferWidth + x] = 0x00FF0000;
+        }
+
+        for (LONG x = 24; x < 32; ++x)
+        {
+            framebuffer[y * framebufferWidth + x] = 0x0000FF00;
+        }
     }
 
     for (DWORD sample = 0; sample < toneSampleCount; ++sample)
@@ -191,8 +233,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         if (currentTime.QuadPart - previousUpdate.QuadPart >= updateInterval)
         {
             previousUpdate = currentTime;
-            framebuffer[0] = (framebuffer[0] + 0x00050000) & 0x00FF0000;
-            framebuffer[1] = wPressed ? 0x00FFFF00 : 0x0000FF00;
+            DWORD updateColor = (framebuffer[8 * framebufferWidth + 8] + 0x00050000) & 0x00FF0000;
+            DWORD inputColor = wPressed ? 0x00FFFF00 : 0x0000FF00;
+            for (LONG y = 8; y < 16; ++y)
+            {
+                for (LONG x = 8; x < 16; ++x)
+                {
+                    framebuffer[y * framebufferWidth + x] = updateColor;
+                }
+
+                for (LONG x = 24; x < 32; ++x)
+                {
+                    framebuffer[y * framebufferWidth + x] = inputColor;
+                }
+            }
+
             InvalidateRect(window, nullptr, FALSE);
         }
         else

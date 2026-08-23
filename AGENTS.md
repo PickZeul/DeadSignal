@@ -46,9 +46,17 @@ No Audio Thread, Mixer, SoundManager, or Audio abstraction was added, and no Aud
 
 The measured B05 executable sizes were `11,776 bytes` for MSVC Release Win32/x86 (`+0 bytes` from B04) and `13,312 bytes` for MSVC Release x64 (`+0 bytes` from B04). Both architectures passed build and execution validation. Tone playback and replay after completion succeeded. During playback, the game loop, framebuffer Update, W input, window movement, resizing, minimize/maximize, and X-button exit continued to operate normally.
 
-The current minimal foundation is Window + Real-time Loop + Software Framebuffer + Keyboard Input + Runtime Generated Audio.
+`P00 Minimal Play Space` is complete. The Logical Resolution is `320x180` (`확정`), the Aspect Ratio is `16:9` (`확정`), and one logical pixel equals one game unit. The current coordinate convention uses the top-left as `(0,0)`, +X to the right, and +Y downward.
 
-The final Architecture, screen aspect-ratio/scaling policy, FPS/timing/pacing policy, Audio API, and actual sound specifications remain `미정`. Do not implement the next stage until explicitly requested.
+The framebuffer is 32-bit top-down `BI_RGB` and uses `230,400 bytes` of runtime RAM as zero-initialized static storage. Large pixel data is not stored in the executable; the required test pixels are generated at runtime. The P00 test screen contains a solid background, directional top/bottom/left/right borders, a center cross, and small markers for the existing real-time and input validation.
+
+The framebuffer is aspect-fitted to the Window client area without distortion, unused space is black, and the framebuffer is centered. Integer scaling and the final pixel-perfect policy remain `미정`.
+
+The measured P00 executable sizes were `12,288 bytes` for MSVC Release Win32/x86 (`+512 bytes` from B05) and `15,872 bytes` for MSVC Release x64 (`+2,560 bytes` from B05). Both architectures passed build and execution validation. The `320x180` framebuffer, 4:3 and wide aspect-ratio preservation, centering, resizing, minimize/maximize, X-button exit, B03 real-time loop, B04 W input, and B05 generated audio operated normally. No external Asset or new abstraction/system was added. Player, Movement, Collision, and Enemy are not implemented.
+
+The current minimal foundation is Window + Real-time Loop + Software Framebuffer + Keyboard Input + Runtime Generated Audio + Logical Play Space.
+
+The final Architecture, integer-scaling/pixel-perfect policy, Window size policy, Player size and actual sprite specification, FPS/timing/pacing policy, Audio API, and actual sound specifications remain `미정`. Do not implement the next stage until explicitly requested.
 
 ## Development Principles
 
