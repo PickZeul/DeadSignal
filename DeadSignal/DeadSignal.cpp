@@ -20,6 +20,12 @@ constexpr LONG wallWidth = 8;
 constexpr LONG wallHeight = 60;
 constexpr LONG wallRight = wallLeft + wallWidth;
 constexpr LONG wallBottom = wallTop + wallHeight;
+constexpr LONG enemyWidth = 8;
+constexpr LONG enemyHeight = 12;
+constexpr LONG enemyCenterX = 120;
+constexpr LONG enemyCenterY = 90;
+constexpr LONG enemyLeft = enemyCenterX - enemyWidth / 2;
+constexpr LONG enemyTop = enemyCenterY - enemyHeight / 2;
 constexpr DWORD toneSampleRate = 8000;
 constexpr DWORD toneFrequency = 440;
 constexpr DWORD toneDurationMilliseconds = 250;
@@ -194,6 +200,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         for (LONG x = wallLeft; x < wallRight; ++x)
         {
             framebuffer[y * framebufferWidth + x] = 0x00606070;
+        }
+    }
+
+    for (LONG y = 0; y < enemyHeight; ++y)
+    {
+        for (LONG x = 0; x < enemyWidth; ++x)
+        {
+            bool head = y < 3 && x >= 1 && x < 7;
+            bool body = y >= 3 && y < 9 && x >= 2 && x < 6;
+            bool arm = y >= 4 && y < 8 && (x == 0 || x == 7);
+            bool leg = y >= 9 && (x < 3 || x >= 5);
+            if (head || body || arm || leg)
+            {
+                framebuffer[(enemyTop + y) * framebufferWidth + enemyLeft + x]
+                    = head ? 0x00FF4040 : 0x00A02020;
+            }
         }
     }
 
@@ -372,6 +394,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 for (LONG x = wallLeft; x < wallRight; ++x)
                 {
                     framebuffer[y * framebufferWidth + x] = 0x00606070;
+                }
+            }
+
+            for (LONG y = 0; y < enemyHeight; ++y)
+            {
+                for (LONG x = 0; x < enemyWidth; ++x)
+                {
+                    bool head = y < 3 && x >= 1 && x < 7;
+                    bool body = y >= 3 && y < 9 && x >= 2 && x < 6;
+                    bool arm = y >= 4 && y < 8 && (x == 0 || x == 7);
+                    bool leg = y >= 9 && (x < 3 || x >= 5);
+                    if (head || body || arm || leg)
+                    {
+                        framebuffer[(enemyTop + y) * framebufferWidth + enemyLeft + x]
+                            = head ? 0x00FF4040 : 0x00A02020;
+                    }
                 }
             }
 
