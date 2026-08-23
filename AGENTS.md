@@ -26,7 +26,11 @@ Do not silently resolve a conflict by changing the project. Report the differenc
 
 `B01 Minimal Win32 Window` is complete. The measured executable sizes were `10,240 bytes` for MSVC Release Win32/x86 (`+1,024 bytes` from B00) and `12,288 bytes` for MSVC Release x64 (`+1,536 bytes` from B00). Both architectures passed build and manual execution validation. Window display, movement, resizing, minimize/maximize, and X-button exit behaved normally. The Release subsystem is Windows GUI and the user entry point is `wWinMain`.
 
-The final Architecture remains `미정`. Do not implement the next stage until explicitly requested.
+`B02 Minimal Software Framebuffer Output` is complete. The test framebuffer is `2x2 pixels` (`초기 기준`) using 32-bit top-down `BI_RGB`, with a red/green/blue/white test pattern. The Win32 GDI `StretchDIBits` output path is an initial prototype candidate and is not the final Renderer specification.
+
+The measured B02 executable sizes were `10,752 bytes` for MSVC Release Win32/x86 (`+512 bytes` from B01) and `12,288 bytes` for MSVC Release x64 (`+0 bytes` from B01). Both architectures passed build and execution validation. Framebuffer output succeeded, resizing stretched the fixed framebuffer across the full client area, and minimize/maximize and X-button exit behaved normally. The system import `GDI32.dll` was added; no external library was added.
+
+The final Architecture and screen aspect-ratio/scaling policy remain `미정`. Do not implement the next stage until explicitly requested.
 
 ## Development Principles
 
