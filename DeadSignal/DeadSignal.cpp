@@ -5,6 +5,12 @@
 
 constexpr LONG framebufferWidth = 320;
 constexpr LONG framebufferHeight = 180;
+constexpr LONG playerWidth = 8;
+constexpr LONG playerHeight = 12;
+constexpr LONG playerCenterX = framebufferWidth / 2;
+constexpr LONG playerCenterY = framebufferHeight / 2;
+constexpr LONG playerLeft = playerCenterX - playerWidth / 2;
+constexpr LONG playerTop = playerCenterY - playerHeight / 2;
 constexpr DWORD toneSampleRate = 8000;
 constexpr DWORD toneFrequency = 440;
 constexpr DWORD toneDurationMilliseconds = 250;
@@ -163,6 +169,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         for (LONG x = 24; x < 32; ++x)
         {
             framebuffer[y * framebufferWidth + x] = 0x0000FF00;
+        }
+    }
+
+    for (LONG y = 0; y < playerHeight; ++y)
+    {
+        for (LONG x = 0; x < playerWidth; ++x)
+        {
+            bool head = y < 3 && x >= 2 && x < 6;
+            bool body = y >= 3 && y < 8 && x >= 1 && x < 7;
+            bool arm = y >= 4 && y < 7 && (x == 0 || x == 7);
+            bool leg = y >= 8 && ((x >= 1 && x < 3) || (x >= 5 && x < 7));
+            if (head || body || arm || leg)
+            {
+                framebuffer[(playerTop + y) * framebufferWidth + playerLeft + x]
+                    = head ? 0x00FFFFFF : 0x0000A0FF;
+            }
         }
     }
 

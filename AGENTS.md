@@ -52,11 +52,15 @@ The framebuffer is 32-bit top-down `BI_RGB` and uses `230,400 bytes` of runtime 
 
 The framebuffer is aspect-fitted to the Window client area without distortion, unused space is black, and the framebuffer is centered. Integer scaling and the final pixel-perfect policy remain `미정`.
 
-The measured P00 executable sizes were `12,288 bytes` for MSVC Release Win32/x86 (`+512 bytes` from B05) and `15,872 bytes` for MSVC Release x64 (`+2,560 bytes` from B05). Both architectures passed build and execution validation. The `320x180` framebuffer, 4:3 and wide aspect-ratio preservation, centering, resizing, minimize/maximize, X-button exit, B03 real-time loop, B04 W input, and B05 generated audio operated normally. No external Asset or new abstraction/system was added. Player, Movement, Collision, and Enemy are not implemented.
+The measured P00 executable sizes were `12,288 bytes` for MSVC Release Win32/x86 (`+512 bytes` from B05) and `15,872 bytes` for MSVC Release x64 (`+2,560 bytes` from B05). Both architectures passed build and execution validation. The `320x180` framebuffer, 4:3 and wide aspect-ratio preservation, centering, resizing, minimize/maximize, X-button exit, B03 real-time loop, B04 W input, and B05 generated audio operated normally. No external Asset or new abstraction/system was added. Movement, Collision, and Enemy are not implemented.
 
-The current minimal foundation is Window + Real-time Loop + Software Framebuffer + Keyboard Input + Runtime Generated Audio + Logical Play Space.
+`P01 Minimal Player Display` is complete. The Player Visual Bounding Size is `8x12 logical pixels` (`확정`). The Player is currently fixed at the framebuffer center `(160,90)`, with drawing bounds X=`156..163` and Y=`84..95`. A two-color prototype pixel silhouette distinguishing the head, body, arms, and legs is generated at runtime without an external Asset, Sprite System, Renderer abstraction, or Animation. This is not the final pixel art or palette.
 
-The final Architecture, integer-scaling/pixel-perfect policy, Window size policy, Player size and actual sprite specification, FPS/timing/pacing policy, Audio API, and actual sound specifications remain `미정`. Do not implement the next stage until explicitly requested.
+The measured P01 executable sizes were `12,288 bytes` for MSVC Release Win32/x86 (`+0 bytes` from P00) and `16,384 bytes` for MSVC Release x64 (`+512 bytes` from P00). Both architectures passed build and execution validation. The `8x12` bounds and centered display remained correct at 4:3 and wide Window sizes, and the existing real-time loop, W input, Space generated audio, resizing, minimize/maximize, and close behavior continued to operate normally. Player Movement is not implemented.
+
+The current minimal foundation is Window + Real-time Loop + Software Framebuffer + Keyboard Input + Runtime Generated Audio + Logical Play Space + Player Display.
+
+The final Architecture, integer-scaling/pixel-perfect policy, Window size policy, final Player pixel art, palette, Animation frame specification, Hitbox size, Collision size, relationship between gameplay width W and visual width, FPS/timing/pacing policy, Audio API, and actual sound specifications remain `미정`. Do not implement `P02 Player Movement` until explicitly requested.
 
 ## Development Principles
 
