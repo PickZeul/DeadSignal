@@ -36,6 +36,10 @@ The B03 test Update changes the framebuffer red component over time and requests
 
 The measured B03 executable sizes were `11,264 bytes` for MSVC Release Win32/x86 (`+512 bytes` from B02) and `13,312 bytes` for MSVC Release x64 (`+1,024 bytes` from B02). Both architectures passed build and execution validation, including continuous Update, window movement, resizing, minimize/maximize, and X-button exit.
 
+`B04 Minimal Keyboard Input` is complete. The only test input is the W key. `WM_KEYDOWN` and `WM_KEYUP` record pressed/released state in one minimal `bool`; no Input abstraction was added. The framebuffer test color changes correctly while W is pressed or held and returns to its original color when W is released. The B03 real-time loop and timing continue to operate normally. Player, Movement, and full WASD input are not implemented.
+
+The measured B04 executable sizes were `11,776 bytes` for MSVC Release Win32/x86 (`+512 bytes` from B03) and `13,312 bytes` for MSVC Release x64 (`+0 bytes` from B03). Both architectures passed build and execution validation, including W press/hold/release, window movement, resizing, minimize/maximize, and X-button exit. No system import or external library was added.
+
 The final Architecture, screen aspect-ratio/scaling policy, and FPS/timing/pacing policy remain `미정`. Do not implement the next stage until explicitly requested.
 
 ## Development Principles
