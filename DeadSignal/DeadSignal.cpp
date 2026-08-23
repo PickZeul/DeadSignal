@@ -5,6 +5,10 @@
 
 constexpr LONG framebufferWidth = 2;
 constexpr LONG framebufferHeight = 2;
+constexpr DWORD toneSampleRate = 8000;
+constexpr DWORD toneFrequency = 440;
+constexpr DWORD toneDurationMilliseconds = 250;
+constexpr DWORD toneSampleCount = toneSampleRate * toneDurationMilliseconds / 1000;
 
 DWORD framebuffer[framebufferWidth * framebufferHeight]
 {
@@ -13,6 +17,11 @@ DWORD framebuffer[framebufferWidth * framebufferHeight]
 };
 
 bool wPressed = false;
+bool spacePressed = false;
+bool tonePlaying = false;
+BYTE toneSamples[toneSampleCount];
+HWAVEOUT audioOutput = nullptr;
+WAVEHDR toneHeader{};
 
 BITMAPINFO framebufferInfo
 {
@@ -28,6 +37,19 @@ BITMAPINFO framebufferInfo
 
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == VK_SPACE)
+    {
+        bool pressed = message == WM_KEYDOWN;
+        if (pressed && !spacePressed && !tonePlaying
+            && waveOutWrite(audioOutput, &toneHeader, sizeof(toneHeader)) == MMSYSERR_NOERROR)
+        {
+            tonePlaying = true;
+        }
+
+        spacePressed = pressed;
+        return 0;
+    }
+
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'W')
     {
         wPressed = message == WM_KEYDOWN;
@@ -102,6 +124,32 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         return 0;
     }
 
+    for (DWORD sample = 0; sample < toneSampleCount; ++sample)
+    {
+        toneSamples[sample] = ((sample * toneFrequency * 2 / toneSampleRate) & 1) ? 64 : 192;
+    }
+
+    WAVEFORMATEX toneFormat{};
+    toneFormat.wFormatTag = WAVE_FORMAT_PCM;
+    toneFormat.nChannels = 1;
+    toneFormat.nSamplesPerSec = toneSampleRate;
+    toneFormat.nAvgBytesPerSec = toneSampleRate;
+    toneFormat.nBlockAlign = 1;
+    toneFormat.wBitsPerSample = 8;
+
+    if (waveOutOpen(&audioOutput, WAVE_MAPPER, &toneFormat, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR)
+    {
+        return 0;
+    }
+
+    toneHeader.lpData = reinterpret_cast<LPSTR>(toneSamples);
+    toneHeader.dwBufferLength = sizeof(toneSamples);
+    if (waveOutPrepareHeader(audioOutput, &toneHeader, sizeof(toneHeader)) != MMSYSERR_NOERROR)
+    {
+        waveOutClose(audioOutput);
+        return 0;
+    }
+
     ShowWindow(window, showCommand);
 
     timeBeginPeriod(1);
@@ -133,6 +181,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             break;
         }
 
+        if (tonePlaying && (toneHeader.dwFlags & WHDR_DONE))
+        {
+            tonePlaying = false;
+        }
+
         LARGE_INTEGER currentTime{};
         QueryPerformanceCounter(&currentTime);
         if (currentTime.QuadPart - previousUpdate.QuadPart >= updateInterval)
@@ -149,5 +202,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     }
 
     timeEndPeriod(1);
+    waveOutReset(audioOutput);
+    waveOutUnprepareHeader(audioOutput, &toneHeader, sizeof(toneHeader));
+    waveOutClose(audioOutput);
     return static_cast<int>(message.wParam);
 }

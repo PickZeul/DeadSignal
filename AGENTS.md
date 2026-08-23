@@ -40,7 +40,15 @@ The measured B03 executable sizes were `11,264 bytes` for MSVC Release Win32/x86
 
 The measured B04 executable sizes were `11,776 bytes` for MSVC Release Win32/x86 (`+512 bytes` from B03) and `13,312 bytes` for MSVC Release x64 (`+0 bytes` from B03). Both architectures passed build and execution validation, including W press/hold/release, window movement, resizing, minimize/maximize, and X-button exit. No system import or external library was added.
 
-The final Architecture, screen aspect-ratio/scaling policy, and FPS/timing/pacing policy remain `미정`. Do not implement the next stage until explicitly requested.
+`B05 Minimal Generated Audio` is complete. A square-wave PCM tone is generated in RAM and played without an audio asset. The prototype values (`초기 기준`) are 8,000 Hz, unsigned 8-bit PCM, mono, 440 Hz, 250 ms, and a 2,000-byte PCM buffer. These values are not final game sound specifications. The tone uses callback-free asynchronous `waveOut` playback with `CALLBACK_NULL`. A new Space press plays one tone; additional Space input is ignored while it is playing.
+
+No Audio Thread, Mixer, SoundManager, or Audio abstraction was added, and no Audio Asset exists. The existing `WINMM.dll` dependency is reused with no new DLL dependency or external library.
+
+The measured B05 executable sizes were `11,776 bytes` for MSVC Release Win32/x86 (`+0 bytes` from B04) and `13,312 bytes` for MSVC Release x64 (`+0 bytes` from B04). Both architectures passed build and execution validation. Tone playback and replay after completion succeeded. During playback, the game loop, framebuffer Update, W input, window movement, resizing, minimize/maximize, and X-button exit continued to operate normally.
+
+The current minimal foundation is Window + Real-time Loop + Software Framebuffer + Keyboard Input + Runtime Generated Audio.
+
+The final Architecture, screen aspect-ratio/scaling policy, FPS/timing/pacing policy, Audio API, and actual sound specifications remain `미정`. Do not implement the next stage until explicitly requested.
 
 ## Development Principles
 
