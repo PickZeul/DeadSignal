@@ -1,0 +1,129 @@
+# DEAD SIGNAL Repository Guidelines
+
+## Project Identity and Goal
+
+- Game title: `DEAD SIGNAL`
+- Development project: `1.44MB GAME_DEV`
+- Final goal: complete the game while keeping the entire final submission at or below exactly `1,474,560 bytes`.
+- Do not interpret `1.44MB` using an approximate KB/MB display. Record and compare sizes in exact bytes.
+
+This repository is currently a minimal Visual Studio Windows Native C++ project. `DeadSignal.slnx` is the solution entry point and `DeadSignal/DeadSignal.vcxproj` is the single application target. The project currently contains one source file, `DeadSignal/DeadSignal.cpp`. Both Win32 and x64 Debug/Release configurations exist.
+
+## Decision Priority
+
+When rules or materials conflict, use this order:
+
+1. The user's most recent instruction for the current task
+2. The latest `1.44MB GAME_DEV 기본 기획서`
+3. The actual current source, framework, and build state
+4. Older documents and prior work
+
+Do not silently resolve a conflict by changing the project. Report the difference to the user first. Do not change an approved design rule without user approval. If a change appears necessary, follow: identify the problem, explain the reason, propose the change, and wait for the user's decision.
+
+## Current Development Stage
+
+`B00 Empty Executable Baseline` is complete. The measured executable sizes were `9,728 bytes` for MSVC Release Win32 and `10,752 bytes` for MSVC Release x64. At B00, Win32 was `1,024 bytes` smaller than x64. This is only the current measurement result, not a final architecture decision; the final Architecture remains `미정`.
+
+In the next stage, until explicitly requested, do not implement Window, Game Loop, Renderer, Input, Audio, Map, Player, Enemy, Combat, Save, or any other game system.
+
+## Development Principles
+
+- Do not use Unity or another general-purpose game engine.
+- Build an ultralight custom framework in Windows Native C++.
+- Implement only functionality that `DEAD SIGNAL` actually needs.
+- Do not add features or abstractions in anticipation of future reuse.
+- Reuse the existing structure when it can satisfy the request; do not add a new system without demonstrated need.
+- Prefer removing unused functionality over merely disabling it.
+- Do not add an external runtime or library without comparing its measured final-build cost against its concrete benefit.
+- Do not increase binary size solely for generality or architectural elegance.
+- Do not apply a size optimization merely to save a few bytes if it would materially harm development stability or game completeness.
+- Treat the C++ standard version, CRT linkage/use, character set, SDL checks, STL use, architecture, compiler options, and linker options as undecided final specifications. Current project settings are only the present baseline state. Adopt final settings only after measuring size and implementation benefit.
+- MSVC is the initial compiler baseline. The final choice between Win32 (x86) and x64 is undecided.
+- Do not add empty directories or hierarchy for anticipated expansion.
+
+## Do Not Prebuild General Systems
+
+Do not implement or prepare structures for the following until a concrete need is confirmed:
+
+- General-purpose Scene System
+- ECS
+- Reflection
+- General-purpose UI Framework
+- General-purpose Animation Framework
+- General-purpose Physics Engine
+- Plugin System
+- Runtime Scripting
+- General-purpose Renderer abstraction
+- General-purpose Input abstraction
+- General-purpose Audio Engine
+- General-purpose Asset Manager
+- General-purpose Platform abstraction
+- Unnecessary Utility or Math Library
+- Separate Test Framework or Test Project
+- Unnecessary multiplatform structure
+
+## Build-Size Measurement Rules
+
+Base technical decisions on actual final build results, not estimates. Whenever possible, compare each change as:
+
+`current Build Size -> minimal implementation -> new Build Size -> byte increase/decrease`
+
+- Record executable and submission sizes as exact byte counts.
+- Define and report exactly which artifacts are included in the measured final submission.
+- Record the compiler, target architecture, configuration, compiler options, linker options, and other conditions needed to reproduce each meaningful measurement.
+- Compare Win32 and x64 or alternative settings using actual build output before adopting a final choice.
+- Distinguish development/debug artifacts from the final submission. Do not count or exclude an artifact without stating the measurement rule.
+- Do not assume that the current Debug/Release configurations or current project defaults are the final size baseline.
+
+The solution currently exposes Win32 and x64 configurations. The project currently uses MSVC `v145`, Windows 10 SDK selection, C++20, Unicode, SDL checks, conformance mode, warning level 3, and the Console subsystem. These describe the checked-in project state only; they are not approved final specifications.
+
+## Data Principles
+
+Store the minimum data and rules needed to regenerate results rather than storing fully expanded results:
+
+- Graphic = Pattern + Palette + Transform
+- Sound = Wave + Frequency + Sequence
+- Map = Tile + Chunk + Rule + Seed
+- Save = minimum State required for restoration, not the full derived result
+
+Minimize disk use and deliberately trade available RAM and runtime computation for stored bytes when the measured benefit is worthwhile and game stability remains acceptable.
+
+## Required Work Procedure
+
+For implementation work, always proceed in this order:
+
+`inspect current structure -> inspect relevant code -> verify whether the existing structure can be reused -> make the minimum requested implementation -> validate -> measure actual Build Size -> report results`
+
+- Do not add unrequested features, refactors, or structural changes.
+- Keep implementation files under `DeadSignal/` and keep a header beside its corresponding `.cpp` when both are genuinely needed.
+- When adding a required file, update `DeadSignal.vcxproj` and `DeadSignal.vcxproj.filters` so Visual Studio includes it in the appropriate filter.
+- Do not commit generated or machine-local outputs such as `.vs/`, `Debug/`, `Release/`, `x64/`, binaries, or IDE user settings.
+- Use four spaces, not tabs, and follow the style already present in nearby code. Do not introduce a naming or ownership abstraction merely to enforce a generic convention.
+
+## Validation
+
+Validation must be proportional to the requested change and the current stage.
+
+- Build and manually exercise only the configurations relevant to the current decision; do not treat Debug x64 and Release x64 as permanently preferred configurations.
+- When architecture or build settings are being selected, compare the relevant candidates rather than assuming one.
+- No separate test framework or test project is currently authorized. Add one only when concrete need and size cost have been evaluated and the user has requested or approved it.
+- Report commands run, whether they succeeded, exact measured byte counts, measurement scope, and any unverified behavior.
+
+## Status Labels for Numeric Values
+
+Always label meaningful design and tuning values as one of:
+
+- `확정`: use as specified by the current approved design
+- `초기 기준`: use for the prototype and allow adjustment after playtesting
+- `미정`: not decided; do not invent a final value
+
+The `1,474,560 bytes` maximum for the entire final submission is `확정`. Architecture and the final compiler, CRT, language, character-set, SDL, STL, and linker choices are `미정`.
+
+## Change and Reporting Discipline
+
+- Inspect the actual repository state before editing.
+- Limit changes to the user's explicit scope.
+- Preserve unrelated user changes and machine-specific state.
+- If documentation and the actual project differ, report both; do not rewrite one merely to hide the discrepancy.
+- Use short, imperative commit subjects if a commit is requested. Keep unrelated changes separate.
+- In a pull request, explain intent and behavior, list validation and size-measurement commands, link relevant issues, and include terminal output or screenshots when user-visible behavior changes.

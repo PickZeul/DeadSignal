@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="DeadSignal/DeadSignal.vcxproj" Id="b4980594-240d-458d-b43c-d544c7c13d7e" />
+</Solution>
