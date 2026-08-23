@@ -58,9 +58,17 @@ The measured P00 executable sizes were `12,288 bytes` for MSVC Release Win32/x86
 
 The measured P01 executable sizes were `12,288 bytes` for MSVC Release Win32/x86 (`+0 bytes` from P00) and `16,384 bytes` for MSVC Release x64 (`+512 bytes` from P00). Both architectures passed build and execution validation. The `8x12` bounds and centered display remained correct at 4:3 and wide Window sizes, and the existing real-time loop, W input, Space generated audio, resizing, minimize/maximize, and close behavior continued to operate normally. Player Movement is not implemented.
 
-The current minimal foundation is Window + Real-time Loop + Software Framebuffer + Keyboard Input + Runtime Generated Audio + Logical Play Space + Player Display.
+`P02 Minimal Player Movement` is complete. The Player Visual Bounding Size remains `8x12 logical pixels` (`확정`), and the initial position is the logical framebuffer center `(160,90)`. WASD provides free directional movement, with each key state stored in a minimal `bool` and the current Player position stored as `float playerX` and `float playerY`. Movement uses QPC delta time for frame-rate independence. Simultaneous movement on both axes applies `0.70710678f` normalization, while W+S and A+D cancel on their respective axes. Player drawing retains framebuffer bounds checks without implementing a Boundary clamp or Collision.
 
-The final Architecture, integer-scaling/pixel-perfect policy, Window size policy, final Player pixel art, palette, Animation frame specification, Hitbox size, Collision size, relationship between gameplay width W and visual width, FPS/timing/pacing policy, Audio API, and actual sound specifications remain `미정`. Do not implement `P02 Player Movement` until explicitly requested.
+The prototype movement speed is `60 logical pixels per second` (`초기 기준`). It currently feels appropriate to the user, but it is not the final game movement-speed specification and may change when Sneak / Walk / Run is designed.
+
+The measured P02 executable sizes were `13,824 bytes` for MSVC Release Win32/x86 (`+1,536 bytes` from P01) and `16,896 bytes` for MSVC Release x64 (`+512 bytes` from P01). Both architectures passed Release build and execution validation. Four-direction WASD movement, all four diagonals, opposing-direction cancellation, and near-equal straight/diagonal movement speed operated normally. The real-time loop, generated audio, 16:9 aspect-fit, resizing, window movement, minimize/maximize, and X-button exit also remained normal. No external Asset or Library, new abstraction/system, or Release setting change was added.
+
+P02 does not implement Boundary clamp, Wall Collision, Hitbox/Collision specifications, Sneak / Walk / Run, Acceleration / Deceleration, Facing / Animation, Dash, Slash, or Execute.
+
+The current minimal foundation is Window + Real-time Loop + Software Framebuffer + Keyboard Input + Runtime Generated Audio + Logical Play Space + Player Display + Player Movement.
+
+The final Architecture, integer-scaling/pixel-perfect policy, Window size policy, final Player pixel art, palette, Animation frame specification, Hitbox size, Collision size, relationship between gameplay width W and visual width, FPS/timing/pacing policy, Audio API, and actual sound specifications remain `미정`. Do not implement the next stage until explicitly requested.
 
 ## Development Principles
 
