@@ -30,7 +30,13 @@ Do not silently resolve a conflict by changing the project. Report the differenc
 
 The measured B02 executable sizes were `10,752 bytes` for MSVC Release Win32/x86 (`+512 bytes` from B01) and `12,288 bytes` for MSVC Release x64 (`+0 bytes` from B01). Both architectures passed build and execution validation. Framebuffer output succeeded, resizing stretched the fixed framebuffer across the full client area, and minimize/maximize and X-button exit behaved normally. The system import `GDI32.dll` was added; no external library was added.
 
-The final Architecture and screen aspect-ratio/scaling policy remain `미정`. Do not implement the next stage until explicitly requested.
+`B03 Minimal Real-time Game Loop` is complete. The blocking `GetMessageW` loop was replaced with non-blocking `PeekMessageW(PM_REMOVE)` message processing. High-resolution time measurement uses `QueryPerformanceFrequency` and `QueryPerformanceCounter`. The prototype Update target is approximately 60 Hz (`초기 기준`); current pacing uses `Sleep(1)` with `timeBeginPeriod(1)` and `timeEndPeriod(1)`. The measured Update rate is approximately 56 Hz and is not the final FPS or timing policy.
+
+The B03 test Update changes the framebuffer red component over time and requests redraw with `InvalidateRect`, reusing the existing `WM_PAINT` and `StretchDIBits` output path. The system import `WINMM.dll` was added; no external library was added.
+
+The measured B03 executable sizes were `11,264 bytes` for MSVC Release Win32/x86 (`+512 bytes` from B02) and `13,312 bytes` for MSVC Release x64 (`+1,024 bytes` from B02). Both architectures passed build and execution validation, including continuous Update, window movement, resizing, minimize/maximize, and X-button exit.
+
+The final Architecture, screen aspect-ratio/scaling policy, and FPS/timing/pacing policy remain `미정`. Do not implement the next stage until explicitly requested.
 
 ## Development Principles
 

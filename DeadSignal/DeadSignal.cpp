@@ -1,4 +1,7 @@
 #include <windows.h>
+#include <timeapi.h>
+
+#pragma comment(lib, "winmm.lib")
 
 constexpr LONG framebufferWidth = 2;
 constexpr LONG framebufferHeight = 2;
@@ -93,12 +96,49 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
     ShowWindow(window, showCommand);
 
+    timeBeginPeriod(1);
+    LARGE_INTEGER performanceFrequency{};
+    QueryPerformanceFrequency(&performanceFrequency);
+    LARGE_INTEGER previousUpdate{};
+    QueryPerformanceCounter(&previousUpdate);
+    constexpr LONGLONG updatesPerSecond = 60;
+    const LONGLONG updateInterval = performanceFrequency.QuadPart / updatesPerSecond;
+
     MSG message{};
-    while (GetMessageW(&message, nullptr, 0, 0) > 0)
+    bool running = true;
+    while (running)
     {
-        TranslateMessage(&message);
-        DispatchMessageW(&message);
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+        {
+            if (message.message == WM_QUIT)
+            {
+                running = false;
+                break;
+            }
+
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+
+        if (!running)
+        {
+            break;
+        }
+
+        LARGE_INTEGER currentTime{};
+        QueryPerformanceCounter(&currentTime);
+        if (currentTime.QuadPart - previousUpdate.QuadPart >= updateInterval)
+        {
+            previousUpdate = currentTime;
+            framebuffer[0] = (framebuffer[0] + 0x00050000) & 0x00FF0000;
+            InvalidateRect(window, nullptr, FALSE);
+        }
+        else
+        {
+            Sleep(1);
+        }
     }
 
+    timeEndPeriod(1);
     return static_cast<int>(message.wParam);
 }
