@@ -66,9 +66,15 @@ The measured P02 executable sizes were `13,824 bytes` for MSVC Release Win32/x86
 
 P02 does not implement Boundary clamp, Wall Collision, Hitbox/Collision specifications, Sneak / Walk / Run, Acceleration / Deceleration, Facing / Animation, Dash, Slash, or Execute.
 
-The current minimal foundation is Window + Real-time Loop + Software Framebuffer + Keyboard Input + Runtime Generated Audio + Logical Play Space + Player Display + Player Movement.
+`P03 Minimal Boundary + Wall Collision` is complete. The Player Visual Bounding Size and Player Collision Bounding Size are both `8x12 logical pixels` (`확정`) and use the same full rectangle. There is no separate Hitbox and no pixel-perfect silhouette collision. The existing center-based `float playerX` and `float playerY` position remain in use. Screen boundary handling keeps the full Player rectangle inside the `320x180` logical framebuffer, allowing Player center coordinates X=`4..316` and Y=`6..174`.
 
-The final Architecture, integer-scaling/pixel-perfect policy, Window size policy, final Player pixel art, palette, Animation frame specification, Hitbox size, Collision size, relationship between gameplay width W and visual width, FPS/timing/pacing policy, Audio API, and actual sound specifications remain `미정`. Do not implement the next stage until explicitly requested.
+A single runtime-generated rectangular test Wall uses X=`200..207` and Y=`60..119`, or `8x60 logical pixels` (`초기 기준`). Its visual and collision rectangles are identical. Player movement is tested separately on the X and Y axes with direct rectangle comparisons, which preserves movement on an unblocked axis and allows sliding along the Wall. No CollisionManager, Physics system, Collider/AABB/Hitbox class, multiple-Wall system, or continuous collision detection was added. The test Wall dimensions are not the final game Wall or Tile specification.
+
+The measured P03 executable sizes were `14,336 bytes` for MSVC Release Win32/x86 (`+512 bytes` from P02) and `18,944 bytes` for MSVC Release x64 (`+2,048 bytes` from P02). Both architectures passed Release build and execution validation. The four screen boundaries, movement along each boundary, Wall collision from all four directions, diagonal Wall sliding, matching visual/collision bounds, WASD movement, real-time loop, generated audio, 16:9 aspect-fit, resizing, window movement, minimize/maximize, and X-button exit operated normally. No external Asset or Library, new abstraction/system, or Release setting change was added.
+
+The current minimal foundation is Window + Real-time Loop + Software Framebuffer + Keyboard Input + Runtime Generated Audio + Logical Play Space + Player Display + Player Movement + Screen Boundary + Single Test Wall Collision.
+
+The final Architecture, integer-scaling/pixel-perfect policy, Window size policy, final Player pixel art, palette, Animation frame specification, actual Wall/Tile specification, need for a general Collision structure, Room structure, relationship between gameplay width W and visual width, FPS/timing/pacing policy, Audio API, and actual sound specifications remain `미정`. Do not implement `P04` until explicitly requested.
 
 ## Development Principles
 

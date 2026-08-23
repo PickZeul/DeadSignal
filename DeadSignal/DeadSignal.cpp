@@ -12,6 +12,14 @@ constexpr LONG playerCenterY = framebufferHeight / 2;
 constexpr LONG playerLeft = playerCenterX - playerWidth / 2;
 constexpr LONG playerTop = playerCenterY - playerHeight / 2;
 constexpr float playerMoveSpeed = 60.0f;
+constexpr float playerHalfWidth = playerWidth / 2.0f;
+constexpr float playerHalfHeight = playerHeight / 2.0f;
+constexpr LONG wallLeft = 200;
+constexpr LONG wallTop = 60;
+constexpr LONG wallWidth = 8;
+constexpr LONG wallHeight = 60;
+constexpr LONG wallRight = wallLeft + wallWidth;
+constexpr LONG wallBottom = wallTop + wallHeight;
 constexpr DWORD toneSampleRate = 8000;
 constexpr DWORD toneFrequency = 440;
 constexpr DWORD toneDurationMilliseconds = 250;
@@ -181,6 +189,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         framebuffer[y * framebufferWidth + framebufferWidth - 1] = 0x00808000;
     }
 
+    for (LONG y = wallTop; y < wallBottom; ++y)
+    {
+        for (LONG x = wallLeft; x < wallRight; ++x)
+        {
+            framebuffer[y * framebufferWidth + x] = 0x00606070;
+        }
+    }
+
     for (LONG y = 8; y < 16; ++y)
     {
         for (LONG x = 8; x < 16; ++x)
@@ -284,8 +300,52 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             LONG movementX = static_cast<LONG>(dPressed) - static_cast<LONG>(aPressed);
             LONG movementY = static_cast<LONG>(sPressed) - static_cast<LONG>(wPressed);
             float movementScale = movementX && movementY ? 0.70710678f : 1.0f;
-            playerX += movementX * playerMoveSpeed * movementScale * deltaTime;
-            playerY += movementY * playerMoveSpeed * movementScale * deltaTime;
+            float movementDeltaX = movementX * playerMoveSpeed * movementScale * deltaTime;
+            float movementDeltaY = movementY * playerMoveSpeed * movementScale * deltaTime;
+
+            float nextPlayerX = playerX + movementDeltaX;
+            if (nextPlayerX < playerHalfWidth)
+            {
+                nextPlayerX = playerHalfWidth;
+            }
+            else if (nextPlayerX > framebufferWidth - playerHalfWidth)
+            {
+                nextPlayerX = framebufferWidth - playerHalfWidth;
+            }
+
+            if (movementDeltaX != 0.0f
+                && nextPlayerX - playerHalfWidth < wallRight
+                && nextPlayerX + playerHalfWidth > wallLeft
+                && playerY - playerHalfHeight < wallBottom
+                && playerY + playerHalfHeight > wallTop)
+            {
+                nextPlayerX = movementDeltaX > 0.0f
+                    ? wallLeft - playerHalfWidth
+                    : wallRight + playerHalfWidth;
+            }
+            playerX = nextPlayerX;
+
+            float nextPlayerY = playerY + movementDeltaY;
+            if (nextPlayerY < playerHalfHeight)
+            {
+                nextPlayerY = playerHalfHeight;
+            }
+            else if (nextPlayerY > framebufferHeight - playerHalfHeight)
+            {
+                nextPlayerY = framebufferHeight - playerHalfHeight;
+            }
+
+            if (movementDeltaY != 0.0f
+                && playerX - playerHalfWidth < wallRight
+                && playerX + playerHalfWidth > wallLeft
+                && nextPlayerY - playerHalfHeight < wallBottom
+                && nextPlayerY + playerHalfHeight > wallTop)
+            {
+                nextPlayerY = movementDeltaY > 0.0f
+                    ? wallTop - playerHalfHeight
+                    : wallBottom + playerHalfHeight;
+            }
+            playerY = nextPlayerY;
             updateColor = (updateColor + 0x00050000) & 0x00FF0000;
 
             for (LONG pixel = 0; pixel < framebufferWidth * framebufferHeight; ++pixel)
@@ -305,6 +365,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 framebuffer[y * framebufferWidth + framebufferWidth / 2] = 0x00404040;
                 framebuffer[y * framebufferWidth] = 0x00008000;
                 framebuffer[y * framebufferWidth + framebufferWidth - 1] = 0x00808000;
+            }
+
+            for (LONG y = wallTop; y < wallBottom; ++y)
+            {
+                for (LONG x = wallLeft; x < wallRight; ++x)
+                {
+                    framebuffer[y * framebufferWidth + x] = 0x00606070;
+                }
             }
 
             for (LONG y = 8; y < 16; ++y)
