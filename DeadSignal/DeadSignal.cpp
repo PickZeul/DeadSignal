@@ -12,6 +12,8 @@ DWORD framebuffer[framebufferWidth * framebufferHeight]
     0x000000FF, 0x00FFFFFF
 };
 
+bool wPressed = false;
+
 BITMAPINFO framebufferInfo
 {
     {
@@ -26,6 +28,12 @@ BITMAPINFO framebufferInfo
 
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'W')
+    {
+        wPressed = message == WM_KEYDOWN;
+        return 0;
+    }
+
     if (message == WM_PAINT)
     {
         PAINTSTRUCT paint{};
@@ -131,6 +139,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         {
             previousUpdate = currentTime;
             framebuffer[0] = (framebuffer[0] + 0x00050000) & 0x00FF0000;
+            framebuffer[1] = wPressed ? 0x00FFFF00 : 0x0000FF00;
             InvalidateRect(window, nullptr, FALSE);
         }
         else
