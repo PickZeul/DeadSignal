@@ -28,6 +28,8 @@ constexpr LONG enemyLeft = enemyCenterX - enemyWidth / 2;
 constexpr LONG enemyTop = enemyCenterY - enemyHeight / 2;
 constexpr LONG enemyVisionRange = 70;
 constexpr float enemyVisionSlope = 0.520567f;
+constexpr float detectionFillDuration = 3.0f;
+constexpr float lostSightHoldDuration = 0.5f;
 constexpr DWORD toneSampleRate = 8000;
 constexpr DWORD toneFrequency = 440;
 constexpr DWORD toneDurationMilliseconds = 250;
@@ -316,6 +318,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     const LONGLONG updateInterval = performanceFrequency.QuadPart / updatesPerSecond;
     float playerX = static_cast<float>(playerCenterX);
     float playerY = static_cast<float>(playerCenterY);
+    float detectionProgress = 0.0f;
+    float lostSightElapsed = 0.0f;
+    bool enemyAlert = false;
     DWORD updateColor = 0x00FF0000;
 
     MSG message{};
@@ -418,6 +423,38 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 playerVisionOccluded = yAtWall >= wallTop && yAtWall < wallBottom;
             }
             bool playerInVision = playerInRawVision && !playerVisionOccluded;
+            if (!enemyAlert)
+            {
+                if (playerInVision)
+                {
+                    lostSightElapsed = 0.0f;
+                    detectionProgress += deltaTime / detectionFillDuration;
+                    if (detectionProgress >= 1.0f)
+                    {
+                        detectionProgress = 1.0f;
+                        enemyAlert = true;
+                    }
+                }
+                else if (detectionProgress > 0.0f)
+                {
+                    float decayTime = lostSightElapsed + deltaTime - lostSightHoldDuration;
+                    lostSightElapsed += deltaTime;
+                    if (decayTime > 0.0f)
+                    {
+                        if (decayTime > deltaTime)
+                        {
+                            decayTime = deltaTime;
+                        }
+
+                        detectionProgress -= decayTime / detectionFillDuration;
+                        if (detectionProgress <= 0.0f)
+                        {
+                            detectionProgress = 0.0f;
+                            lostSightElapsed = 0.0f;
+                        }
+                    }
+                }
+            }
             updateColor = (updateColor + 0x00050000) & 0x00FF0000;
 
             for (LONG pixel = 0; pixel < framebufferWidth * framebufferHeight; ++pixel)
@@ -481,6 +518,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     {
                         framebuffer[(enemyTop + y) * framebufferWidth + enemyLeft + x]
                             = head ? 0x00FF4040 : 0x00A02020;
+                    }
+                }
+            }
+
+            if (detectionProgress > 0.0f)
+            {
+                for (LONG y = 0; y < 5; ++y)
+                {
+                    for (LONG x = 0; x < 3; ++x)
+                    {
+                        bool symbolPixel = enemyAlert
+                            ? (x == 1 && y != 3)
+                            : ((y == 0 && x < 2) || (y == 1 && x == 2)
+                                || (y == 2 && x == 1) || (y == 4 && x == 1));
+                        if (symbolPixel)
+                        {
+                            framebuffer[(enemyTop - 7 + y) * framebufferWidth + enemyCenterX - 1 + x]
+                                = enemyAlert ? 0x00FF4040 : 0x00FFD800;
+                        }
                     }
                 }
             }
