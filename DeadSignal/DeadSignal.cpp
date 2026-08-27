@@ -423,11 +423,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 playerVisionOccluded = yAtWall >= wallTop && yAtWall < wallBottom;
             }
             bool playerInVision = playerInRawVision && !playerVisionOccluded;
-            if (!enemyAlert)
+            if (playerInVision)
             {
-                if (playerInVision)
+                lostSightElapsed = 0.0f;
+                if (enemyAlert)
                 {
-                    lostSightElapsed = 0.0f;
+                    detectionProgress = 1.0f;
+                }
+                else
+                {
                     detectionProgress += deltaTime / detectionFillDuration;
                     if (detectionProgress >= 1.0f)
                     {
@@ -435,23 +439,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         enemyAlert = true;
                     }
                 }
-                else if (detectionProgress > 0.0f)
+            }
+            else if (detectionProgress > 0.0f)
+            {
+                float decayTime = lostSightElapsed + deltaTime - lostSightHoldDuration;
+                lostSightElapsed += deltaTime;
+                if (decayTime > 0.0f)
                 {
-                    float decayTime = lostSightElapsed + deltaTime - lostSightHoldDuration;
-                    lostSightElapsed += deltaTime;
-                    if (decayTime > 0.0f)
+                    enemyAlert = false;
+                    if (decayTime > deltaTime)
                     {
-                        if (decayTime > deltaTime)
-                        {
-                            decayTime = deltaTime;
-                        }
+                        decayTime = deltaTime;
+                    }
 
-                        detectionProgress -= decayTime / detectionFillDuration;
-                        if (detectionProgress <= 0.0f)
-                        {
-                            detectionProgress = 0.0f;
-                            lostSightElapsed = 0.0f;
-                        }
+                    detectionProgress -= decayTime / detectionFillDuration;
+                    if (detectionProgress <= 0.0f)
+                    {
+                        detectionProgress = 0.0f;
+                        lostSightElapsed = 0.0f;
                     }
                 }
             }
@@ -476,6 +481,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 framebuffer[y * framebufferWidth + framebufferWidth - 1] = 0x00808000;
             }
 
+            float redDistance = enemyVisionRange * detectionProgress;
             for (LONG x = 1; x <= enemyVisionRange; ++x)
             {
                 LONG visionHalfHeight = static_cast<LONG>(x * enemyVisionSlope);
@@ -493,7 +499,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
                     if (!visionBlocked && pixelY >= 0 && pixelY < framebufferHeight)
                     {
-                        framebuffer[pixelY * framebufferWidth + pixelX] = 0x00182040;
+                        framebuffer[pixelY * framebufferWidth + pixelX]
+                            = x <= redDistance ? 0x00401818 : 0x00182040;
                     }
                 }
             }
