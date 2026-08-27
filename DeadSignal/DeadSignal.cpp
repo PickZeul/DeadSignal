@@ -34,6 +34,10 @@ constexpr LONG slashReach = 8;
 constexpr LONG slashWidth = 8;
 constexpr float slashVisualDuration = 0.10f;
 constexpr float slashCooldownDuration = 0.5f;
+constexpr float dashDistance = 32.0f;
+constexpr float dashDuration = 0.12f;
+constexpr float dashSpeed = dashDistance / dashDuration;
+constexpr float dashCooldownDuration = 1.0f;
 constexpr DWORD toneSampleRate = 8000;
 constexpr DWORD toneFrequency = 440;
 constexpr DWORD toneDurationMilliseconds = 250;
@@ -47,6 +51,8 @@ bool aPressed = false;
 bool dPressed = false;
 bool jPressed = false;
 bool slashRequested = false;
+bool kPressed = false;
+bool dashRequested = false;
 bool spacePressed = false;
 bool tonePlaying = false;
 BYTE toneSamples[toneSampleCount];
@@ -67,6 +73,18 @@ BITMAPINFO framebufferInfo
 
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'K')
+    {
+        bool pressed = message == WM_KEYDOWN;
+        if (pressed && !kPressed)
+        {
+            dashRequested = true;
+        }
+
+        kPressed = pressed;
+        return 0;
+    }
+
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'J')
     {
         bool pressed = message == WM_KEYDOWN;
@@ -338,6 +356,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     float playerY = static_cast<float>(playerCenterY);
     LONG facingX = 1;
     LONG facingY = 0;
+    LONG dashDirectionX = 0;
+    LONG dashDirectionY = 0;
+    float dashDistanceRemaining = 0.0f;
+    float dashCooldownRemaining = 0.0f;
+    bool dashActive = false;
     LONG slashLeft = 0;
     LONG slashTop = 0;
     LONG slashRight = 0;
@@ -390,53 +413,109 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 facingX = movementX;
                 facingY = movementY;
             }
+            if (dashCooldownRemaining > 0.0f)
+            {
+                dashCooldownRemaining -= deltaTime;
+            }
+            if (dashRequested)
+            {
+                if (!dashActive && dashCooldownRemaining <= 0.0f)
+                {
+                    dashDirectionX = facingX;
+                    dashDirectionY = facingY;
+                    dashDistanceRemaining = dashDistance;
+                    dashCooldownRemaining = dashCooldownDuration;
+                    dashActive = true;
+                }
+                dashRequested = false;
+            }
+
+            bool playerDashingThisUpdate = dashActive;
             float movementScale = movementX && movementY ? 0.70710678f : 1.0f;
             float movementDeltaX = movementX * playerMoveSpeed * movementScale * deltaTime;
             float movementDeltaY = movementY * playerMoveSpeed * movementScale * deltaTime;
+            LONG movementSteps = 1;
+            if (dashActive)
+            {
+                float dashFrameDistance = dashSpeed * deltaTime;
+                if (dashFrameDistance > dashDistanceRemaining)
+                {
+                    dashFrameDistance = dashDistanceRemaining;
+                }
 
-            float nextPlayerX = playerX + movementDeltaX;
-            if (nextPlayerX < playerHalfWidth)
-            {
-                nextPlayerX = playerHalfWidth;
-            }
-            else if (nextPlayerX > framebufferWidth - playerHalfWidth)
-            {
-                nextPlayerX = framebufferWidth - playerHalfWidth;
-            }
-
-            if (movementDeltaX != 0.0f
-                && nextPlayerX - playerHalfWidth < wallRight
-                && nextPlayerX + playerHalfWidth > wallLeft
-                && playerY - playerHalfHeight < wallBottom
-                && playerY + playerHalfHeight > wallTop)
-            {
-                nextPlayerX = movementDeltaX > 0.0f
-                    ? wallLeft - playerHalfWidth
-                    : wallRight + playerHalfWidth;
-            }
-            playerX = nextPlayerX;
-
-            float nextPlayerY = playerY + movementDeltaY;
-            if (nextPlayerY < playerHalfHeight)
-            {
-                nextPlayerY = playerHalfHeight;
-            }
-            else if (nextPlayerY > framebufferHeight - playerHalfHeight)
-            {
-                nextPlayerY = framebufferHeight - playerHalfHeight;
+                float dashScale = dashDirectionX && dashDirectionY ? 0.70710678f : 1.0f;
+                movementDeltaX = dashDirectionX * dashFrameDistance * dashScale;
+                movementDeltaY = dashDirectionY * dashFrameDistance * dashScale;
+                float largestDashDelta = movementDeltaX;
+                if (largestDashDelta < 0.0f)
+                {
+                    largestDashDelta = -largestDashDelta;
+                }
+                float dashDeltaY = movementDeltaY;
+                if (dashDeltaY < 0.0f)
+                {
+                    dashDeltaY = -dashDeltaY;
+                }
+                if (dashDeltaY > largestDashDelta)
+                {
+                    largestDashDelta = dashDeltaY;
+                }
+                movementSteps = static_cast<LONG>(largestDashDelta) + 1;
+                dashDistanceRemaining -= dashFrameDistance;
+                if (dashDistanceRemaining <= 0.0f)
+                {
+                    dashActive = false;
+                }
             }
 
-            if (movementDeltaY != 0.0f
-                && playerX - playerHalfWidth < wallRight
-                && playerX + playerHalfWidth > wallLeft
-                && nextPlayerY - playerHalfHeight < wallBottom
-                && nextPlayerY + playerHalfHeight > wallTop)
+            movementDeltaX /= movementSteps;
+            movementDeltaY /= movementSteps;
+            for (LONG movementStep = 0; movementStep < movementSteps; ++movementStep)
             {
-                nextPlayerY = movementDeltaY > 0.0f
-                    ? wallTop - playerHalfHeight
-                    : wallBottom + playerHalfHeight;
+                float nextPlayerX = playerX + movementDeltaX;
+                if (nextPlayerX < playerHalfWidth)
+                {
+                    nextPlayerX = playerHalfWidth;
+                }
+                else if (nextPlayerX > framebufferWidth - playerHalfWidth)
+                {
+                    nextPlayerX = framebufferWidth - playerHalfWidth;
+                }
+
+                if (movementDeltaX != 0.0f
+                    && nextPlayerX - playerHalfWidth < wallRight
+                    && nextPlayerX + playerHalfWidth > wallLeft
+                    && playerY - playerHalfHeight < wallBottom
+                    && playerY + playerHalfHeight > wallTop)
+                {
+                    nextPlayerX = movementDeltaX > 0.0f
+                        ? wallLeft - playerHalfWidth
+                        : wallRight + playerHalfWidth;
+                }
+                playerX = nextPlayerX;
+
+                float nextPlayerY = playerY + movementDeltaY;
+                if (nextPlayerY < playerHalfHeight)
+                {
+                    nextPlayerY = playerHalfHeight;
+                }
+                else if (nextPlayerY > framebufferHeight - playerHalfHeight)
+                {
+                    nextPlayerY = framebufferHeight - playerHalfHeight;
+                }
+
+                if (movementDeltaY != 0.0f
+                    && playerX - playerHalfWidth < wallRight
+                    && playerX + playerHalfWidth > wallLeft
+                    && nextPlayerY - playerHalfHeight < wallBottom
+                    && nextPlayerY + playerHalfHeight > wallTop)
+                {
+                    nextPlayerY = movementDeltaY > 0.0f
+                        ? wallTop - playerHalfHeight
+                        : wallBottom + playerHalfHeight;
+                }
+                playerY = nextPlayerY;
             }
-            playerY = nextPlayerY;
 
             if (slashVisualRemaining > 0.0f)
             {
@@ -453,7 +532,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
             if (slashRequested)
             {
-                if (slashCooldownRemaining <= 0.0f)
+                if (!playerDashingThisUpdate && slashCooldownRemaining <= 0.0f)
                 {
                     LONG slashCenterX = static_cast<LONG>(playerX);
                     LONG slashCenterY = static_cast<LONG>(playerY);
@@ -688,7 +767,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         && pixelY >= 0 && pixelY < framebufferHeight)
                     {
                         framebuffer[pixelY * framebufferWidth + pixelX]
-                            = head ? 0x00FFFFFF : 0x0000A0FF;
+                            = head ? 0x00FFFFFF
+                            : (playerDashingThisUpdate ? 0x0080FFFF : 0x0000A0FF);
                     }
                 }
             }
