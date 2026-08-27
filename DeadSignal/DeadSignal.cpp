@@ -30,6 +30,10 @@ constexpr LONG enemyVisionRange = 70;
 constexpr float enemyVisionSlope = 0.520567f;
 constexpr float detectionFillDuration = 3.0f;
 constexpr float lostSightHoldDuration = 0.5f;
+constexpr LONG slashReach = 8;
+constexpr LONG slashWidth = 8;
+constexpr float slashVisualDuration = 0.10f;
+constexpr float slashCooldownDuration = 0.5f;
 constexpr DWORD toneSampleRate = 8000;
 constexpr DWORD toneFrequency = 440;
 constexpr DWORD toneDurationMilliseconds = 250;
@@ -41,6 +45,8 @@ bool wPressed = false;
 bool sPressed = false;
 bool aPressed = false;
 bool dPressed = false;
+bool jPressed = false;
+bool slashRequested = false;
 bool spacePressed = false;
 bool tonePlaying = false;
 BYTE toneSamples[toneSampleCount];
@@ -61,6 +67,18 @@ BITMAPINFO framebufferInfo
 
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'J')
+    {
+        bool pressed = message == WM_KEYDOWN;
+        if (pressed && !jPressed)
+        {
+            slashRequested = true;
+        }
+
+        jPressed = pressed;
+        return 0;
+    }
+
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == VK_SPACE)
     {
         bool pressed = message == WM_KEYDOWN;
@@ -318,6 +336,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     const LONGLONG updateInterval = performanceFrequency.QuadPart / updatesPerSecond;
     float playerX = static_cast<float>(playerCenterX);
     float playerY = static_cast<float>(playerCenterY);
+    LONG facingX = 1;
+    LONG facingY = 0;
+    LONG slashLeft = 0;
+    LONG slashTop = 0;
+    LONG slashRight = 0;
+    LONG slashBottom = 0;
+    float slashVisualRemaining = 0.0f;
+    float slashCooldownRemaining = 0.0f;
+    float enemyHitRemaining = 0.0f;
     float detectionProgress = 0.0f;
     float lostSightElapsed = 0.0f;
     bool enemyAlert = false;
@@ -358,6 +385,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             previousUpdate = currentTime;
             LONG movementX = static_cast<LONG>(dPressed) - static_cast<LONG>(aPressed);
             LONG movementY = static_cast<LONG>(sPressed) - static_cast<LONG>(wPressed);
+            if (movementX || movementY)
+            {
+                facingX = movementX;
+                facingY = movementY;
+            }
             float movementScale = movementX && movementY ? 0.70710678f : 1.0f;
             float movementDeltaX = movementX * playerMoveSpeed * movementScale * deltaTime;
             float movementDeltaY = movementY * playerMoveSpeed * movementScale * deltaTime;
@@ -405,6 +437,71 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     : wallBottom + playerHalfHeight;
             }
             playerY = nextPlayerY;
+
+            if (slashVisualRemaining > 0.0f)
+            {
+                slashVisualRemaining -= deltaTime;
+            }
+            if (slashCooldownRemaining > 0.0f)
+            {
+                slashCooldownRemaining -= deltaTime;
+            }
+            if (enemyHitRemaining > 0.0f)
+            {
+                enemyHitRemaining -= deltaTime;
+            }
+
+            if (slashRequested)
+            {
+                if (slashCooldownRemaining <= 0.0f)
+                {
+                    LONG slashCenterX = static_cast<LONG>(playerX);
+                    LONG slashCenterY = static_cast<LONG>(playerY);
+                    if (facingX < 0)
+                    {
+                        slashRight = slashCenterX - playerWidth / 2;
+                        slashLeft = slashRight - slashReach;
+                    }
+                    else if (facingX > 0)
+                    {
+                        slashLeft = slashCenterX + playerWidth / 2;
+                        slashRight = slashLeft + slashReach;
+                    }
+                    else
+                    {
+                        slashLeft = slashCenterX - slashWidth / 2;
+                        slashRight = slashLeft + slashWidth;
+                    }
+
+                    if (facingY < 0)
+                    {
+                        slashBottom = slashCenterY - playerHeight / 2;
+                        slashTop = slashBottom - slashReach;
+                    }
+                    else if (facingY > 0)
+                    {
+                        slashTop = slashCenterY + playerHeight / 2;
+                        slashBottom = slashTop + slashReach;
+                    }
+                    else
+                    {
+                        slashTop = slashCenterY - slashWidth / 2;
+                        slashBottom = slashTop + slashWidth;
+                    }
+
+                    slashVisualRemaining = slashVisualDuration;
+                    slashCooldownRemaining = slashCooldownDuration;
+                    if (slashLeft < enemyLeft + enemyWidth
+                        && slashRight > enemyLeft
+                        && slashTop < enemyTop + enemyHeight
+                        && slashBottom > enemyTop)
+                    {
+                        enemyHitRemaining = slashVisualDuration;
+                    }
+                }
+                slashRequested = false;
+            }
+
             float visionX = playerX - enemyCenterX;
             float visionY = playerY - enemyCenterY;
             float visionDistanceY = visionY;
@@ -513,6 +610,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
             }
 
+            if (slashVisualRemaining > 0.0f)
+            {
+                for (LONG y = slashTop; y < slashBottom; ++y)
+                {
+                    for (LONG x = slashLeft; x < slashRight; ++x)
+                    {
+                        if (x >= 0 && x < framebufferWidth && y >= 0 && y < framebufferHeight
+                            && (x == slashLeft || x == slashRight - 1
+                                || y == slashTop || y == slashBottom - 1))
+                        {
+                            framebuffer[y * framebufferWidth + x] = 0x00E0E0E0;
+                        }
+                    }
+                }
+            }
+
             for (LONG y = 0; y < enemyHeight; ++y)
             {
                 for (LONG x = 0; x < enemyWidth; ++x)
@@ -524,7 +637,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     if (head || body || arm || leg)
                     {
                         framebuffer[(enemyTop + y) * framebufferWidth + enemyLeft + x]
-                            = head ? 0x00FF4040 : 0x00A02020;
+                            = enemyHitRemaining > 0.0f
+                                ? 0x00FFFFFF
+                                : (head ? 0x00FF4040 : 0x00A02020);
                     }
                 }
             }
