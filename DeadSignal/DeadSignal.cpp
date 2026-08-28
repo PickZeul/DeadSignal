@@ -46,15 +46,15 @@ constexpr DWORD toneSampleCount = toneSampleRate * toneDurationMilliseconds / 10
 
 DWORD framebuffer[framebufferWidth * framebufferHeight];
 
-bool wPressed = false;
-bool sPressed = false;
-bool aPressed = false;
-bool dPressed = false;
-bool jPressed = false;
+bool upPressed = false;
+bool downPressed = false;
+bool leftPressed = false;
+bool rightPressed = false;
+bool zPressed = false;
 bool slashRequested = false;
-bool kPressed = false;
+bool xPressed = false;
 bool dashRequested = false;
-bool lPressed = false;
+bool cPressed = false;
 bool executeRequested = false;
 bool spacePressed = false;
 bool tonePlaying = false;
@@ -76,39 +76,39 @@ BITMAPINFO framebufferInfo
 
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
-    if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'L')
+    if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'C')
     {
         bool pressed = message == WM_KEYDOWN;
-        if (pressed && !lPressed)
+        if (pressed && !cPressed)
         {
             executeRequested = true;
         }
 
-        lPressed = pressed;
+        cPressed = pressed;
         return 0;
     }
 
-    if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'K')
+    if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'X')
     {
         bool pressed = message == WM_KEYDOWN;
-        if (pressed && !kPressed)
+        if (pressed && !xPressed)
         {
             dashRequested = true;
         }
 
-        kPressed = pressed;
+        xPressed = pressed;
         return 0;
     }
 
-    if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'J')
+    if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'Z')
     {
         bool pressed = message == WM_KEYDOWN;
-        if (pressed && !jPressed)
+        if (pressed && !zPressed)
         {
             slashRequested = true;
         }
 
-        jPressed = pressed;
+        zPressed = pressed;
         return 0;
     }
 
@@ -126,24 +126,24 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     }
 
     if ((message == WM_KEYDOWN || message == WM_KEYUP)
-        && (wParam == 'W' || wParam == 'S' || wParam == 'A' || wParam == 'D'))
+        && (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_LEFT || wParam == VK_RIGHT))
     {
         bool pressed = message == WM_KEYDOWN;
-        if (wParam == 'W')
+        if (wParam == VK_UP)
         {
-            wPressed = pressed;
+            upPressed = pressed;
         }
-        else if (wParam == 'S')
+        else if (wParam == VK_DOWN)
         {
-            sPressed = pressed;
+            downPressed = pressed;
         }
-        else if (wParam == 'A')
+        else if (wParam == VK_LEFT)
         {
-            aPressed = pressed;
+            leftPressed = pressed;
         }
         else
         {
-            dPressed = pressed;
+            rightPressed = pressed;
         }
 
         return 0;
@@ -423,8 +423,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             float deltaTime = static_cast<float>(currentTime.QuadPart - previousUpdate.QuadPart)
                 / static_cast<float>(performanceFrequency.QuadPart);
             previousUpdate = currentTime;
-            LONG movementX = static_cast<LONG>(dPressed) - static_cast<LONG>(aPressed);
-            LONG movementY = static_cast<LONG>(sPressed) - static_cast<LONG>(wPressed);
+            LONG movementX = static_cast<LONG>(rightPressed) - static_cast<LONG>(leftPressed);
+            LONG movementY = static_cast<LONG>(downPressed) - static_cast<LONG>(upPressed);
             if (movementX || movementY)
             {
                 facingX = movementX;
