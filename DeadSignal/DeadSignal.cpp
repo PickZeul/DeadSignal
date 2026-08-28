@@ -46,6 +46,14 @@ constexpr DWORD toneSampleCount = toneSampleRate * toneDurationMilliseconds / 10
 
 DWORD framebuffer[framebufferWidth * framebufferHeight];
 
+constexpr LONG titleMainState = 0;
+constexpr LONG gameStartMenuState = 1;
+constexpr LONG gameplayState = 2;
+LONG applicationState = titleMainState;
+LONG menuSelection = 0;
+LONG titleStatus = 0;
+bool newGameRequested = false;
+bool gameplayInputBlocked = false;
 bool upPressed = false;
 bool downPressed = false;
 bool leftPressed = false;
@@ -79,49 +87,115 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'C')
     {
         bool pressed = message == WM_KEYDOWN;
-        if (pressed && !cPressed)
+        if (applicationState == gameplayState && !gameplayInputBlocked
+            && pressed && !cPressed)
         {
             executeRequested = true;
         }
 
         cPressed = pressed;
+        if (gameplayInputBlocked && !upPressed && !downPressed && !leftPressed && !rightPressed
+            && !zPressed && !xPressed && !cPressed && !spacePressed)
+        {
+            gameplayInputBlocked = false;
+        }
         return 0;
     }
 
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'X')
     {
         bool pressed = message == WM_KEYDOWN;
-        if (pressed && !xPressed)
+        if (applicationState == gameplayState && !gameplayInputBlocked
+            && pressed && !xPressed)
         {
             dashRequested = true;
         }
 
         xPressed = pressed;
+        if (gameplayInputBlocked && !upPressed && !downPressed && !leftPressed && !rightPressed
+            && !zPressed && !xPressed && !cPressed && !spacePressed)
+        {
+            gameplayInputBlocked = false;
+        }
         return 0;
     }
 
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'Z')
     {
         bool pressed = message == WM_KEYDOWN;
-        if (pressed && !zPressed)
+        if (applicationState == gameplayState)
         {
-            slashRequested = true;
+            if (!gameplayInputBlocked && pressed && !zPressed)
+            {
+                slashRequested = true;
+            }
+        }
+        else if (pressed && !zPressed)
+        {
+            titleStatus = 0;
+            if (applicationState == titleMainState)
+            {
+                if (menuSelection == 0)
+                {
+                    applicationState = gameStartMenuState;
+                    menuSelection = 0;
+                }
+                else if (menuSelection == 1)
+                {
+                    titleStatus = 1;
+                }
+                else if (menuSelection == 2)
+                {
+                    titleStatus = 2;
+                }
+                else
+                {
+                    DestroyWindow(window);
+                }
+            }
+            else if (menuSelection == 0)
+            {
+                applicationState = gameplayState;
+                newGameRequested = true;
+            }
+            else if (menuSelection == 1)
+            {
+                titleStatus = 1;
+            }
+            else
+            {
+                applicationState = titleMainState;
+                menuSelection = 0;
+            }
+
+            InvalidateRect(window, nullptr, FALSE);
         }
 
         zPressed = pressed;
+        if (gameplayInputBlocked && !upPressed && !downPressed && !leftPressed && !rightPressed
+            && !zPressed && !xPressed && !cPressed && !spacePressed)
+        {
+            gameplayInputBlocked = false;
+        }
         return 0;
     }
 
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == VK_SPACE)
     {
         bool pressed = message == WM_KEYDOWN;
-        if (pressed && !spacePressed && !tonePlaying
+        if (applicationState == gameplayState && !gameplayInputBlocked
+            && pressed && !spacePressed && !tonePlaying
             && waveOutWrite(audioOutput, &toneHeader, sizeof(toneHeader)) == MMSYSERR_NOERROR)
         {
             tonePlaying = true;
         }
 
         spacePressed = pressed;
+        if (gameplayInputBlocked && !upPressed && !downPressed && !leftPressed && !rightPressed
+            && !zPressed && !xPressed && !cPressed && !spacePressed)
+        {
+            gameplayInputBlocked = false;
+        }
         return 0;
     }
 
@@ -129,21 +203,48 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         && (wParam == VK_UP || wParam == VK_DOWN || wParam == VK_LEFT || wParam == VK_RIGHT))
     {
         bool pressed = message == WM_KEYDOWN;
+        bool newlyPressed = pressed;
         if (wParam == VK_UP)
         {
+            newlyPressed = pressed && !upPressed;
             upPressed = pressed;
         }
         else if (wParam == VK_DOWN)
         {
+            newlyPressed = pressed && !downPressed;
             downPressed = pressed;
         }
         else if (wParam == VK_LEFT)
         {
+            newlyPressed = pressed && !leftPressed;
             leftPressed = pressed;
         }
         else
         {
+            newlyPressed = pressed && !rightPressed;
             rightPressed = pressed;
+        }
+
+        if (applicationState != gameplayState && newlyPressed
+            && (wParam == VK_UP || wParam == VK_DOWN))
+        {
+            if (wParam == VK_UP && menuSelection > 0)
+            {
+                --menuSelection;
+            }
+            else if (wParam == VK_DOWN
+                && menuSelection < (applicationState == titleMainState ? 3 : 2))
+            {
+                ++menuSelection;
+            }
+            titleStatus = 0;
+            InvalidateRect(window, nullptr, FALSE);
+        }
+        else if (gameplayInputBlocked && !upPressed && !downPressed
+            && !leftPressed && !rightPressed && !zPressed && !xPressed
+            && !cPressed && !spacePressed)
+        {
+            gameplayInputBlocked = false;
         }
 
         return 0;
@@ -156,6 +257,57 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         RECT clientArea{};
         GetClientRect(window, &clientArea);
         FillRect(deviceContext, &clientArea, reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+
+        if (applicationState != gameplayState)
+        {
+            SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
+            SetBkMode(deviceContext, TRANSPARENT);
+            SetTextColor(deviceContext, RGB(220, 220, 220));
+            int clientHeight = clientArea.bottom - clientArea.top;
+            RECT line = clientArea;
+            line.top = clientHeight / 5;
+            line.bottom = line.top + 30;
+            DrawTextW(deviceContext, L"DEAD SIGNAL", -1, &line,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            for (LONG item = 0; item < (applicationState == titleMainState ? 4 : 3); ++item)
+            {
+                const wchar_t* text;
+                if (applicationState == titleMainState)
+                {
+                    text = item == 0 ? L"\uAC8C\uC784 \uC2DC\uC791"
+                        : (item == 1 ? L"\uC774\uC5B4\uD558\uAE30"
+                            : (item == 2 ? L"\uC124\uC815" : L"\uC885\uB8CC"));
+                }
+                else
+                {
+                    text = item == 0 ? L"\uC0C8 \uAC8C\uC784"
+                        : (item == 1 ? L"\uBD88\uB7EC\uC624\uAE30" : L"\uB4A4\uB85C");
+                }
+
+                line.top = clientHeight / 5 + 50 + item * 30;
+                line.bottom = line.top + 24;
+                SetTextColor(deviceContext,
+                    item == menuSelection ? RGB(255, 216, 0) : RGB(160, 160, 160));
+                DrawTextW(deviceContext, text, -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+
+            if (titleStatus)
+            {
+                line.top = clientHeight / 5 + 190;
+                line.bottom = line.top + 24;
+                SetTextColor(deviceContext, RGB(220, 220, 220));
+                DrawTextW(deviceContext,
+                    titleStatus == 1
+                        ? L"\uC800\uC7A5 \uAE30\uB2A5 \uBBF8\uAD6C\uD604"
+                        : L"\uC124\uC815 \uC900\uBE44 \uC911",
+                    -1, &line, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+
+            EndPaint(window, &paint);
+            return 0;
+        }
 
         int clientWidth = clientArea.right - clientArea.left;
         int clientHeight = clientArea.bottom - clientArea.top;
@@ -416,6 +568,47 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             tonePlaying = false;
         }
 
+        if (newGameRequested)
+        {
+            playerX = static_cast<float>(playerCenterX);
+            playerY = static_cast<float>(playerCenterY);
+            facingX = 1;
+            facingY = 0;
+            dashDirectionX = 0;
+            dashDirectionY = 0;
+            dashDistanceRemaining = 0.0f;
+            dashCooldownRemaining = 0.0f;
+            dashActive = false;
+            slashLeft = 0;
+            slashTop = 0;
+            slashRight = 0;
+            slashBottom = 0;
+            slashVisualRemaining = 0.0f;
+            slashCooldownRemaining = 0.0f;
+            enemyHitRemaining = 0.0f;
+            executeFeedbackRemaining = 0.0f;
+            detectionProgress = 0.0f;
+            lostSightElapsed = 0.0f;
+            enemyAlert = false;
+            enemyAlive = true;
+            updateColor = 0x00FF0000;
+            slashRequested = false;
+            dashRequested = false;
+            executeRequested = false;
+            gameplayInputBlocked = upPressed || downPressed || leftPressed || rightPressed
+                || zPressed || xPressed || cPressed || spacePressed;
+            newGameRequested = false;
+            QueryPerformanceCounter(&previousUpdate);
+            InvalidateRect(window, nullptr, FALSE);
+        }
+
+        if (applicationState != gameplayState)
+        {
+            QueryPerformanceCounter(&previousUpdate);
+            Sleep(1);
+            continue;
+        }
+
         LARGE_INTEGER currentTime{};
         QueryPerformanceCounter(&currentTime);
         if (currentTime.QuadPart - previousUpdate.QuadPart >= updateInterval)
@@ -423,8 +616,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             float deltaTime = static_cast<float>(currentTime.QuadPart - previousUpdate.QuadPart)
                 / static_cast<float>(performanceFrequency.QuadPart);
             previousUpdate = currentTime;
-            LONG movementX = static_cast<LONG>(rightPressed) - static_cast<LONG>(leftPressed);
-            LONG movementY = static_cast<LONG>(downPressed) - static_cast<LONG>(upPressed);
+            LONG movementX = gameplayInputBlocked ? 0
+                : static_cast<LONG>(rightPressed) - static_cast<LONG>(leftPressed);
+            LONG movementY = gameplayInputBlocked ? 0
+                : static_cast<LONG>(downPressed) - static_cast<LONG>(upPressed);
             if (movementX || movementY)
             {
                 facingX = movementX;
