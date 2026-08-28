@@ -42,6 +42,9 @@ constexpr float enemyFacingTurnSpeed = 2.0943951f;
 constexpr float enemyScanAngle = 0.47996554f;
 constexpr float enemyAlertSearchDuration = 10.0f;
 constexpr float enemyScanDuration = 2.0f;
+constexpr float enemyAttackCooldownDuration = 1.0f;
+constexpr float enemyAttackContactTolerance = 1.0f;
+constexpr float playerHitFeedbackDuration = 0.10f;
 constexpr float detectionFillDuration = 3.0f;
 constexpr float lostSightHoldDuration = 0.5f;
 constexpr LONG navigationCellSize = 8;
@@ -873,6 +876,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     bool enemyScanning = false;
     float scanElapsed = 0.0f;
     float scanBaseFacing = 0.0f;
+    LONG playerHP = 10;
+    bool playerAlive = true;
+    LONG enemyHP = 3;
+    float enemyAttackCooldownRemaining = 0.0f;
+    float playerHitRemaining = 0.0f;
     LONG dashDirectionX = 0;
     LONG dashDirectionY = 0;
     float dashDistanceRemaining = 0.0f;
@@ -944,6 +952,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             enemyScanning = false;
             scanElapsed = 0.0f;
             scanBaseFacing = 0.0f;
+            playerHP = 10;
+            playerAlive = true;
+            enemyHP = 3;
+            enemyAttackCooldownRemaining = 0.0f;
+            playerHitRemaining = 0.0f;
             dashDirectionX = 0;
             dashDirectionY = 0;
             dashDistanceRemaining = 0.0f;
@@ -986,9 +999,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             float deltaTime = static_cast<float>(currentTime.QuadPart - previousUpdate.QuadPart)
                 / static_cast<float>(performanceFrequency.QuadPart);
             previousUpdate = currentTime;
-            LONG movementX = gameplayInputBlocked ? 0
+            LONG movementX = gameplayInputBlocked || !playerAlive ? 0
                 : static_cast<LONG>(rightPressed) - static_cast<LONG>(leftPressed);
-            LONG movementY = gameplayInputBlocked ? 0
+            LONG movementY = gameplayInputBlocked || !playerAlive ? 0
                 : static_cast<LONG>(downPressed) - static_cast<LONG>(upPressed);
             if (movementX || movementY)
             {
@@ -1001,7 +1014,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             }
             if (dashRequested)
             {
-                if (!dashActive && dashCooldownRemaining <= 0.0f)
+                if (playerAlive && !dashActive && dashCooldownRemaining <= 0.0f)
                 {
                     dashDirectionX = facingX;
                     dashDirectionY = facingY;
@@ -1100,7 +1113,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             }
 
             playerInVision = false;
-            if (enemyAlive && !enemyAlert)
+            if (enemyAlive && playerAlive && !enemyAlert)
             {
                 float facingX = cosf(enemyFacingAngle);
                 float facingY = sinf(enemyFacingAngle);
@@ -1177,7 +1190,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
             }
 
-            if (enemyAlive)
+            if (enemyAlive && playerAlive)
             {
                 if (enemyAlert)
                 {
@@ -1378,6 +1391,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             {
                 enemyHitRemaining -= deltaTime;
             }
+            if (playerHitRemaining > 0.0f)
+            {
+                playerHitRemaining -= deltaTime;
+            }
+            if (enemyAttackCooldownRemaining > 0.0f)
+            {
+                enemyAttackCooldownRemaining -= deltaTime;
+            }
             if (executeFeedbackRemaining > 0.0f)
             {
                 executeFeedbackRemaining -= deltaTime;
@@ -1385,7 +1406,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
             if (slashRequested)
             {
-                if (!playerDashingThisUpdate && slashCooldownRemaining <= 0.0f)
+                if (playerAlive && !playerDashingThisUpdate
+                    && slashCooldownRemaining <= 0.0f)
                 {
                     LONG slashCenterX = static_cast<LONG>(playerX);
                     LONG slashCenterY = static_cast<LONG>(playerY);
@@ -1430,6 +1452,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         && slashBottom > enemyTop)
                     {
                         enemyHitRemaining = slashVisualDuration;
+                        --enemyHP;
+                        if (enemyHP <= 0)
+                        {
+                            enemyHP = 0;
+                            enemyAlive = false;
+                            slashCooldownRemaining = 0.0f;
+                            dashCooldownRemaining = 0.0f;
+                            playerInVision = false;
+                            searchTargetValid = false;
+                            searchPathCount = 0;
+                            searchPathIndex = 0;
+                            enemyScanning = false;
+                        }
                     }
                 }
                 slashRequested = false;
@@ -1437,7 +1472,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
             if (executeRequested)
             {
-                if (enemyAlive && detectionProgress <= 0.0f)
+                if (playerAlive && enemyAlive && detectionProgress <= 0.0f)
                 {
                     LONG executeCenterX = static_cast<LONG>(playerX);
                     LONG executeCenterY = static_cast<LONG>(playerY);
@@ -1482,6 +1517,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         && executeTop < enemyTop + enemyHeight
                         && executeBottom > enemyTop)
                     {
+                        enemyHP = 0;
                         enemyAlive = false;
                         executeFeedbackRemaining = slashVisualDuration;
                         slashCooldownRemaining = 0.0f;
@@ -1494,6 +1530,33 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     }
                 }
                 executeRequested = false;
+            }
+
+            if (playerAlive && enemyAlive && enemyAlert
+                && enemyAttackCooldownRemaining <= 0.0f
+                && enemyX - enemyHalfWidth <= playerX + playerHalfWidth
+                    + enemyAttackContactTolerance
+                && enemyX + enemyHalfWidth + enemyAttackContactTolerance
+                    >= playerX - playerHalfWidth
+                && enemyY - enemyHalfHeight <= playerY + playerHalfHeight
+                    + enemyAttackContactTolerance
+                && enemyY + enemyHalfHeight + enemyAttackContactTolerance
+                    >= playerY - playerHalfHeight)
+            {
+                --playerHP;
+                playerHitRemaining = playerHitFeedbackDuration;
+                enemyAttackCooldownRemaining = enemyAttackCooldownDuration;
+                if (playerHP <= 0)
+                {
+                    playerHP = 0;
+                    playerAlive = false;
+                    dashActive = false;
+                    dashDistanceRemaining = 0.0f;
+                    slashRequested = false;
+                    dashRequested = false;
+                    executeRequested = false;
+                    playerInVision = false;
+                }
             }
             updateColor = (updateColor + 0x00050000) & 0x00FF0000;
 
@@ -1673,7 +1736,50 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     {
                         framebuffer[pixelY * framebufferWidth + pixelX]
                             = head ? 0x00FFFFFF
-                            : (playerDashingThisUpdate ? 0x0080FFFF : 0x0000A0FF);
+                            : (!playerAlive ? 0x00404050
+                                : (playerHitRemaining > 0.0f ? 0x00FFFFFF
+                                    : (playerDashingThisUpdate
+                                        ? 0x0080FFFF : 0x0000A0FF)));
+                    }
+                }
+            }
+
+            if (!playerAlive)
+            {
+                constexpr LONG deadLeft = framebufferWidth / 2 - 8;
+                constexpr LONG deadTop = framebufferHeight / 2 - 14;
+                for (LONG y = 0; y < 5; ++y)
+                {
+                    for (LONG x = 0; x < 15; ++x)
+                    {
+                        LONG letter = x / 4;
+                        LONG letterX = x & 3;
+                        bool deadPixel = false;
+                        if (letterX < 3)
+                        {
+                            if (letter == 0 || letter == 3)
+                            {
+                                deadPixel = letterX == 0
+                                    || (letterX == 2 && y > 0 && y < 4)
+                                    || ((y == 0 || y == 4) && letterX < 2);
+                            }
+                            else if (letter == 1)
+                            {
+                                deadPixel = letterX == 0
+                                    || (letterX < 3 && (y == 0 || y == 2 || y == 4));
+                            }
+                            else
+                            {
+                                deadPixel = (y == 0 && letterX == 1)
+                                    || (y > 0 && (letterX == 0 || letterX == 2))
+                                    || y == 2;
+                            }
+                        }
+                        if (deadPixel)
+                        {
+                            framebuffer[(deadTop + y) * framebufferWidth + deadLeft + x]
+                                = 0x00FF4040;
+                        }
                     }
                 }
             }
