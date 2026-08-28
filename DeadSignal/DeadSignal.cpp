@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <timeapi.h>
+#include <math.h>
 
 #pragma comment(lib, "winmm.lib")
 
@@ -22,14 +23,31 @@ constexpr LONG wallRight = wallLeft + wallWidth;
 constexpr LONG wallBottom = wallTop + wallHeight;
 constexpr LONG enemyWidth = 8;
 constexpr LONG enemyHeight = 12;
-constexpr LONG enemyCenterX = 120;
-constexpr LONG enemyCenterY = 90;
-constexpr LONG enemyLeft = enemyCenterX - enemyWidth / 2;
-constexpr LONG enemyTop = enemyCenterY - enemyHeight / 2;
+constexpr float enemyInitialX = 120.0f;
+constexpr float enemyInitialY = 90.0f;
+constexpr LONG enemyInitialCenterX = 120;
+constexpr LONG enemyInitialCenterY = 90;
+constexpr LONG enemyInitialLeft = enemyInitialCenterX - enemyWidth / 2;
+constexpr LONG enemyInitialTop = enemyInitialCenterY - enemyHeight / 2;
+constexpr float enemyHalfWidth = enemyWidth / 2.0f;
+constexpr float enemyHalfHeight = enemyHeight / 2.0f;
+constexpr float enemyPatrolLeftPoint = 80.0f;
+constexpr float enemyPatrolRightPoint = 140.0f;
+constexpr float enemyPatrolSpeed = 24.0f;
+constexpr float enemyAlertSpeed = 58.0f;
 constexpr LONG enemyVisionRange = 70;
 constexpr float enemyVisionSlope = 0.520567f;
+constexpr float enemyReacquireRangeSquared = 42.0f * 42.0f;
+constexpr float enemyFacingTurnSpeed = 2.0943951f;
+constexpr float enemyScanAngle = 0.47996554f;
+constexpr float enemyAlertSearchDuration = 10.0f;
+constexpr float enemyScanDuration = 2.0f;
 constexpr float detectionFillDuration = 3.0f;
 constexpr float lostSightHoldDuration = 0.5f;
+constexpr LONG navigationCellSize = 8;
+constexpr LONG navigationColumns = 40;
+constexpr LONG navigationRows = 22;
+constexpr LONG navigationNodeCount = navigationColumns * navigationRows;
 constexpr LONG slashReach = 8;
 constexpr LONG slashWidth = 8;
 constexpr float slashVisualDuration = 0.10f;
@@ -69,6 +87,10 @@ bool tonePlaying = false;
 BYTE toneSamples[toneSampleCount];
 HWAVEOUT audioOutput = nullptr;
 WAVEHDR toneHeader{};
+short navigationParent[navigationNodeCount];
+unsigned short navigationScore[navigationNodeCount];
+BYTE navigationState[navigationNodeCount];
+unsigned short navigationPath[navigationNodeCount];
 
 BITMAPINFO framebufferInfo
 {
@@ -81,6 +103,312 @@ BITMAPINFO framebufferInfo
         BI_RGB
     }
 };
+
+bool WallBlocksSegment(float startX, float startY, float endX, float endY)
+{
+    float enter = 0.0f;
+    float exit = 1.0f;
+    float difference = endX - startX;
+    if (difference == 0.0f)
+    {
+        if (startX < wallLeft || startX >= wallRight)
+        {
+            return false;
+        }
+    }
+    else
+    {
+        float first = (wallLeft - startX) / difference;
+        float second = (wallRight - startX) / difference;
+        if (first > second)
+        {
+            float swap = first;
+            first = second;
+            second = swap;
+        }
+        if (first > enter)
+        {
+            enter = first;
+        }
+        if (second < exit)
+        {
+            exit = second;
+        }
+        if (enter > exit)
+        {
+            return false;
+        }
+    }
+
+    difference = endY - startY;
+    if (difference == 0.0f)
+    {
+        if (startY < wallTop || startY >= wallBottom)
+        {
+            return false;
+        }
+    }
+    else
+    {
+        float first = (wallTop - startY) / difference;
+        float second = (wallBottom - startY) / difference;
+        if (first > second)
+        {
+            float swap = first;
+            first = second;
+            second = swap;
+        }
+        if (first > enter)
+        {
+            enter = first;
+        }
+        if (second < exit)
+        {
+            exit = second;
+        }
+    }
+
+    return enter <= exit && exit >= 0.0f && enter <= 1.0f;
+}
+
+float TurnToward(float angle, float target, float amount)
+{
+    constexpr float pi = 3.14159265f;
+    constexpr float twoPi = pi * 2.0f;
+    float difference = target - angle;
+    while (difference > pi)
+    {
+        difference -= twoPi;
+    }
+    while (difference < -pi)
+    {
+        difference += twoPi;
+    }
+    if (difference > amount)
+    {
+        difference = amount;
+    }
+    else if (difference < -amount)
+    {
+        difference = -amount;
+    }
+    return angle + difference;
+}
+
+bool NavigationCellValid(LONG column, LONG row)
+{
+    if (column < 0 || column >= navigationColumns || row < 0 || row >= navigationRows)
+    {
+        return false;
+    }
+    float centerX = enemyHalfWidth + column * navigationCellSize;
+    float centerY = enemyHalfHeight + row * navigationCellSize;
+    return !(centerX - enemyHalfWidth < wallRight
+        && centerX + enemyHalfWidth > wallLeft
+        && centerY - enemyHalfHeight < wallBottom
+        && centerY + enemyHalfHeight > wallTop);
+}
+
+LONG NavigationColumn(float x)
+{
+    LONG column = static_cast<LONG>((x - enemyHalfWidth + navigationCellSize * 0.5f)
+        / navigationCellSize);
+    if (column < 0)
+    {
+        return 0;
+    }
+    if (column >= navigationColumns)
+    {
+        return navigationColumns - 1;
+    }
+    return column;
+}
+
+LONG NavigationRow(float y)
+{
+    LONG row = static_cast<LONG>((y - enemyHalfHeight + navigationCellSize * 0.5f)
+        / navigationCellSize);
+    if (row < 0)
+    {
+        return 0;
+    }
+    if (row >= navigationRows)
+    {
+        return navigationRows - 1;
+    }
+    return row;
+}
+
+LONG FindEnemyPath(float startX, float startY, LONG targetColumn, LONG targetRow)
+{
+    LONG startColumn = NavigationColumn(startX);
+    LONG startRow = NavigationRow(startY);
+    LONG start = startRow * navigationColumns + startColumn;
+    LONG target = targetRow * navigationColumns + targetColumn;
+    for (LONG node = 0; node < navigationNodeCount; ++node)
+    {
+        navigationParent[node] = -1;
+        navigationScore[node] = 0xFFFF;
+        navigationState[node] = 0;
+    }
+    navigationScore[start] = 0;
+    navigationState[start] = 1;
+
+    for (;;)
+    {
+        LONG current = -1;
+        LONG best = 0x7FFFFFFF;
+        for (LONG node = 0; node < navigationNodeCount; ++node)
+        {
+            if (navigationState[node] == 1)
+            {
+                LONG column = node % navigationColumns;
+                LONG row = node / navigationColumns;
+                LONG heuristic = column > targetColumn
+                    ? column - targetColumn : targetColumn - column;
+                heuristic += row > targetRow ? row - targetRow : targetRow - row;
+                LONG estimate = navigationScore[node] + heuristic;
+                if (estimate < best)
+                {
+                    best = estimate;
+                    current = node;
+                }
+            }
+        }
+        if (current < 0)
+        {
+            return 0;
+        }
+        if (current == target)
+        {
+            LONG count = 0;
+            while (current != start && count < navigationNodeCount)
+            {
+                navigationPath[count++] = static_cast<unsigned short>(current);
+                current = navigationParent[current];
+            }
+            for (LONG index = 0; index < count / 2; ++index)
+            {
+                unsigned short swap = navigationPath[index];
+                navigationPath[index] = navigationPath[count - index - 1];
+                navigationPath[count - index - 1] = swap;
+            }
+            return count;
+        }
+
+        navigationState[current] = 2;
+        LONG currentColumn = current % navigationColumns;
+        LONG currentRow = current / navigationColumns;
+        constexpr LONG neighborX[4] = { -1, 1, 0, 0 };
+        constexpr LONG neighborY[4] = { 0, 0, -1, 1 };
+        for (LONG neighbor = 0; neighbor < 4; ++neighbor)
+        {
+            LONG column = currentColumn + neighborX[neighbor];
+            LONG row = currentRow + neighborY[neighbor];
+            if (!NavigationCellValid(column, row))
+            {
+                continue;
+            }
+            LONG next = row * navigationColumns + column;
+            unsigned short score = navigationScore[current] + 1;
+            if (score < navigationScore[next])
+            {
+                navigationScore[next] = score;
+                navigationParent[next] = static_cast<short>(current);
+                navigationState[next] = 1;
+            }
+        }
+    }
+}
+
+bool MoveEnemyToward(float& enemyX, float& enemyY, float targetX, float targetY,
+    float speed, float deltaTime, float playerX, float playerY)
+{
+    float differenceX = targetX - enemyX;
+    float differenceY = targetY - enemyY;
+    float distance = sqrtf(differenceX * differenceX + differenceY * differenceY);
+    if (distance < 0.01f)
+    {
+        return true;
+    }
+    float movement = speed * deltaTime;
+    if (movement > distance)
+    {
+        movement = distance;
+    }
+    float movementDeltaX = differenceX / distance * movement;
+    float movementDeltaY = differenceY / distance * movement;
+    float largestDelta = movementDeltaX < 0.0f ? -movementDeltaX : movementDeltaX;
+    float absoluteY = movementDeltaY < 0.0f ? -movementDeltaY : movementDeltaY;
+    if (absoluteY > largestDelta)
+    {
+        largestDelta = absoluteY;
+    }
+    LONG movementSteps = static_cast<LONG>(largestDelta) + 1;
+    movementDeltaX /= movementSteps;
+    movementDeltaY /= movementSteps;
+    for (LONG step = 0; step < movementSteps; ++step)
+    {
+        float nextX = enemyX + movementDeltaX;
+        if (nextX < enemyHalfWidth)
+        {
+            nextX = enemyHalfWidth;
+        }
+        else if (nextX > framebufferWidth - enemyHalfWidth)
+        {
+            nextX = framebufferWidth - enemyHalfWidth;
+        }
+        if (movementDeltaX != 0.0f
+            && nextX - enemyHalfWidth < wallRight
+            && nextX + enemyHalfWidth > wallLeft
+            && enemyY - enemyHalfHeight < wallBottom
+            && enemyY + enemyHalfHeight > wallTop)
+        {
+            nextX = movementDeltaX > 0.0f
+                ? wallLeft - enemyHalfWidth : wallRight + enemyHalfWidth;
+        }
+        if (movementDeltaX != 0.0f
+            && nextX - enemyHalfWidth < playerX + playerHalfWidth
+            && nextX + enemyHalfWidth > playerX - playerHalfWidth
+            && enemyY - enemyHalfHeight < playerY + playerHalfHeight
+            && enemyY + enemyHalfHeight > playerY - playerHalfHeight)
+        {
+            nextX = enemyX;
+        }
+        enemyX = nextX;
+
+        float nextY = enemyY + movementDeltaY;
+        if (nextY < enemyHalfHeight)
+        {
+            nextY = enemyHalfHeight;
+        }
+        else if (nextY > framebufferHeight - enemyHalfHeight)
+        {
+            nextY = framebufferHeight - enemyHalfHeight;
+        }
+        if (movementDeltaY != 0.0f
+            && enemyX - enemyHalfWidth < wallRight
+            && enemyX + enemyHalfWidth > wallLeft
+            && nextY - enemyHalfHeight < wallBottom
+            && nextY + enemyHalfHeight > wallTop)
+        {
+            nextY = movementDeltaY > 0.0f
+                ? wallTop - enemyHalfHeight : wallBottom + enemyHalfHeight;
+        }
+        if (movementDeltaY != 0.0f
+            && enemyX - enemyHalfWidth < playerX + playerHalfWidth
+            && enemyX + enemyHalfWidth > playerX - playerHalfWidth
+            && nextY - enemyHalfHeight < playerY + playerHalfHeight
+            && nextY + enemyHalfHeight > playerY - playerHalfHeight)
+        {
+            nextY = enemyY;
+        }
+        enemyY = nextY;
+    }
+    differenceX = targetX - enemyX;
+    differenceY = targetY - enemyY;
+    return differenceX * differenceX + differenceY * differenceY < 0.25f;
+}
 
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -407,13 +735,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         LONG visionHalfHeight = static_cast<LONG>(x * enemyVisionSlope);
         for (LONG y = -visionHalfHeight; y <= visionHalfHeight; ++y)
         {
-            LONG pixelX = enemyCenterX + x;
-            LONG pixelY = enemyCenterY + y;
+            LONG pixelX = enemyInitialCenterX + x;
+            LONG pixelY = enemyInitialCenterY + y;
             bool visionBlocked = false;
             if (pixelX > wallLeft)
             {
-                float wallAmount = static_cast<float>(wallLeft - enemyCenterX) / static_cast<float>(x);
-                float yAtWall = static_cast<float>(enemyCenterY) + static_cast<float>(y) * wallAmount;
+                float wallAmount = static_cast<float>(wallLeft - enemyInitialCenterX)
+                    / static_cast<float>(x);
+                float yAtWall = static_cast<float>(enemyInitialCenterY)
+                    + static_cast<float>(y) * wallAmount;
                 visionBlocked = yAtWall >= wallTop && yAtWall < wallBottom;
             }
 
@@ -442,7 +772,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             bool leg = y >= 9 && (x < 3 || x >= 5);
             if (head || body || arm || leg)
             {
-                framebuffer[(enemyTop + y) * framebufferWidth + enemyLeft + x]
+                framebuffer[(enemyInitialTop + y) * framebufferWidth + enemyInitialLeft + x]
                     = head ? 0x00FF4040 : 0x00A02020;
             }
         }
@@ -523,6 +853,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     float playerY = static_cast<float>(playerCenterY);
     LONG facingX = 1;
     LONG facingY = 0;
+    float enemyX = enemyInitialX;
+    float enemyY = enemyInitialY;
+    float enemyFacingAngle = 0.0f;
+    bool enemyPatrolRight = true;
+    bool enemyReturningToPatrol = false;
+    float enemyPatrolReturnX = enemyInitialX;
+    bool playerInVision = false;
+    float lastSeenPlayerX = 0.0f;
+    float lastSeenPlayerY = 0.0f;
+    bool lastSeenPlayerValid = false;
+    float alertLostElapsed = 0.0f;
+    DWORD searchRandomState = 0x13579BDF;
+    float searchTargetX = 0.0f;
+    float searchTargetY = 0.0f;
+    bool searchTargetValid = false;
+    LONG searchPathCount = 0;
+    LONG searchPathIndex = 0;
+    bool enemyScanning = false;
+    float scanElapsed = 0.0f;
+    float scanBaseFacing = 0.0f;
     LONG dashDirectionX = 0;
     LONG dashDirectionY = 0;
     float dashDistanceRemaining = 0.0f;
@@ -574,6 +924,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             playerY = static_cast<float>(playerCenterY);
             facingX = 1;
             facingY = 0;
+            enemyX = enemyInitialX;
+            enemyY = enemyInitialY;
+            enemyFacingAngle = 0.0f;
+            enemyPatrolRight = true;
+            enemyReturningToPatrol = false;
+            enemyPatrolReturnX = enemyInitialX;
+            playerInVision = false;
+            lastSeenPlayerX = 0.0f;
+            lastSeenPlayerY = 0.0f;
+            lastSeenPlayerValid = false;
+            alertLostElapsed = 0.0f;
+            searchRandomState = 0x13579BDF;
+            searchTargetX = 0.0f;
+            searchTargetY = 0.0f;
+            searchTargetValid = false;
+            searchPathCount = 0;
+            searchPathIndex = 0;
+            enemyScanning = false;
+            scanElapsed = 0.0f;
+            scanBaseFacing = 0.0f;
             dashDirectionX = 0;
             dashDirectionY = 0;
             dashDistanceRemaining = 0.0f;
@@ -729,6 +1099,273 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 playerY = nextPlayerY;
             }
 
+            playerInVision = false;
+            if (enemyAlive && !enemyAlert)
+            {
+                float facingX = cosf(enemyFacingAngle);
+                float facingY = sinf(enemyFacingAngle);
+                float visionX = playerX - enemyX;
+                float visionY = playerY - enemyY;
+                float visionForward = visionX * facingX + visionY * facingY;
+                float visionLateral = visionX * -facingY + visionY * facingX;
+                if (visionLateral < 0.0f)
+                {
+                    visionLateral = -visionLateral;
+                }
+                playerInVision = visionForward > 0.0f
+                    && visionForward <= enemyVisionRange
+                    && visionLateral <= visionForward * enemyVisionSlope
+                    && !WallBlocksSegment(enemyX, enemyY, playerX, playerY);
+
+                if (playerInVision)
+                {
+                    lastSeenPlayerX = playerX;
+                    lastSeenPlayerY = playerY;
+                    lastSeenPlayerValid = true;
+                    lostSightElapsed = 0.0f;
+                    enemyFacingAngle = TurnToward(enemyFacingAngle,
+                        atan2f(playerY - enemyY, playerX - enemyX),
+                        enemyFacingTurnSpeed * deltaTime);
+                    detectionProgress += deltaTime / detectionFillDuration;
+                    if (detectionProgress >= 1.0f)
+                    {
+                        detectionProgress = 1.0f;
+                        enemyAlert = true;
+                        alertLostElapsed = 0.0f;
+                        searchTargetValid = false;
+                        searchPathCount = 0;
+                        searchPathIndex = 0;
+                        enemyScanning = false;
+                    }
+                }
+                else if (detectionProgress > 0.0f)
+                {
+                    float decayTime = lostSightElapsed + deltaTime - lostSightHoldDuration;
+                    lostSightElapsed += deltaTime;
+                    if (decayTime > 0.0f)
+                    {
+                        if (decayTime > deltaTime)
+                        {
+                            decayTime = deltaTime;
+                        }
+                        detectionProgress -= decayTime / detectionFillDuration;
+                        if (detectionProgress <= 0.0f)
+                        {
+                            detectionProgress = 0.0f;
+                            lostSightElapsed = 0.0f;
+                            enemyPatrolReturnX = enemyX;
+                            if (enemyPatrolReturnX < enemyPatrolLeftPoint)
+                            {
+                                enemyPatrolReturnX = enemyPatrolLeftPoint;
+                            }
+                            else if (enemyPatrolReturnX > enemyPatrolRightPoint)
+                            {
+                                enemyPatrolReturnX = enemyPatrolRightPoint;
+                            }
+                            enemyReturningToPatrol
+                                = (enemyX - enemyPatrolReturnX) * (enemyX - enemyPatrolReturnX)
+                                + (enemyY - enemyInitialY) * (enemyY - enemyInitialY) > 0.25f;
+                            if (enemyReturningToPatrol)
+                            {
+                                searchPathCount = FindEnemyPath(enemyX, enemyY,
+                                    NavigationColumn(enemyPatrolReturnX),
+                                    NavigationRow(enemyInitialY));
+                                searchPathIndex = 0;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (enemyAlive)
+            {
+                if (enemyAlert)
+                {
+                    float playerDifferenceX = playerX - enemyX;
+                    float playerDifferenceY = playerY - enemyY;
+                    bool playerReacquired
+                        = playerDifferenceX * playerDifferenceX
+                        + playerDifferenceY * playerDifferenceY <= enemyReacquireRangeSquared
+                        && !WallBlocksSegment(enemyX, enemyY, playerX, playerY);
+                    playerInVision = playerReacquired;
+                    if (playerReacquired)
+                    {
+                        alertLostElapsed = 0.0f;
+                        searchTargetValid = false;
+                        searchPathCount = 0;
+                        searchPathIndex = 0;
+                        enemyScanning = false;
+                        enemyFacingAngle = atan2f(playerDifferenceY, playerDifferenceX);
+                        MoveEnemyToward(enemyX, enemyY, playerX, playerY,
+                            enemyAlertSpeed, deltaTime, playerX, playerY);
+                    }
+                    else
+                    {
+                        alertLostElapsed += deltaTime;
+                        if (alertLostElapsed >= enemyAlertSearchDuration)
+                        {
+                            enemyAlert = false;
+                            lostSightElapsed = lostSightHoldDuration;
+                            searchTargetValid = false;
+                            searchPathCount = 0;
+                            searchPathIndex = 0;
+                            enemyScanning = false;
+                        }
+                        else if (enemyScanning)
+                        {
+                            scanElapsed += deltaTime;
+                            if (scanElapsed < 0.5f)
+                            {
+                                enemyFacingAngle = scanBaseFacing
+                                    - enemyScanAngle * (scanElapsed / 0.5f);
+                            }
+                            else if (scanElapsed < 1.0f)
+                            {
+                                enemyFacingAngle = scanBaseFacing - enemyScanAngle
+                                    * (1.0f - (scanElapsed - 0.5f) / 0.5f);
+                            }
+                            else if (scanElapsed < 1.5f)
+                            {
+                                enemyFacingAngle = scanBaseFacing + enemyScanAngle
+                                    * ((scanElapsed - 1.0f) / 0.5f);
+                            }
+                            else if (scanElapsed < enemyScanDuration)
+                            {
+                                enemyFacingAngle = scanBaseFacing + enemyScanAngle
+                                    * (1.0f - (scanElapsed - 1.5f) / 0.5f);
+                            }
+                            else
+                            {
+                                enemyFacingAngle = scanBaseFacing;
+                                enemyScanning = false;
+                                searchTargetValid = false;
+                            }
+                        }
+                        else
+                        {
+                            if (!searchTargetValid)
+                            {
+                                constexpr float targetOffsetX[4]
+                                    = { 10.0f, -10.0f, 0.0f, 0.0f };
+                                constexpr float targetOffsetY[4]
+                                    = { 0.0f, 0.0f, 12.0f, -12.0f };
+                                searchRandomState = searchRandomState * 1664525u + 1013904223u;
+                                LONG firstCandidate = (searchRandomState >> 30) & 3;
+                                for (LONG attempt = 0; attempt < 4 && !searchTargetValid; ++attempt)
+                                {
+                                    LONG candidate = (firstCandidate + attempt) & 3;
+                                    float candidateX = playerX + targetOffsetX[candidate];
+                                    float candidateY = playerY + targetOffsetY[candidate];
+                                    LONG targetColumn = NavigationColumn(candidateX);
+                                    LONG targetRow = NavigationRow(candidateY);
+                                    if (candidateX < enemyHalfWidth
+                                        || candidateX > framebufferWidth - enemyHalfWidth
+                                        || candidateY < enemyHalfHeight
+                                        || candidateY > framebufferHeight - enemyHalfHeight
+                                        || !NavigationCellValid(targetColumn, targetRow)
+                                        || (candidateX - enemyHalfWidth < wallRight
+                                            && candidateX + enemyHalfWidth > wallLeft
+                                            && candidateY - enemyHalfHeight < wallBottom
+                                            && candidateY + enemyHalfHeight > wallTop))
+                                    {
+                                        continue;
+                                    }
+                                    searchTargetX = candidateX;
+                                    searchTargetY = candidateY;
+                                    searchPathCount = FindEnemyPath(enemyX, enemyY,
+                                        targetColumn, targetRow);
+                                    searchPathIndex = 0;
+                                    searchTargetValid = true;
+                                }
+                            }
+
+                            if (searchTargetValid)
+                            {
+                                float movementTargetX = searchTargetX;
+                                float movementTargetY = searchTargetY;
+                                if (searchPathIndex < searchPathCount)
+                                {
+                                    LONG node = navigationPath[searchPathIndex];
+                                    movementTargetX = enemyHalfWidth
+                                        + (node % navigationColumns) * navigationCellSize;
+                                    movementTargetY = enemyHalfHeight
+                                        + (node / navigationColumns) * navigationCellSize;
+                                }
+                                enemyFacingAngle = atan2f(movementTargetY - enemyY,
+                                    movementTargetX - enemyX);
+                                if (MoveEnemyToward(enemyX, enemyY,
+                                    movementTargetX, movementTargetY, enemyAlertSpeed,
+                                    deltaTime, playerX, playerY))
+                                {
+                                    if (searchPathIndex < searchPathCount)
+                                    {
+                                        ++searchPathIndex;
+                                    }
+                                    else
+                                    {
+                                        enemyScanning = true;
+                                        scanElapsed = 0.0f;
+                                        scanBaseFacing = enemyFacingAngle;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (detectionProgress > 0.0f)
+                {
+                    if (!playerInVision && lastSeenPlayerValid)
+                    {
+                        enemyFacingAngle = TurnToward(enemyFacingAngle,
+                            atan2f(lastSeenPlayerY - enemyY, lastSeenPlayerX - enemyX),
+                            enemyFacingTurnSpeed * deltaTime);
+                        MoveEnemyToward(enemyX, enemyY, lastSeenPlayerX, lastSeenPlayerY,
+                            enemyPatrolSpeed, deltaTime, playerX, playerY);
+                    }
+                }
+                else
+                {
+                    float patrolTargetX = enemyPatrolRight
+                        ? enemyPatrolRightPoint : enemyPatrolLeftPoint;
+                    float movementTargetX = enemyReturningToPatrol
+                        ? enemyPatrolReturnX : patrolTargetX;
+                    float movementTargetY = enemyInitialY;
+                    if (enemyReturningToPatrol && searchPathIndex < searchPathCount)
+                    {
+                        LONG node = navigationPath[searchPathIndex];
+                        movementTargetX = enemyHalfWidth
+                            + (node % navigationColumns) * navigationCellSize;
+                        movementTargetY = enemyHalfHeight
+                            + (node / navigationColumns) * navigationCellSize;
+                    }
+                    enemyFacingAngle = atan2f(movementTargetY - enemyY,
+                        movementTargetX - enemyX);
+                    if (MoveEnemyToward(enemyX, enemyY, movementTargetX, movementTargetY,
+                        enemyPatrolSpeed, deltaTime, playerX, playerY))
+                    {
+                        enemyX = movementTargetX;
+                        enemyY = movementTargetY;
+                        if (enemyReturningToPatrol && searchPathIndex < searchPathCount)
+                        {
+                            ++searchPathIndex;
+                        }
+                        else if (enemyReturningToPatrol)
+                        {
+                            enemyReturningToPatrol = false;
+                        }
+                        else
+                        {
+                            enemyPatrolRight = !enemyPatrolRight;
+                        }
+                    }
+                }
+            }
+
+            LONG enemyCenterX = static_cast<LONG>(enemyX);
+            LONG enemyCenterY = static_cast<LONG>(enemyY);
+            LONG enemyLeft = enemyCenterX - enemyWidth / 2;
+            LONG enemyTop = enemyCenterY - enemyHeight / 2;
+
             if (slashVisualRemaining > 0.0f)
             {
                 slashVisualRemaining -= deltaTime;
@@ -798,66 +1435,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 slashRequested = false;
             }
 
-            bool playerInVision = false;
-            if (enemyAlive)
-            {
-                float visionX = playerX - enemyCenterX;
-                float visionY = playerY - enemyCenterY;
-                float visionDistanceY = visionY;
-                if (visionDistanceY < 0.0f)
-                {
-                    visionDistanceY = -visionDistanceY;
-                }
-                bool playerInRawVision = visionX > 0.0f
-                    && visionX <= enemyVisionRange
-                    && visionDistanceY <= visionX * enemyVisionSlope;
-                bool playerVisionOccluded = false;
-                if (playerInRawVision && playerX > wallLeft)
-                {
-                    float wallAmount = static_cast<float>(wallLeft - enemyCenterX) / visionX;
-                    float yAtWall = enemyCenterY + visionY * wallAmount;
-                    playerVisionOccluded = yAtWall >= wallTop && yAtWall < wallBottom;
-                }
-                playerInVision = playerInRawVision && !playerVisionOccluded;
-                if (playerInVision)
-                {
-                    lostSightElapsed = 0.0f;
-                    if (enemyAlert)
-                    {
-                        detectionProgress = 1.0f;
-                    }
-                    else
-                    {
-                        detectionProgress += deltaTime / detectionFillDuration;
-                        if (detectionProgress >= 1.0f)
-                        {
-                            detectionProgress = 1.0f;
-                            enemyAlert = true;
-                        }
-                    }
-                }
-                else if (detectionProgress > 0.0f)
-                {
-                    float decayTime = lostSightElapsed + deltaTime - lostSightHoldDuration;
-                    lostSightElapsed += deltaTime;
-                    if (decayTime > 0.0f)
-                    {
-                        enemyAlert = false;
-                        if (decayTime > deltaTime)
-                        {
-                            decayTime = deltaTime;
-                        }
-
-                        detectionProgress -= decayTime / detectionFillDuration;
-                        if (detectionProgress <= 0.0f)
-                        {
-                            detectionProgress = 0.0f;
-                            lostSightElapsed = 0.0f;
-                        }
-                    }
-                }
-            }
-
             if (executeRequested)
             {
                 if (enemyAlive && detectionProgress <= 0.0f)
@@ -910,6 +1487,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         slashCooldownRemaining = 0.0f;
                         dashCooldownRemaining = 0.0f;
                         playerInVision = false;
+                        searchTargetValid = false;
+                        searchPathCount = 0;
+                        searchPathIndex = 0;
+                        enemyScanning = false;
                     }
                 }
                 executeRequested = false;
@@ -935,28 +1516,54 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 framebuffer[y * framebufferWidth + framebufferWidth - 1] = 0x00808000;
             }
 
-            if (enemyAlive)
+            if (enemyAlive && !enemyAlert)
             {
                 float redDistance = enemyVisionRange * detectionProgress;
-                for (LONG x = 1; x <= enemyVisionRange; ++x)
+                float enemyFacingX = cosf(enemyFacingAngle);
+                float enemyFacingY = sinf(enemyFacingAngle);
+                LONG visionLeft = enemyCenterX - enemyVisionRange;
+                LONG visionRight = enemyCenterX + enemyVisionRange;
+                LONG visionTop = enemyCenterY - enemyVisionRange;
+                LONG visionBottom = enemyCenterY + enemyVisionRange;
+                if (visionLeft < 0)
                 {
-                    LONG visionHalfHeight = static_cast<LONG>(x * enemyVisionSlope);
-                    for (LONG y = -visionHalfHeight; y <= visionHalfHeight; ++y)
+                    visionLeft = 0;
+                }
+                if (visionRight >= framebufferWidth)
+                {
+                    visionRight = framebufferWidth - 1;
+                }
+                if (visionTop < 0)
+                {
+                    visionTop = 0;
+                }
+                if (visionBottom >= framebufferHeight)
+                {
+                    visionBottom = framebufferHeight - 1;
+                }
+
+                for (LONG pixelY = visionTop; pixelY <= visionBottom; ++pixelY)
+                {
+                    for (LONG pixelX = visionLeft; pixelX <= visionRight; ++pixelX)
                     {
-                        LONG pixelX = enemyCenterX + x;
-                        LONG pixelY = enemyCenterY + y;
-                        bool visionBlocked = false;
-                        if (pixelX > wallLeft)
+                        float visionX = pixelX - enemyX;
+                        float visionY = pixelY - enemyY;
+                        float visionForward
+                            = visionX * enemyFacingX + visionY * enemyFacingY;
+                        float visionLateral
+                            = visionX * -enemyFacingY + visionY * enemyFacingX;
+                        if (visionLateral < 0.0f)
                         {
-                            float wallAmount = static_cast<float>(wallLeft - enemyCenterX) / static_cast<float>(x);
-                            float yAtWall = static_cast<float>(enemyCenterY) + static_cast<float>(y) * wallAmount;
-                            visionBlocked = yAtWall >= wallTop && yAtWall < wallBottom;
+                            visionLateral = -visionLateral;
                         }
 
-                        if (!visionBlocked && pixelY >= 0 && pixelY < framebufferHeight)
+                        if (visionForward > 0.0f && visionForward <= enemyVisionRange
+                            && visionLateral <= visionForward * enemyVisionSlope
+                            && !WallBlocksSegment(enemyX, enemyY,
+                                static_cast<float>(pixelX), static_cast<float>(pixelY)))
                         {
                             framebuffer[pixelY * framebufferWidth + pixelX]
-                                = x <= redDistance ? 0x00401818 : 0x00182040;
+                                = visionForward <= redDistance ? 0x00401818 : 0x00182040;
                         }
                     }
                 }
@@ -1017,9 +1624,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             ? (x == 1 && y != 3)
                             : ((y == 0 && x < 2) || (y == 1 && x == 2)
                                 || (y == 2 && x == 1) || (y == 4 && x == 1));
-                        if (symbolPixel)
+                        LONG symbolX = enemyCenterX - 1 + x;
+                        LONG symbolY = enemyTop - 7 + y;
+                        if (symbolPixel && symbolX >= 0 && symbolX < framebufferWidth
+                            && symbolY >= 0 && symbolY < framebufferHeight)
                         {
-                            framebuffer[(enemyTop - 7 + y) * framebufferWidth + enemyCenterX - 1 + x]
+                            framebuffer[symbolY * framebufferWidth + symbolX]
                                 = enemyAlert ? 0x00FF4040 : 0x00FFD800;
                         }
                     }
