@@ -82,11 +82,15 @@ DWORD framebuffer[framebufferWidth * framebufferHeight];
 constexpr LONG titleMainState = 0;
 constexpr LONG gameStartMenuState = 1;
 constexpr LONG gameplayState = 2;
+constexpr LONG gameOverEndState = 1;
+constexpr LONG runClearEndState = 2;
 LONG applicationState = titleMainState;
 LONG menuSelection = 0;
 LONG titleStatus = 0;
 bool newGameRequested = false;
 LONG currentRoom = 0;
+LONG runEndState = 0;
+LONG runEndSelection = 0;
 bool upgradeMenuActive = false;
 LONG upgradeSelection = 0;
 LONG upgradeOptionA = 0;
@@ -472,7 +476,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'C')
     {
         bool pressed = message == WM_KEYDOWN;
-        if (applicationState == gameplayState && !upgradeMenuActive && !gameplayInputBlocked
+        if (applicationState == gameplayState && !runEndState
+            && !upgradeMenuActive && !gameplayInputBlocked
             && pressed && !cPressed)
         {
             executeRequested = true;
@@ -490,7 +495,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'X')
     {
         bool pressed = message == WM_KEYDOWN;
-        if (applicationState == gameplayState && !upgradeMenuActive && !gameplayInputBlocked
+        if (applicationState == gameplayState && !runEndState
+            && !upgradeMenuActive && !gameplayInputBlocked
             && pressed && !xPressed)
         {
             dashRequested = true;
@@ -515,6 +521,22 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 if (upgradeMenuActive)
                 {
                     upgradeConfirmRequested = true;
+                }
+                else if (runEndState)
+                {
+                    if (runEndSelection == 0)
+                    {
+                        newGameRequested = true;
+                    }
+                    else
+                    {
+                        applicationState = titleMainState;
+                        menuSelection = 0;
+                        titleStatus = 0;
+                        runEndState = 0;
+                        runEndSelection = 0;
+                        InvalidateRect(window, nullptr, FALSE);
+                    }
                 }
                 else if (!gameplayInputBlocked)
                 {
@@ -575,7 +597,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == VK_SPACE)
     {
         bool pressed = message == WM_KEYDOWN;
-        if (applicationState == gameplayState && !gameplayInputBlocked
+        if (applicationState == gameplayState && !runEndState && !gameplayInputBlocked
             && pressed && !spacePressed && !tonePlaying
             && waveOutWrite(audioOutput, &toneHeader, sizeof(toneHeader)) == MMSYSERR_NOERROR)
         {
@@ -617,7 +639,24 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             rightPressed = pressed;
         }
 
-        if (upgradeMenuActive && newlyPressed
+        if (runEndState && newlyPressed
+            && (wParam == VK_UP || wParam == VK_DOWN))
+        {
+            LONG previousSelection = runEndSelection;
+            if (wParam == VK_UP && runEndSelection > 0)
+            {
+                --runEndSelection;
+            }
+            else if (wParam == VK_DOWN && runEndSelection < 1)
+            {
+                ++runEndSelection;
+            }
+            if (runEndSelection != previousSelection)
+            {
+                InvalidateRect(window, nullptr, FALSE);
+            }
+        }
+        else if (upgradeMenuActive && newlyPressed
             && (wParam == VK_UP || wParam == VK_DOWN))
         {
             LONG previousSelection = upgradeSelection;
@@ -773,6 +812,30 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     : (item == 2 && rerollUsed ? RGB(64, 64, 64) : RGB(160, 160, 160)));
                 DrawTextW(deviceContext, text, -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+        }
+        else if (runEndState)
+        {
+            SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
+            SetBkMode(deviceContext, TRANSPARENT);
+            RECT line = clientArea;
+            if (runEndState == gameOverEndState)
+            {
+                line.top = clientHeight / 2 - 50;
+                line.bottom = line.top + 30;
+                SetTextColor(deviceContext, RGB(220, 220, 220));
+                DrawTextW(deviceContext, L"GAME OVER", -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+            for (LONG item = 0; item < 2; ++item)
+            {
+                line.top = clientHeight / 2 + 20 + item * 30;
+                line.bottom = line.top + 24;
+                SetTextColor(deviceContext,
+                    item == runEndSelection ? RGB(255, 216, 0) : RGB(160, 160, 160));
+                DrawTextW(deviceContext,
+                    item == 0 ? L"\uB2E4\uC2DC \uC2DC\uC791" : L"\uD0C0\uC774\uD2C0\uB85C",
+                    -1, &line, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
         }
         EndPaint(window, &paint);
@@ -1060,6 +1123,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 currentRoom = 1;
             }
             sequenceComplete = false;
+            runEndState = 0;
+            runEndSelection = 0;
             upgradeMenuActive = false;
             upgradeSelection = 0;
             upgradeConfirmRequested = false;
@@ -1123,6 +1188,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         }
 
         if (applicationState != gameplayState)
+        {
+            QueryPerformanceCounter(&previousUpdate);
+            Sleep(1);
+            continue;
+        }
+
+        if (runEndState)
         {
             QueryPerformanceCounter(&previousUpdate);
             Sleep(1);
@@ -1757,6 +1829,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     dashRequested = false;
                     executeRequested = false;
                     playerInVision = false;
+                    runEndState = gameOverEndState;
+                    runEndSelection = 0;
                 }
             }
 
@@ -1987,46 +2061,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
             }
 
-            if (!playerAlive)
-            {
-                constexpr LONG deadLeft = framebufferWidth / 2 - 8;
-                constexpr LONG deadTop = framebufferHeight / 2 - 14;
-                for (LONG y = 0; y < 5; ++y)
-                {
-                    for (LONG x = 0; x < 15; ++x)
-                    {
-                        LONG letter = x / 4;
-                        LONG letterX = x & 3;
-                        bool deadPixel = false;
-                        if (letterX < 3)
-                        {
-                            if (letter == 0 || letter == 3)
-                            {
-                                deadPixel = letterX == 0
-                                    || (letterX == 2 && y > 0 && y < 4)
-                                    || ((y == 0 || y == 4) && letterX < 2);
-                            }
-                            else if (letter == 1)
-                            {
-                                deadPixel = letterX == 0
-                                    || (letterX < 3 && (y == 0 || y == 2 || y == 4));
-                            }
-                            else
-                            {
-                                deadPixel = (y == 0 && letterX == 1)
-                                    || (y > 0 && (letterX == 0 || letterX == 2))
-                                    || y == 2;
-                            }
-                        }
-                        if (deadPixel)
-                        {
-                            framebuffer[(deadTop + y) * framebufferWidth + deadLeft + x]
-                                = 0x00FF4040;
-                        }
-                    }
-                }
-            }
-
             if (sequenceComplete)
             {
                 constexpr unsigned short runClearLetters[8]
@@ -2069,6 +2103,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         framebuffer[y * framebufferWidth + x] = visionMarkerColor;
                     }
                 }
+            }
+
+            if (sequenceComplete && !runEndState)
+            {
+                runEndState = runClearEndState;
+                runEndSelection = 0;
             }
 
             InvalidateRect(window, nullptr, FALSE);
