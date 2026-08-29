@@ -32,7 +32,15 @@ constexpr LONG roomCount = 6;
 constexpr LONG openRoomType = 0;
 constexpr LONG pillarRoomType = 1;
 constexpr LONG mazeRoomType = 2;
+constexpr LONG trapRoomType = 3;
 constexpr LONG maxRoomWalls = 24;
+constexpr LONG maxRoomTraps = 19;
+constexpr LONG trapWidth = 24;
+constexpr LONG trapHeight = 14;
+constexpr float trapOffDuration = 1.25f;
+constexpr float trapActiveDuration = 0.75f;
+constexpr float trapCycleDuration = trapOffDuration + trapActiveDuration;
+constexpr float trapDamageCooldownDuration = 0.5f;
 constexpr LONG enemyCount = 3;
 constexpr LONG enemyWidth = 8;
 constexpr LONG enemyHeight = 12;
@@ -89,7 +97,7 @@ constexpr LONG gameplayState = 2;
 constexpr LONG gameOverEndState = 1;
 constexpr LONG runClearEndState = 2;
 constexpr DWORD saveMagic = 0x56535344;
-constexpr DWORD saveVersion = 3;
+constexpr DWORD saveVersion = 4;
 constexpr wchar_t saveFileName[] = L"DeadSignal.sav";
 LONG applicationState = titleMainState;
 LONG menuSelection = 0;
@@ -108,6 +116,12 @@ LONG currentWallLeft[maxRoomWalls]{};
 LONG currentWallTop[maxRoomWalls]{};
 LONG currentWallRight[maxRoomWalls]{};
 LONG currentWallBottom[maxRoomWalls]{};
+LONG currentTrapCount = 0;
+LONG currentTrapLeft[maxRoomTraps]{};
+LONG currentTrapTop[maxRoomTraps]{};
+LONG currentTrapRight[maxRoomTraps]{};
+LONG currentTrapBottom[maxRoomTraps]{};
+float currentTrapPhaseOffset[maxRoomTraps]{};
 LONG currentExitLeft = exitLeft;
 LONG currentExitTop = exitTop;
 LONG currentExitRight = exitRight;
@@ -303,6 +317,29 @@ bool RectangleOverlapsRoomWall(float left, float top, float right, float bottom)
     return false;
 }
 
+bool RectangleOverlapsRoomTrap(float left, float top, float right, float bottom)
+{
+    for (LONG trap = 0; trap < currentTrapCount; ++trap)
+    {
+        if (left < currentTrapRight[trap] && right > currentTrapLeft[trap]
+            && top < currentTrapBottom[trap] && bottom > currentTrapTop[trap])
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool TrapIsActive(LONG trap, float cycleElapsed)
+{
+    float phase = cycleElapsed + currentTrapPhaseOffset[trap];
+    while (phase >= trapCycleDuration)
+    {
+        phase -= trapCycleDuration;
+    }
+    return phase >= trapOffDuration;
+}
+
 void SetRoomSizeStage(LONG stage)
 {
     constexpr LONG roomWidths[5] = { 160, 320, 480, 640, 800 };
@@ -328,7 +365,7 @@ void SetupCurrentRoom()
     SetRoomSizeStage(currentRoom / 2 + 2);
 
     DWORD state = RoomRandom(runSeed, currentRoom);
-    currentRoomType = NextRoomRandom(state) % 3;
+    currentRoomType = NextRoomRandom(state) % 4;
     currentLayoutVariant = currentRoomType == openRoomType
         ? 0 : NextRoomRandom(state) >> 31;
     currentExitSide = NextRoomRandom(state) >> 31;
@@ -460,6 +497,50 @@ void SetupCurrentRoom()
     currentExitBottom = worldHeight / 2 + 12;
     currentPlayerStartY = worldHeight / 2.0f;
 
+    currentTrapCount = 0;
+    if (currentRoomType == trapRoomType)
+    {
+        constexpr LONG trapCandidateX[20]
+            = { 1, 2, 3, 4, 5, 1, 2, 3, 4, 5,
+                1, 2, 3, 4, 5, 1, 2, 3, 4, 5 };
+        constexpr LONG trapCandidateY[20]
+            = { 1, 1, 1, 1, 1, 2, 2, 2, 2, 2,
+                3, 3, 3, 3, 3, 4, 4, 4, 4, 4 };
+        constexpr LONG trapCountsByStage[5] = { 1, 3, 7, 12, 19 };
+        LONG requestedTrapCount = trapCountsByStage[roomSizeStage - 1];
+        LONG firstCandidate = NextRoomRandom(state) % 20;
+        for (LONG attempt = 0; attempt < 20 && currentTrapCount < requestedTrapCount;
+            ++attempt)
+        {
+            LONG candidate = (firstCandidate + attempt) % 20;
+            LONG left = worldWidth * trapCandidateX[candidate] / 6 - trapWidth / 2;
+            LONG top = worldHeight * trapCandidateY[candidate] / 5 - trapHeight / 2;
+            LONG right = left + trapWidth;
+            LONG bottom = top + trapHeight;
+            if (left < 2 || top < 2 || right > worldWidth - 2
+                || bottom > worldHeight - 2
+                || RectangleOverlapsRoomTrap(static_cast<float>(left - 2),
+                    static_cast<float>(top - 2), static_cast<float>(right + 2),
+                    static_cast<float>(bottom + 2))
+                || (left < currentExitRight && right > currentExitLeft
+                    && top < currentExitBottom && bottom > currentExitTop)
+                || (left < currentPlayerStartX + playerHalfWidth
+                    && right > currentPlayerStartX - playerHalfWidth
+                    && top < currentPlayerStartY + playerHalfHeight
+                    && bottom > currentPlayerStartY - playerHalfHeight))
+            {
+                continue;
+            }
+            LONG trap = currentTrapCount++;
+            currentTrapLeft[trap] = left;
+            currentTrapTop[trap] = top;
+            currentTrapRight[trap] = right;
+            currentTrapBottom[trap] = bottom;
+            currentTrapPhaseOffset[trap]
+                = static_cast<float>(NextRoomRandom(state) % 501) / 1000.0f;
+        }
+    }
+
     constexpr LONG enemyCandidateX[12] = { 2, 4, 6, 2, 4, 6, 2, 4, 6, 3, 5, 3 };
     constexpr LONG enemyCandidateY[12] = { 4, 4, 4, 2, 2, 2, 6, 6, 6, 3, 5, 5 };
     bool candidateUsed[12]{};
@@ -484,6 +565,12 @@ void SetupCurrentRoom()
                 || candidateColumn < 0 || candidateColumn >= navigationColumns
                 || candidateRow < 0 || candidateRow >= navigationRows
                 || RectangleOverlapsRoomWall(cellX - enemyHalfWidth,
+                    cellY - enemyHalfHeight, cellX + enemyHalfWidth,
+                    cellY + enemyHalfHeight)
+                || RectangleOverlapsRoomTrap(candidateX - enemyHalfWidth,
+                    candidateY - enemyHalfHeight, candidateX + enemyHalfWidth,
+                    candidateY + enemyHalfHeight)
+                || RectangleOverlapsRoomTrap(cellX - enemyHalfWidth,
                     cellY - enemyHalfHeight, cellX + enemyHalfWidth,
                     cellY + enemyHalfHeight)
                 || (candidateX - enemyHalfWidth < currentExitRight
@@ -1291,7 +1378,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             DT_LEFT | DT_TOP | DT_SINGLELINE);
 
         const wchar_t* roomName = currentRoomType == openRoomType ? L"Open"
-            : (currentRoomType == pillarRoomType ? L"Pillar" : L"Maze");
+            : (currentRoomType == pillarRoomType ? L"Pillar"
+                : (currentRoomType == mazeRoomType ? L"Maze" : L"Trap"));
         wsprintfW(hudText, L"%02ld.%s", currentRoom + 1, roomName);
         hudLine.left = destinationX + destinationWidth / 2 - 60;
         hudLine.right = destinationX + destinationWidth / 2 + 60;
@@ -1608,6 +1696,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     LONG slashBottom = 0;
     float slashVisualRemaining = 0.0f;
     float slashCooldownRemaining = 0.0f;
+    float trapCycleElapsed = 0.0f;
+    float trapDamageCooldownRemaining = 0.0f;
     bool exitUnlocked = false;
     bool roomComplete = false;
     bool sequenceComplete = false;
@@ -1735,6 +1825,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             slashBottom = 0;
             slashVisualRemaining = 0.0f;
             slashCooldownRemaining = 0.0f;
+            trapCycleElapsed = 0.0f;
+            trapDamageCooldownRemaining = 0.0f;
             exitUnlocked = false;
             roomComplete = false;
             slashRequested = false;
@@ -1861,6 +1953,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             float deltaTime = static_cast<float>(currentTime.QuadPart - previousUpdate.QuadPart)
                 / static_cast<float>(performanceFrequency.QuadPart);
             previousUpdate = currentTime;
+            if (currentRoomType == trapRoomType)
+            {
+                trapCycleElapsed += deltaTime;
+                while (trapCycleElapsed >= trapCycleDuration)
+                {
+                    trapCycleElapsed -= trapCycleDuration;
+                }
+                if (trapDamageCooldownRemaining > 0.0f)
+                {
+                    trapDamageCooldownRemaining -= deltaTime;
+                }
+            }
             LONG movementX = gameplayInputBlocked || !playerAlive
                 || roomComplete || sequenceComplete || upgradeMenuActive ? 0
                 : static_cast<LONG>(rightPressed) - static_cast<LONG>(leftPressed);
@@ -1984,6 +2088,42 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     }
                 }
                 playerY = nextPlayerY;
+            }
+
+            if (currentRoomType == trapRoomType && playerAlive
+                && trapDamageCooldownRemaining <= 0.0f)
+            {
+                for (LONG trap = 0; trap < currentTrapCount; ++trap)
+                {
+                    if (TrapIsActive(trap, trapCycleElapsed)
+                        && playerX - playerHalfWidth < currentTrapRight[trap]
+                        && playerX + playerHalfWidth > currentTrapLeft[trap]
+                        && playerY - playerHalfHeight < currentTrapBottom[trap]
+                        && playerY + playerHalfHeight > currentTrapTop[trap])
+                    {
+                        --playerHP;
+                        playerHitRemaining = playerHitFeedbackDuration;
+                        trapDamageCooldownRemaining = trapDamageCooldownDuration;
+                        if (playerHP <= 0)
+                        {
+                            playerHP = 0;
+                            playerAlive = false;
+                            dashActive = false;
+                            dashDistanceRemaining = 0.0f;
+                            slashRequested = false;
+                            dashRequested = false;
+                            executeRequested = false;
+                            for (LONG enemyIndex = 0; enemyIndex < enemyCount; ++enemyIndex)
+                            {
+                                enemies[enemyIndex].playerInVision = false;
+                            }
+                            runEndState = gameOverEndState;
+                            runEndSelection = 0;
+                            DeleteFileW(saveFileName);
+                        }
+                        break;
+                    }
+                }
             }
 
             for (LONG enemyIndex = 0; enemyIndex < enemyCount; ++enemyIndex)
@@ -2679,6 +2819,33 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         {
                             framebuffer[pixelY * framebufferWidth + pixelX]
                                 = visionForward <= redDistance ? 0x00401818 : 0x00182040;
+                        }
+                    }
+                }
+            }
+
+            for (LONG trap = 0; trap < currentTrapCount; ++trap)
+            {
+                bool active = TrapIsActive(trap, trapCycleElapsed);
+                for (LONG y = currentTrapTop[trap]; y < currentTrapBottom[trap]; ++y)
+                {
+                    for (LONG x = currentTrapLeft[trap]; x < currentTrapRight[trap]; ++x)
+                    {
+                        LONG screenX = x - cameraX;
+                        LONG screenY = y - cameraY;
+                        if (screenX >= 0 && screenX < framebufferWidth
+                            && screenY >= 0 && screenY < framebufferHeight)
+                        {
+                            bool outline = x == currentTrapLeft[trap]
+                                || x == currentTrapRight[trap] - 1
+                                || y == currentTrapTop[trap]
+                                || y == currentTrapBottom[trap] - 1;
+                            DWORD color = outline ? 0x00484858 : 0x00242830;
+                            if (active)
+                            {
+                                color = ((x + y) & 3) < 2 ? 0x00F06030 : 0x00FFB040;
+                            }
+                            framebuffer[screenY * framebufferWidth + screenX] = color;
                         }
                     }
                 }
