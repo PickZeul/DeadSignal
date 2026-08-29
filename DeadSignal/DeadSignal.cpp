@@ -6,6 +6,8 @@
 
 constexpr LONG framebufferWidth = 320;
 constexpr LONG framebufferHeight = 180;
+constexpr LONG worldWidth = 640;
+constexpr LONG worldHeight = 360;
 constexpr LONG playerWidth = 8;
 constexpr LONG playerHeight = 12;
 constexpr LONG playerCenterX = framebufferWidth / 2;
@@ -29,7 +31,7 @@ constexpr LONG roomCount = 6;
 constexpr LONG openRoomType = 0;
 constexpr LONG pillarRoomType = 1;
 constexpr LONG mazeRoomType = 2;
-constexpr LONG maxRoomWalls = 3;
+constexpr LONG maxRoomWalls = 12;
 constexpr LONG enemyWidth = 8;
 constexpr LONG enemyHeight = 12;
 constexpr float enemyInitialX = 120.0f;
@@ -57,8 +59,8 @@ constexpr float playerHitFeedbackDuration = 0.10f;
 constexpr float detectionFillDuration = 3.0f;
 constexpr float lostSightHoldDuration = 0.5f;
 constexpr LONG navigationCellSize = 8;
-constexpr LONG navigationColumns = 40;
-constexpr LONG navigationRows = 22;
+constexpr LONG navigationColumns = 80;
+constexpr LONG navigationRows = 44;
 constexpr LONG navigationNodeCount = navigationColumns * navigationRows;
 constexpr LONG slashReach = 8;
 constexpr LONG slashWidth = 8;
@@ -265,19 +267,43 @@ void SetupCurrentRoom()
     currentPatrolStartsRight = (NextRoomRandom(state) >> 31) != 0;
     currentWallCount = 0;
 
-    if (currentRoomType == pillarRoomType)
+    if (currentRoomType == openRoomType)
+    {
+        AddRoomWall(248, 72, 264, 96);
+        AddRoomWall(376, 264, 392, 288);
+    }
+    else if (currentRoomType == pillarRoomType)
     {
         if (!currentLayoutVariant)
         {
-            AddRoomWall(104, 44, 120, 68);
-            AddRoomWall(152, 108, 168, 132);
-            AddRoomWall(208, 44, 224, 68);
+            constexpr LONG pillarX[4] = { 112, 240, 368, 496 };
+            constexpr LONG pillarY[3] = { 48, 144, 264 };
+            for (LONG row = 0; row < 3; ++row)
+            {
+                for (LONG column = 0; column < 4; ++column)
+                {
+                    AddRoomWall(pillarX[column], pillarY[row],
+                        pillarX[column] + 16, pillarY[row] + 24);
+                }
+            }
         }
         else
         {
-            AddRoomWall(88, 108, 104, 132);
-            AddRoomWall(152, 44, 168, 68);
-            AddRoomWall(224, 108, 240, 132);
+            constexpr LONG pillarX[3][4]
+            {
+                { 80, 208, 336, 464 },
+                { 144, 272, 400, 528 },
+                { 80, 208, 336, 464 }
+            };
+            constexpr LONG pillarY[3] = { 80, 128, 240 };
+            for (LONG row = 0; row < 3; ++row)
+            {
+                for (LONG column = 0; column < 4; ++column)
+                {
+                    AddRoomWall(pillarX[row][column], pillarY[row],
+                        pillarX[row][column] + 16, pillarY[row] + 24);
+                }
+            }
         }
     }
     else if (currentRoomType == mazeRoomType)
@@ -285,38 +311,52 @@ void SetupCurrentRoom()
         if (!currentLayoutVariant)
         {
             AddRoomWall(96, 16, 112, 116);
-            AddRoomWall(200, 64, 216, 164);
+            AddRoomWall(96, 196, 112, 296);
+            AddRoomWall(208, 96, 224, 196);
+            AddRoomWall(208, 244, 224, 344);
+            AddRoomWall(320, 16, 336, 116);
+            AddRoomWall(320, 196, 336, 296);
+            AddRoomWall(432, 96, 448, 196);
+            AddRoomWall(432, 244, 448, 344);
+            AddRoomWall(544, 16, 560, 116);
+            AddRoomWall(544, 196, 560, 296);
         }
         else
         {
-            AddRoomWall(64, 48, 184, 64);
-            AddRoomWall(136, 116, 256, 132);
+            AddRoomWall(48, 64, 168, 80);
+            AddRoomWall(280, 64, 400, 80);
+            AddRoomWall(472, 64, 592, 80);
+            AddRoomWall(112, 152, 232, 168);
+            AddRoomWall(344, 152, 464, 168);
+            AddRoomWall(48, 240, 168, 256);
+            AddRoomWall(280, 240, 400, 256);
+            AddRoomWall(472, 240, 592, 256);
         }
     }
 
     if (currentExitSide)
     {
-        currentExitLeft = 304;
-        currentExitRight = 320;
+        currentExitLeft = worldWidth - 16;
+        currentExitRight = worldWidth;
         currentPlayerStartX = 28.0f;
     }
     else
     {
         currentExitLeft = 0;
         currentExitRight = 16;
-        currentPlayerStartX = 292.0f;
+        currentPlayerStartX = worldWidth - 28.0f;
     }
-    currentExitTop = 78;
-    currentExitBottom = 102;
-    currentPlayerStartY = 90.0f;
+    currentExitTop = worldHeight / 2 - 12;
+    currentExitBottom = worldHeight / 2 + 12;
+    currentPlayerStartY = worldHeight / 2.0f;
 
-    constexpr float enemyCandidatesX[4] = { 124.0f, 196.0f, 148.0f, 220.0f };
-    constexpr float enemyCandidatesY[4] = { 90.0f, 90.0f, 88.0f, 88.0f };
+    constexpr float enemyCandidatesX[4] = { 248.0f, 392.0f, 296.0f, 440.0f };
+    constexpr float enemyCandidatesY[4] = { 180.0f, 180.0f, 176.0f, 176.0f };
     LONG firstCandidate = NextRoomRandom(state) >> 30;
     if (currentRoomType == mazeRoomType && !currentLayoutVariant)
     {
-        currentEnemyStartX = (firstCandidate & 1) ? 156.0f : 260.0f;
-        currentEnemyStartY = 90.0f;
+        currentEnemyStartX = (firstCandidate & 1) ? 312.0f : 520.0f;
+        currentEnemyStartY = 180.0f;
     }
     else
     {
@@ -333,8 +373,8 @@ void SetupCurrentRoom()
             }
         }
     }
-    currentPatrolLeft = currentEnemyStartX - 28.0f;
-    currentPatrolRight = currentEnemyStartX + 28.0f;
+    currentPatrolLeft = currentEnemyStartX - 56.0f;
+    currentPatrolRight = currentEnemyStartX + 56.0f;
 }
 
 bool SingleWallBlocksSegment(LONG wall, float startX, float startY, float endX, float endY)
@@ -597,9 +637,9 @@ bool MoveEnemyToward(float& enemyX, float& enemyY, float targetX, float targetY,
         {
             nextX = enemyHalfWidth;
         }
-        else if (nextX > framebufferWidth - enemyHalfWidth)
+        else if (nextX > worldWidth - enemyHalfWidth)
         {
-            nextX = framebufferWidth - enemyHalfWidth;
+            nextX = worldWidth - enemyHalfWidth;
         }
         for (LONG wall = 0; movementDeltaX != 0.0f && wall < currentWallCount; ++wall)
         {
@@ -628,9 +668,9 @@ bool MoveEnemyToward(float& enemyX, float& enemyY, float targetX, float targetY,
         {
             nextY = enemyHalfHeight;
         }
-        else if (nextY > framebufferHeight - enemyHalfHeight)
+        else if (nextY > worldHeight - enemyHalfHeight)
         {
-            nextY = framebufferHeight - enemyHalfHeight;
+            nextY = worldHeight - enemyHalfHeight;
         }
         for (LONG wall = 0; movementDeltaY != 0.0f && wall < currentWallCount; ++wall)
         {
@@ -1579,9 +1619,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 {
                     nextPlayerX = playerHalfWidth;
                 }
-                else if (nextPlayerX > framebufferWidth - playerHalfWidth)
+                else if (nextPlayerX > worldWidth - playerHalfWidth)
                 {
-                    nextPlayerX = framebufferWidth - playerHalfWidth;
+                    nextPlayerX = worldWidth - playerHalfWidth;
                 }
 
                 for (LONG wall = 0; movementDeltaX != 0.0f
@@ -1604,9 +1644,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 {
                     nextPlayerY = playerHalfHeight;
                 }
-                else if (nextPlayerY > framebufferHeight - playerHalfHeight)
+                else if (nextPlayerY > worldHeight - playerHalfHeight)
                 {
-                    nextPlayerY = framebufferHeight - playerHalfHeight;
+                    nextPlayerY = worldHeight - playerHalfHeight;
                 }
 
                 for (LONG wall = 0; movementDeltaY != 0.0f
@@ -1786,9 +1826,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                     LONG targetColumn = NavigationColumn(candidateX);
                                     LONG targetRow = NavigationRow(candidateY);
                                     if (candidateX < enemyHalfWidth
-                                        || candidateX > framebufferWidth - enemyHalfWidth
+                                        || candidateX > worldWidth - enemyHalfWidth
                                         || candidateY < enemyHalfHeight
-                                        || candidateY > framebufferHeight - enemyHalfHeight
+                                        || candidateY > worldHeight - enemyHalfHeight
                                         || !NavigationCellValid(targetColumn, targetRow)
                                         || RectangleOverlapsRoomWall(
                                             candidateX - enemyHalfWidth,
@@ -2115,23 +2155,69 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             }
             updateColor = (updateColor + 0x00050000) & 0x00FF0000;
 
+            LONG cameraX = static_cast<LONG>(playerX) - framebufferWidth / 2;
+            LONG cameraY = static_cast<LONG>(playerY) - framebufferHeight / 2;
+            if (cameraX < 0)
+            {
+                cameraX = 0;
+            }
+            else if (cameraX > worldWidth - framebufferWidth)
+            {
+                cameraX = worldWidth - framebufferWidth;
+            }
+            if (cameraY < 0)
+            {
+                cameraY = 0;
+            }
+            else if (cameraY > worldHeight - framebufferHeight)
+            {
+                cameraY = worldHeight - framebufferHeight;
+            }
+
             for (LONG pixel = 0; pixel < framebufferWidth * framebufferHeight; ++pixel)
             {
                 framebuffer[pixel] = 0x00101018;
             }
 
-            for (LONG x = 0; x < framebufferWidth; ++x)
+            LONG worldCenterScreenY = worldHeight / 2 - cameraY;
+            if (worldCenterScreenY >= 0 && worldCenterScreenY < framebufferHeight)
             {
-                framebuffer[(framebufferHeight / 2) * framebufferWidth + x] = 0x00404040;
-                framebuffer[x] = 0x00800000;
-                framebuffer[(framebufferHeight - 1) * framebufferWidth + x] = 0x00000080;
+                for (LONG x = 0; x < framebufferWidth; ++x)
+                {
+                    framebuffer[worldCenterScreenY * framebufferWidth + x] = 0x00404040;
+                }
             }
-
-            for (LONG y = 0; y < framebufferHeight; ++y)
+            LONG worldCenterScreenX = worldWidth / 2 - cameraX;
+            if (worldCenterScreenX >= 0 && worldCenterScreenX < framebufferWidth)
             {
-                framebuffer[y * framebufferWidth + framebufferWidth / 2] = 0x00404040;
-                framebuffer[y * framebufferWidth] = 0x00008000;
-                framebuffer[y * framebufferWidth + framebufferWidth - 1] = 0x00808000;
+                for (LONG y = 0; y < framebufferHeight; ++y)
+                {
+                    framebuffer[y * framebufferWidth + worldCenterScreenX] = 0x00404040;
+                }
+            }
+            if (cameraY == 0)
+            {
+                for (LONG x = 0; x < framebufferWidth; ++x)
+                {
+                    framebuffer[x] = 0x00800000;
+                }
+            }
+            if (cameraY == worldHeight - framebufferHeight)
+            {
+                for (LONG x = 0; x < framebufferWidth; ++x)
+                {
+                    framebuffer[(framebufferHeight - 1) * framebufferWidth + x]
+                        = 0x00000080;
+                }
+            }
+            if (cameraX == 0 || cameraX == worldWidth - framebufferWidth)
+            {
+                LONG boundaryX = cameraX == 0 ? 0 : framebufferWidth - 1;
+                DWORD boundaryColor = cameraX == 0 ? 0x00008000 : 0x00808000;
+                for (LONG y = 0; y < framebufferHeight; ++y)
+                {
+                    framebuffer[y * framebufferWidth + boundaryX] = boundaryColor;
+                }
             }
 
             if (enemyAlive && !enemyAlert)
@@ -2139,10 +2225,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 float redDistance = enemyVisionRange * detectionProgress;
                 float enemyFacingX = cosf(enemyFacingAngle);
                 float enemyFacingY = sinf(enemyFacingAngle);
-                LONG visionLeft = enemyCenterX - enemyVisionRange;
-                LONG visionRight = enemyCenterX + enemyVisionRange;
-                LONG visionTop = enemyCenterY - enemyVisionRange;
-                LONG visionBottom = enemyCenterY + enemyVisionRange;
+                LONG visionLeft = enemyCenterX - enemyVisionRange - cameraX;
+                LONG visionRight = enemyCenterX + enemyVisionRange - cameraX;
+                LONG visionTop = enemyCenterY - enemyVisionRange - cameraY;
+                LONG visionBottom = enemyCenterY + enemyVisionRange - cameraY;
                 if (visionLeft < 0)
                 {
                     visionLeft = 0;
@@ -2164,8 +2250,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 {
                     for (LONG pixelX = visionLeft; pixelX <= visionRight; ++pixelX)
                     {
-                        float visionX = pixelX - enemyX;
-                        float visionY = pixelY - enemyY;
+                        float worldPixelX = static_cast<float>(pixelX + cameraX);
+                        float worldPixelY = static_cast<float>(pixelY + cameraY);
+                        float visionX = worldPixelX - enemyX;
+                        float visionY = worldPixelY - enemyY;
                         float visionForward
                             = visionX * enemyFacingX + visionY * enemyFacingY;
                         float visionLateral
@@ -2178,7 +2266,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         if (visionForward > 0.0f && visionForward <= enemyVisionRange
                             && visionLateral <= visionForward * enemyVisionSlope
                             && !WallBlocksSegment(enemyX, enemyY,
-                                static_cast<float>(pixelX), static_cast<float>(pixelY)))
+                                worldPixelX, worldPixelY))
                         {
                             framebuffer[pixelY * framebufferWidth + pixelX]
                                 = visionForward <= redDistance ? 0x00401818 : 0x00182040;
@@ -2193,7 +2281,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 {
                     for (LONG x = currentWallLeft[wall]; x < currentWallRight[wall]; ++x)
                     {
-                        framebuffer[y * framebufferWidth + x] = 0x00606070;
+                        LONG screenX = x - cameraX;
+                        LONG screenY = y - cameraY;
+                        if (screenX >= 0 && screenX < framebufferWidth
+                            && screenY >= 0 && screenY < framebufferHeight)
+                        {
+                            framebuffer[screenY * framebufferWidth + screenX] = 0x00606070;
+                        }
                     }
                 }
             }
@@ -2202,8 +2296,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             {
                 for (LONG x = currentExitLeft; x < currentExitRight; ++x)
                 {
-                    framebuffer[y * framebufferWidth + x]
-                        = exitUnlocked ? 0x0040E080 : 0x00282830;
+                    LONG screenX = x - cameraX;
+                    LONG screenY = y - cameraY;
+                    if (screenX >= 0 && screenX < framebufferWidth
+                        && screenY >= 0 && screenY < framebufferHeight)
+                    {
+                        framebuffer[screenY * framebufferWidth + screenX]
+                            = exitUnlocked ? 0x0040E080 : 0x00282830;
+                    }
                 }
             }
 
@@ -2213,11 +2313,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 {
                     for (LONG x = slashLeft; x < slashRight; ++x)
                     {
-                        if (x >= 0 && x < framebufferWidth && y >= 0 && y < framebufferHeight
+                        LONG screenX = x - cameraX;
+                        LONG screenY = y - cameraY;
+                        if (screenX >= 0 && screenX < framebufferWidth
+                            && screenY >= 0 && screenY < framebufferHeight
                             && (x == slashLeft || x == slashRight - 1
                                 || y == slashTop || y == slashBottom - 1))
                         {
-                            framebuffer[y * framebufferWidth + x] = 0x00E0E0E0;
+                            framebuffer[screenY * framebufferWidth + screenX] = 0x00E0E0E0;
                         }
                     }
                 }
@@ -2233,9 +2336,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         bool body = y >= 3 && y < 9 && x >= 2 && x < 6;
                         bool arm = y >= 4 && y < 8 && (x == 0 || x == 7);
                         bool leg = y >= 9 && (x < 3 || x >= 5);
-                        if (head || body || arm || leg)
+                        LONG pixelX = enemyLeft + x - cameraX;
+                        LONG pixelY = enemyTop + y - cameraY;
+                        if ((head || body || arm || leg)
+                            && pixelX >= 0 && pixelX < framebufferWidth
+                            && pixelY >= 0 && pixelY < framebufferHeight)
                         {
-                            framebuffer[(enemyTop + y) * framebufferWidth + enemyLeft + x]
+                            framebuffer[pixelY * framebufferWidth + pixelX]
                                 = enemyHitRemaining > 0.0f
                                     ? 0x00FFFFFF
                                     : (head ? 0x00FF4040 : 0x00A02020);
@@ -2254,8 +2361,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             ? (x == 1 && y != 3)
                             : ((y == 0 && x < 2) || (y == 1 && x == 2)
                                 || (y == 2 && x == 1) || (y == 4 && x == 1));
-                        LONG symbolX = enemyCenterX - 1 + x;
-                        LONG symbolY = enemyTop - 7 + y;
+                        LONG symbolX = enemyCenterX - 1 + x - cameraX;
+                        LONG symbolY = enemyTop - 7 + y - cameraY;
                         if (symbolPixel && symbolX >= 0 && symbolX < framebufferWidth
                             && symbolY >= 0 && symbolY < framebufferHeight)
                         {
@@ -2272,7 +2379,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 {
                     for (LONG x = enemyCenterX - 1; x <= enemyCenterX + 1; ++x)
                     {
-                        framebuffer[y * framebufferWidth + x] = 0x00FFFF80;
+                        LONG screenX = x - cameraX;
+                        LONG screenY = y - cameraY;
+                        if (screenX >= 0 && screenX < framebufferWidth
+                            && screenY >= 0 && screenY < framebufferHeight)
+                        {
+                            framebuffer[screenY * framebufferWidth + screenX] = 0x00FFFF80;
+                        }
                     }
                 }
             }
@@ -2285,8 +2398,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
             }
 
-            LONG drawingLeft = static_cast<LONG>(playerX) - playerWidth / 2;
-            LONG drawingTop = static_cast<LONG>(playerY) - playerHeight / 2;
+            LONG drawingLeft = static_cast<LONG>(playerX) - playerWidth / 2 - cameraX;
+            LONG drawingTop = static_cast<LONG>(playerY) - playerHeight / 2 - cameraY;
             for (LONG y = 0; y < playerHeight; ++y)
             {
                 for (LONG x = 0; x < playerWidth; ++x)
