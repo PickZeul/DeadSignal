@@ -6,8 +6,9 @@
 
 constexpr LONG framebufferWidth = 320;
 constexpr LONG framebufferHeight = 180;
-constexpr LONG worldWidth = 640;
-constexpr LONG worldHeight = 360;
+LONG roomSizeStage = 2;
+LONG worldWidth = 320;
+LONG worldHeight = 180;
 constexpr LONG playerWidth = 8;
 constexpr LONG playerHeight = 12;
 constexpr LONG playerCenterX = framebufferWidth / 2;
@@ -31,7 +32,7 @@ constexpr LONG roomCount = 6;
 constexpr LONG openRoomType = 0;
 constexpr LONG pillarRoomType = 1;
 constexpr LONG mazeRoomType = 2;
-constexpr LONG maxRoomWalls = 12;
+constexpr LONG maxRoomWalls = 24;
 constexpr LONG enemyCount = 3;
 constexpr LONG enemyWidth = 8;
 constexpr LONG enemyHeight = 12;
@@ -60,9 +61,12 @@ constexpr float playerHitFeedbackDuration = 0.10f;
 constexpr float detectionFillDuration = 3.0f;
 constexpr float lostSightHoldDuration = 0.5f;
 constexpr LONG navigationCellSize = 8;
-constexpr LONG navigationColumns = 80;
-constexpr LONG navigationRows = 44;
-constexpr LONG navigationNodeCount = navigationColumns * navigationRows;
+constexpr LONG maxNavigationColumns = 100;
+constexpr LONG maxNavigationRows = 55;
+constexpr LONG maxNavigationNodeCount = maxNavigationColumns * maxNavigationRows;
+LONG navigationColumns = 40;
+LONG navigationRows = 22;
+LONG navigationNodeCount = navigationColumns * navigationRows;
 constexpr LONG slashReach = 8;
 constexpr LONG slashWidth = 8;
 constexpr float slashVisualDuration = 0.10f;
@@ -85,7 +89,7 @@ constexpr LONG gameplayState = 2;
 constexpr LONG gameOverEndState = 1;
 constexpr LONG runClearEndState = 2;
 constexpr DWORD saveMagic = 0x56535344;
-constexpr DWORD saveVersion = 2;
+constexpr DWORD saveVersion = 3;
 constexpr wchar_t saveFileName[] = L"DeadSignal.sav";
 LONG applicationState = titleMainState;
 LONG menuSelection = 0;
@@ -94,6 +98,8 @@ bool newGameRequested = false;
 bool loadGameRequested = false;
 LONG currentRoom = 0;
 DWORD runSeed = 0;
+LONG runKillCount = 0;
+LONG currentEnemyRemaining = enemyCount;
 LONG currentRoomType = openRoomType;
 LONG currentLayoutVariant = 0;
 LONG currentExitSide = 1;
@@ -121,6 +127,11 @@ LONG upgradeOptionA = 0;
 LONG upgradeOptionB = 1;
 bool rerollUsed = false;
 bool upgradeConfirmRequested = false;
+bool gameplayMenuActive = false;
+LONG gameplayMenuSelection = 0;
+bool gameplayMenuSettingsStatus = false;
+bool saveAndTitleRequested = false;
+bool escapePressed = false;
 bool gameplayInputBlocked = false;
 bool upPressed = false;
 bool downPressed = false;
@@ -137,10 +148,10 @@ bool tonePlaying = false;
 BYTE toneSamples[toneSampleCount];
 HWAVEOUT audioOutput = nullptr;
 WAVEHDR toneHeader{};
-short navigationParent[navigationNodeCount];
-unsigned short navigationScore[navigationNodeCount];
-BYTE navigationState[navigationNodeCount];
-unsigned short navigationPath[enemyCount][navigationNodeCount];
+short navigationParent[maxNavigationNodeCount];
+unsigned short navigationScore[maxNavigationNodeCount];
+BYTE navigationState[maxNavigationNodeCount];
+unsigned short navigationPath[enemyCount][maxNavigationNodeCount];
 
 struct EnemyRuntime
 {
@@ -185,9 +196,10 @@ struct SaveCheckpoint
     float slashCooldown;
     float dashCooldown;
     DWORD reroll;
+    LONG runKills;
 };
 
-static_assert(sizeof(SaveCheckpoint) == 36);
+static_assert(sizeof(SaveCheckpoint) == 40);
 
 bool ReadCheckpoint(SaveCheckpoint* checkpoint)
 {
@@ -212,11 +224,11 @@ bool ReadCheckpoint(SaveCheckpoint* checkpoint)
             || checkpoint->slashCooldown == slashCooldownDuration * 0.8f)
         && (checkpoint->dashCooldown == dashCooldownDuration
             || checkpoint->dashCooldown == dashCooldownDuration * 0.8f)
-        && checkpoint->reroll <= 1;
+        && checkpoint->reroll <= 1 && checkpoint->runKills >= 0;
 }
 
 void WriteCheckpoint(DWORD seed, LONG room, LONG playerHP, float moveSpeed,
-    float slashCooldown, float dashCooldown, bool reroll)
+    float slashCooldown, float dashCooldown, bool reroll, LONG runKills)
 {
     SaveCheckpoint checkpoint
     {
@@ -228,7 +240,8 @@ void WriteCheckpoint(DWORD seed, LONG room, LONG playerHP, float moveSpeed,
         moveSpeed,
         slashCooldown,
         dashCooldown,
-        static_cast<DWORD>(reroll)
+        static_cast<DWORD>(reroll),
+        runKills
     };
     HANDLE file = CreateFileW(saveFileName, GENERIC_WRITE, 0, nullptr,
         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -290,8 +303,30 @@ bool RectangleOverlapsRoomWall(float left, float top, float right, float bottom)
     return false;
 }
 
+void SetRoomSizeStage(LONG stage)
+{
+    constexpr LONG roomWidths[5] = { 160, 320, 480, 640, 800 };
+    constexpr LONG roomHeights[5] = { 90, 180, 270, 360, 450 };
+    if (stage < 1)
+    {
+        stage = 1;
+    }
+    else if (stage > 5)
+    {
+        stage = 5;
+    }
+    roomSizeStage = stage;
+    worldWidth = roomWidths[stage - 1];
+    worldHeight = roomHeights[stage - 1];
+    navigationColumns = (worldWidth - enemyWidth) / navigationCellSize + 1;
+    navigationRows = (worldHeight - enemyHeight) / navigationCellSize + 1;
+    navigationNodeCount = navigationColumns * navigationRows;
+}
+
 void SetupCurrentRoom()
 {
+    SetRoomSizeStage(currentRoom / 2 + 2);
+
     DWORD state = RoomRandom(runSeed, currentRoom);
     currentRoomType = NextRoomRandom(state) % 3;
     currentLayoutVariant = currentRoomType == openRoomType
@@ -301,40 +336,35 @@ void SetupCurrentRoom()
 
     if (currentRoomType == openRoomType)
     {
-        AddRoomWall(248, 72, 264, 96);
-        AddRoomWall(376, 264, 392, 288);
+        LONG structureCount = roomSizeStage == 1 ? 1 : (roomSizeStage - 1) * 2 - 1;
+        for (LONG structure = 0; structure < structureCount; ++structure)
+        {
+            LONG column = structure & 1 ? 3 : 2;
+            LONG row = structure / 2 + 1;
+            LONG left = worldWidth * column / 5 - 8;
+            LONG top = worldHeight * row / ((structureCount + 1) / 2 + 1) - 12;
+            AddRoomWall(left, top, left + 16, top + 24);
+        }
     }
     else if (currentRoomType == pillarRoomType)
     {
-        if (!currentLayoutVariant)
+        LONG columns = roomSizeStage;
+        LONG rows = roomSizeStage < 3 ? roomSizeStage : roomSizeStage - 1;
+        for (LONG row = 0; row < rows; ++row)
         {
-            constexpr LONG pillarX[4] = { 112, 240, 368, 496 };
-            constexpr LONG pillarY[3] = { 48, 144, 264 };
-            for (LONG row = 0; row < 3; ++row)
+            for (LONG column = 0; column < columns; ++column)
             {
-                for (LONG column = 0; column < 4; ++column)
+                LONG left = worldWidth * (column + 1) / (columns + 1) - 8;
+                if (currentLayoutVariant && (row & 1))
                 {
-                    AddRoomWall(pillarX[column], pillarY[row],
-                        pillarX[column] + 16, pillarY[row] + 24);
+                    left += worldWidth / (columns + 1) / 3;
                 }
-            }
-        }
-        else
-        {
-            constexpr LONG pillarX[3][4]
-            {
-                { 80, 208, 336, 464 },
-                { 144, 272, 400, 528 },
-                { 80, 208, 336, 464 }
-            };
-            constexpr LONG pillarY[3] = { 80, 128, 240 };
-            for (LONG row = 0; row < 3; ++row)
-            {
-                for (LONG column = 0; column < 4; ++column)
+                if (left + 16 > worldWidth - 32)
                 {
-                    AddRoomWall(pillarX[row][column], pillarY[row],
-                        pillarX[row][column] + 16, pillarY[row] + 24);
+                    left = worldWidth - 48;
                 }
+                LONG top = worldHeight * (row + 1) / (rows + 1) - 12;
+                AddRoomWall(left, top, left + 16, top + 24);
             }
         }
     }
@@ -342,27 +372,75 @@ void SetupCurrentRoom()
     {
         if (!currentLayoutVariant)
         {
-            AddRoomWall(96, 16, 112, 116);
-            AddRoomWall(96, 196, 112, 296);
-            AddRoomWall(208, 96, 224, 196);
-            AddRoomWall(208, 244, 224, 344);
-            AddRoomWall(320, 16, 336, 116);
-            AddRoomWall(320, 196, 336, 296);
-            AddRoomWall(432, 96, 448, 196);
-            AddRoomWall(432, 244, 448, 344);
-            AddRoomWall(544, 16, 560, 116);
-            AddRoomWall(544, 196, 560, 296);
+            if (worldHeight < 100)
+            {
+                AddRoomWall(worldWidth / 2 - 60, 12,
+                    worldWidth / 2 + 60, 28);
+            }
+            else
+            {
+                LONG columns = roomSizeStage + 1;
+                LONG segmentsPerColumn = worldHeight >= 270 ? 2 : 1;
+                for (LONG column = 0; column < columns; ++column)
+                {
+                    LONG left = worldWidth * (column + 1) / (columns + 1) - 8;
+                    for (LONG segment = 0; segment < segmentsPerColumn; ++segment)
+                    {
+                        LONG top = segmentsPerColumn == 1
+                            ? worldHeight / 2 - 50
+                            : (segment ? worldHeight - 116 : 16);
+                        if ((column + segment) & 1)
+                        {
+                            top += segmentsPerColumn == 1 ? 20 : 32;
+                        }
+                        if (top + 100 > worldHeight)
+                        {
+                            top = worldHeight - 100;
+                        }
+                        AddRoomWall(left, top, left + 16, top + 100);
+                    }
+                }
+            }
         }
         else
         {
-            AddRoomWall(48, 64, 168, 80);
-            AddRoomWall(280, 64, 400, 80);
-            AddRoomWall(472, 64, 592, 80);
-            AddRoomWall(112, 152, 232, 168);
-            AddRoomWall(344, 152, 464, 168);
-            AddRoomWall(48, 240, 168, 256);
-            AddRoomWall(280, 240, 400, 256);
-            AddRoomWall(472, 240, 592, 256);
+            LONG columns = (worldWidth - 64) / 144;
+            if (!columns)
+            {
+                columns = 1;
+            }
+            LONG rows = worldHeight / 96;
+            if (!rows)
+            {
+                rows = 1;
+            }
+            for (LONG row = 0; row < rows; ++row)
+            {
+                for (LONG column = 0; column < columns; ++column)
+                {
+                    LONG left = 32 + (worldWidth - 64) * (column * 2 + 1)
+                        / (columns * 2) - 60;
+                    LONG top = worldHeight < 100 ? 12
+                        : worldHeight * (row + 1) / (rows + 1) - 8;
+                    if ((row + column) & 1)
+                    {
+                        left += 24;
+                    }
+                    if (worldWidth < 200)
+                    {
+                        left = 20;
+                    }
+                    else if (left < 32)
+                    {
+                        left = 32;
+                    }
+                    else if (left + 120 > worldWidth - 32)
+                    {
+                        left = worldWidth - 152;
+                    }
+                    AddRoomWall(left, top, left + 120, top + 16);
+                }
+            }
         }
     }
 
@@ -382,12 +460,8 @@ void SetupCurrentRoom()
     currentExitBottom = worldHeight / 2 + 12;
     currentPlayerStartY = worldHeight / 2.0f;
 
-    constexpr float enemyCandidatesX[12]
-        = { 248.0f, 392.0f, 296.0f, 440.0f, 184.0f, 456.0f,
-            320.0f, 520.0f, 120.0f, 560.0f, 240.0f, 400.0f };
-    constexpr float enemyCandidatesY[12]
-        = { 180.0f, 180.0f, 320.0f, 40.0f, 304.0f, 56.0f,
-            128.0f, 232.0f, 180.0f, 180.0f, 40.0f, 320.0f };
+    constexpr LONG enemyCandidateX[12] = { 2, 4, 6, 2, 4, 6, 2, 4, 6, 3, 5, 3 };
+    constexpr LONG enemyCandidateY[12] = { 4, 4, 4, 2, 2, 2, 6, 6, 6, 3, 5, 5 };
     bool candidateUsed[12]{};
     for (LONG enemy = 0; enemy < enemyCount; ++enemy)
     {
@@ -395,12 +469,23 @@ void SetupCurrentRoom()
         for (LONG attempt = 0; attempt < 12; ++attempt)
         {
             LONG candidate = (firstCandidate + attempt) % 12;
-            float candidateX = enemyCandidatesX[candidate];
-            float candidateY = enemyCandidatesY[candidate];
+            float candidateX = static_cast<float>(worldWidth * enemyCandidateX[candidate] / 8);
+            float candidateY = static_cast<float>(worldHeight * enemyCandidateY[candidate] / 8);
+            LONG candidateColumn = static_cast<LONG>((candidateX - enemyHalfWidth
+                + navigationCellSize * 0.5f) / navigationCellSize);
+            LONG candidateRow = static_cast<LONG>((candidateY - enemyHalfHeight
+                + navigationCellSize * 0.5f) / navigationCellSize);
+            float cellX = enemyHalfWidth + candidateColumn * navigationCellSize;
+            float cellY = enemyHalfHeight + candidateRow * navigationCellSize;
             if (candidateUsed[candidate]
                 || RectangleOverlapsRoomWall(candidateX - enemyHalfWidth,
                     candidateY - enemyHalfHeight, candidateX + enemyHalfWidth,
                     candidateY + enemyHalfHeight)
+                || candidateColumn < 0 || candidateColumn >= navigationColumns
+                || candidateRow < 0 || candidateRow >= navigationRows
+                || RectangleOverlapsRoomWall(cellX - enemyHalfWidth,
+                    cellY - enemyHalfHeight, cellX + enemyHalfWidth,
+                    cellY + enemyHalfHeight)
                 || (candidateX - enemyHalfWidth < currentExitRight
                     && candidateX + enemyHalfWidth > currentExitLeft
                     && candidateY - enemyHalfHeight < currentExitBottom
@@ -417,9 +502,17 @@ void SetupCurrentRoom()
             currentEnemyStartY[enemy] = candidateY;
             break;
         }
-        float patrolHalfLength = 32.0f + enemy * 12.0f;
+        float patrolHalfLength = 24.0f + enemy * 8.0f;
         currentPatrolLeft[enemy] = currentEnemyStartX[enemy] - patrolHalfLength;
         currentPatrolRight[enemy] = currentEnemyStartX[enemy] + patrolHalfLength;
+        if (currentPatrolLeft[enemy] < enemyHalfWidth)
+        {
+            currentPatrolLeft[enemy] = enemyHalfWidth;
+        }
+        if (currentPatrolRight[enemy] > worldWidth - enemyHalfWidth)
+        {
+            currentPatrolRight[enemy] = worldWidth - enemyHalfWidth;
+        }
         currentPatrolStartsRight[enemy] = (NextRoomRandom(state) >> 31) != 0;
     }
 }
@@ -747,13 +840,107 @@ bool MoveEnemyToward(float& enemyX, float& enemyY, float targetX, float targetY,
     return differenceX * differenceX + differenceY * differenceY < 0.25f;
 }
 
+void CloseGameplayMenu()
+{
+    gameplayMenuActive = false;
+    gameplayMenuSettingsStatus = false;
+    gameplayInputBlocked = upPressed || downPressed || leftPressed || rightPressed
+        || zPressed || xPressed || cPressed || spacePressed;
+}
+
+void ConfirmGameplayMenu(HWND window)
+{
+    if (gameplayMenuSelection == 0)
+    {
+        CloseGameplayMenu();
+    }
+    else if (gameplayMenuSelection == 1)
+    {
+        gameplayMenuSettingsStatus = true;
+    }
+    else
+    {
+        saveAndTitleRequested = true;
+    }
+    InvalidateRect(window, nullptr, FALSE);
+}
+
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == VK_ESCAPE)
+    {
+        bool pressed = message == WM_KEYDOWN;
+        if (applicationState == gameplayState && !runEndState && !upgradeMenuActive
+            && pressed && !escapePressed)
+        {
+            if (gameplayMenuActive)
+            {
+                CloseGameplayMenu();
+            }
+            else
+            {
+                gameplayMenuActive = true;
+                gameplayMenuSelection = 0;
+                gameplayMenuSettingsStatus = false;
+            }
+            InvalidateRect(window, nullptr, FALSE);
+        }
+        escapePressed = pressed;
+        return 0;
+    }
+
+    if (message == WM_LBUTTONDOWN && applicationState == gameplayState
+        && !runEndState && !upgradeMenuActive)
+    {
+        RECT client{};
+        GetClientRect(window, &client);
+        LONG clientWidth = client.right;
+        LONG clientHeight = client.bottom;
+        LONG destinationWidth = clientWidth;
+        LONG destinationHeight = clientWidth * framebufferHeight / framebufferWidth;
+        if (destinationHeight > clientHeight)
+        {
+            destinationHeight = clientHeight;
+            destinationWidth = clientHeight * framebufferWidth / framebufferHeight;
+        }
+        LONG destinationX = (clientWidth - destinationWidth) / 2;
+        LONG destinationY = (clientHeight - destinationHeight) / 2;
+        LONG mouseX = static_cast<short>(LOWORD(lParam));
+        LONG mouseY = static_cast<short>(HIWORD(lParam));
+        LONG logicalX = destinationWidth
+            ? (mouseX - destinationX) * framebufferWidth / destinationWidth : -1;
+        LONG logicalY = destinationHeight
+            ? (mouseY - destinationY) * framebufferHeight / destinationHeight : -1;
+        if (!gameplayMenuActive && logicalX >= 302 && logicalX < 316
+            && logicalY >= 3 && logicalY < 15)
+        {
+            gameplayMenuActive = true;
+            gameplayMenuSelection = 0;
+            gameplayMenuSettingsStatus = false;
+            InvalidateRect(window, nullptr, FALSE);
+        }
+        else if (gameplayMenuActive && mouseX >= clientWidth / 2 - 120
+            && mouseX <= clientWidth / 2 + 120)
+        {
+            for (LONG item = 0; item < 3; ++item)
+            {
+                LONG top = clientHeight / 5 + 50 + item * 30;
+                if (mouseY >= top && mouseY < top + 24)
+                {
+                    gameplayMenuSelection = item;
+                    ConfirmGameplayMenu(window);
+                    break;
+                }
+            }
+        }
+        return 0;
+    }
+
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'C')
     {
         bool pressed = message == WM_KEYDOWN;
         if (applicationState == gameplayState && !runEndState
-            && !upgradeMenuActive && !gameplayInputBlocked
+            && !upgradeMenuActive && !gameplayMenuActive && !gameplayInputBlocked
             && pressed && !cPressed)
         {
             executeRequested = true;
@@ -772,7 +959,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     {
         bool pressed = message == WM_KEYDOWN;
         if (applicationState == gameplayState && !runEndState
-            && !upgradeMenuActive && !gameplayInputBlocked
+            && !upgradeMenuActive && !gameplayMenuActive && !gameplayInputBlocked
             && pressed && !xPressed)
         {
             dashRequested = true;
@@ -794,7 +981,11 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         {
             if (pressed && !zPressed)
             {
-                if (upgradeMenuActive)
+                if (gameplayMenuActive)
+                {
+                    ConfirmGameplayMenu(window);
+                }
+                else if (upgradeMenuActive)
                 {
                     upgradeConfirmRequested = true;
                 }
@@ -873,7 +1064,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == VK_SPACE)
     {
         bool pressed = message == WM_KEYDOWN;
-        if (applicationState == gameplayState && !runEndState && !gameplayInputBlocked
+        if (applicationState == gameplayState && !runEndState && !gameplayMenuActive
+            && !gameplayInputBlocked
             && pressed && !spacePressed && !tonePlaying
             && waveOutWrite(audioOutput, &toneHeader, sizeof(toneHeader)) == MMSYSERR_NOERROR)
         {
@@ -915,7 +1107,25 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             rightPressed = pressed;
         }
 
-        if (runEndState && newlyPressed
+        if (gameplayMenuActive && newlyPressed
+            && (wParam == VK_UP || wParam == VK_DOWN))
+        {
+            LONG previousSelection = gameplayMenuSelection;
+            if (wParam == VK_UP && gameplayMenuSelection > 0)
+            {
+                --gameplayMenuSelection;
+            }
+            else if (wParam == VK_DOWN && gameplayMenuSelection < 2)
+            {
+                ++gameplayMenuSelection;
+            }
+            gameplayMenuSettingsStatus = false;
+            if (gameplayMenuSelection != previousSelection)
+            {
+                InvalidateRect(window, nullptr, FALSE);
+            }
+        }
+        else if (runEndState && newlyPressed
             && (wParam == VK_UP || wParam == VK_DOWN))
         {
             LONG previousSelection = runEndSelection;
@@ -1064,7 +1274,82 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             &framebufferInfo,
             DIB_RGB_COLORS,
             SRCCOPY);
-        if (upgradeMenuActive)
+
+        SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
+        SetBkMode(deviceContext, TRANSPARENT);
+        SetTextColor(deviceContext, RGB(220, 220, 220));
+        wchar_t hudText[32];
+        RECT hudLine
+        {
+            destinationX + 8,
+            destinationY + 3,
+            destinationX + destinationWidth / 3,
+            destinationY + 24
+        };
+        wsprintfW(hudText, L"%ld/%ld", currentEnemyRemaining, enemyCount);
+        DrawTextW(deviceContext, hudText, -1, &hudLine,
+            DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+        const wchar_t* roomName = currentRoomType == openRoomType ? L"Open"
+            : (currentRoomType == pillarRoomType ? L"Pillar" : L"Maze");
+        wsprintfW(hudText, L"%02ld.%s", currentRoom + 1, roomName);
+        hudLine.left = destinationX + destinationWidth / 2 - 60;
+        hudLine.right = destinationX + destinationWidth / 2 + 60;
+        DrawTextW(deviceContext, hudText, -1, &hudLine,
+            DT_CENTER | DT_TOP | DT_SINGLELINE);
+        wsprintfW(hudText, L"Kill:%ld", runKillCount);
+        hudLine.left = destinationX + destinationWidth / 2 + 64;
+        hudLine.right = destinationX + destinationWidth - 34;
+        DrawTextW(deviceContext, hudText, -1, &hudLine,
+            DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+        for (LONG bar = 0; bar < 3; ++bar)
+        {
+            RECT iconBar
+            {
+                destinationX + 302 * destinationWidth / framebufferWidth,
+                destinationY + (3 + bar * 4) * destinationHeight / framebufferHeight,
+                destinationX + 316 * destinationWidth / framebufferWidth,
+                destinationY + (5 + bar * 4) * destinationHeight / framebufferHeight
+            };
+            if (iconBar.bottom <= iconBar.top)
+            {
+                iconBar.bottom = iconBar.top + 1;
+            }
+            FillRect(deviceContext, &iconBar,
+                reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+        }
+
+        if (gameplayMenuActive)
+        {
+            RECT line = clientArea;
+            line.top = clientHeight / 5;
+            line.bottom = line.top + 30;
+            SetTextColor(deviceContext, RGB(220, 220, 220));
+            DrawTextW(deviceContext, L"MENU", -1, &line,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            for (LONG item = 0; item < 3; ++item)
+            {
+                const wchar_t* text = item == 0 ? L"\uAC8C\uC784\uC73C\uB85C \uB3CC\uC544\uAC00\uAE30"
+                    : (item == 1 ? L"\uC124\uC815"
+                        : L"\uC800\uC7A5 \uD6C4 \uD0C0\uC774\uD2C0\uB85C \uAC00\uAE30");
+                line.top = clientHeight / 5 + 50 + item * 30;
+                line.bottom = line.top + 24;
+                SetTextColor(deviceContext, item == gameplayMenuSelection
+                    ? RGB(255, 216, 0) : RGB(160, 160, 160));
+                DrawTextW(deviceContext, text, -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+            if (gameplayMenuSettingsStatus)
+            {
+                line.top = clientHeight / 5 + 150;
+                line.bottom = line.top + 24;
+                SetTextColor(deviceContext, RGB(220, 220, 220));
+                DrawTextW(deviceContext, L"\uC124\uC815 \uBBF8\uAD6C\uD604", -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+        }
+        else if (upgradeMenuActive)
         {
             SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
             SetBkMode(deviceContext, TRANSPARENT);
@@ -1326,7 +1611,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     bool exitUnlocked = false;
     bool roomComplete = false;
     bool sequenceComplete = false;
-    DWORD updateColor = 0x00FF0000;
 
     MSG message{};
     bool running = true;
@@ -1368,6 +1652,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 slashCooldownDurationCurrent = checkpoint.slashCooldown;
                 dashCooldownDurationCurrent = checkpoint.dashCooldown;
                 rerollUsed = checkpoint.reroll != 0;
+                runKillCount = checkpoint.runKills;
                 upgradeRandomState = 0x2468ACE1;
                 upgradeOptionA = 0;
                 upgradeOptionB = 1;
@@ -1401,6 +1686,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 dashCooldownDurationCurrent = dashCooldownDuration;
                 upgradeRandomState = 0x2468ACE1;
                 rerollUsed = false;
+                runKillCount = 0;
                 upgradeOptionA = 0;
                 upgradeOptionB = 1;
             }
@@ -1413,6 +1699,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             runEndState = 0;
             runEndSelection = 0;
             upgradeMenuActive = false;
+            gameplayMenuActive = false;
+            gameplayMenuSelection = 0;
+            gameplayMenuSettingsStatus = false;
             upgradeSelection = 0;
             upgradeConfirmRequested = false;
             playerX = currentPlayerStartX;
@@ -1433,6 +1722,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 enemy.alive = true;
             }
             playerAlive = true;
+            currentEnemyRemaining = enemyCount;
             playerHitRemaining = 0.0f;
             dashDirectionX = 0;
             dashDirectionY = 0;
@@ -1447,7 +1737,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             slashCooldownRemaining = 0.0f;
             exitUnlocked = false;
             roomComplete = false;
-            updateColor = 0x00FF0000;
             slashRequested = false;
             dashRequested = false;
             executeRequested = false;
@@ -1456,9 +1745,28 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             if (!checkpointLoaded)
             {
                 WriteCheckpoint(runSeed, currentRoom, playerHP, playerMoveSpeedCurrent,
-                    slashCooldownDurationCurrent, dashCooldownDurationCurrent, rerollUsed);
+                    slashCooldownDurationCurrent, dashCooldownDurationCurrent, rerollUsed,
+                    runKillCount);
             }
             newGameRequested = false;
+            QueryPerformanceCounter(&previousUpdate);
+            InvalidateRect(window, nullptr, FALSE);
+        }
+
+        if (saveAndTitleRequested && applicationState == gameplayState)
+        {
+            WriteCheckpoint(runSeed, currentRoom, playerHP, playerMoveSpeedCurrent,
+                slashCooldownDurationCurrent, dashCooldownDurationCurrent, rerollUsed,
+                runKillCount);
+            applicationState = titleMainState;
+            menuSelection = 0;
+            titleStatus = 0;
+            gameplayMenuActive = false;
+            gameplayMenuSelection = 0;
+            gameplayMenuSettingsStatus = false;
+            gameplayInputBlocked = upPressed || downPressed || leftPressed || rightPressed
+                || zPressed || xPressed || cPressed || spacePressed;
+            saveAndTitleRequested = false;
             QueryPerformanceCounter(&previousUpdate);
             InvalidateRect(window, nullptr, FALSE);
         }
@@ -1471,6 +1779,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         }
 
         if (runEndState)
+        {
+            QueryPerformanceCounter(&previousUpdate);
+            Sleep(1);
+            continue;
+        }
+
+        if (gameplayMenuActive)
         {
             QueryPerformanceCounter(&previousUpdate);
             Sleep(1);
@@ -2053,6 +2368,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             {
                                 enemy.hp = 0;
                                 enemy.alive = false;
+                                --currentEnemyRemaining;
+                                ++runKillCount;
                                 slashCooldownRemaining = 0.0f;
                                 dashCooldownRemaining = 0.0f;
                                 enemy.playerInVision = false;
@@ -2137,6 +2454,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         EnemyRuntime& enemy = enemies[selectedEnemy];
                         enemy.hp = 0;
                         enemy.alive = false;
+                        --currentEnemyRemaining;
+                        ++runKillCount;
                         enemy.executeFeedbackRemaining = slashVisualDuration;
                         slashCooldownRemaining = 0.0f;
                         dashCooldownRemaining = 0.0f;
@@ -2186,14 +2505,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
             }
 
-            exitUnlocked = playerAlive;
-            for (LONG enemyIndex = 0; enemyIndex < enemyCount; ++enemyIndex)
-            {
-                if (enemies[enemyIndex].alive)
-                {
-                    exitUnlocked = false;
-                }
-            }
+            exitUnlocked = playerAlive && currentEnemyRemaining == 0;
             if (playerAlive && exitUnlocked && !roomComplete && !sequenceComplete
                 && playerX - playerHalfWidth < currentExitRight
                 && playerX + playerHalfWidth > currentExitLeft
@@ -2223,25 +2535,33 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 dashRequested = false;
                 executeRequested = false;
             }
-            updateColor = (updateColor + 0x00050000) & 0x00FF0000;
-
             LONG cameraX = static_cast<LONG>(playerX) - framebufferWidth / 2;
             LONG cameraY = static_cast<LONG>(playerY) - framebufferHeight / 2;
+            LONG maximumCameraX = worldWidth - framebufferWidth;
+            LONG maximumCameraY = worldHeight - framebufferHeight;
+            if (maximumCameraX < 0)
+            {
+                maximumCameraX = 0;
+            }
+            if (maximumCameraY < 0)
+            {
+                maximumCameraY = 0;
+            }
             if (cameraX < 0)
             {
                 cameraX = 0;
             }
-            else if (cameraX > worldWidth - framebufferWidth)
+            else if (cameraX > maximumCameraX)
             {
-                cameraX = worldWidth - framebufferWidth;
+                cameraX = maximumCameraX;
             }
             if (cameraY < 0)
             {
                 cameraY = 0;
             }
-            else if (cameraY > worldHeight - framebufferHeight)
+            else if (cameraY > maximumCameraY)
             {
-                cameraY = worldHeight - framebufferHeight;
+                cameraY = maximumCameraY;
             }
 
             for (LONG pixel = 0; pixel < framebufferWidth * framebufferHeight; ++pixel)
@@ -2272,21 +2592,33 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     framebuffer[x] = 0x00800000;
                 }
             }
-            if (cameraY == worldHeight - framebufferHeight)
+            if (cameraY == maximumCameraY)
             {
+                LONG boundaryY = worldHeight - 1 - cameraY;
                 for (LONG x = 0; x < framebufferWidth; ++x)
                 {
-                    framebuffer[(framebufferHeight - 1) * framebufferWidth + x]
-                        = 0x00000080;
+                    if (boundaryY >= 0 && boundaryY < framebufferHeight)
+                    {
+                        framebuffer[boundaryY * framebufferWidth + x] = 0x00000080;
+                    }
                 }
             }
-            if (cameraX == 0 || cameraX == worldWidth - framebufferWidth)
+            if (cameraX == 0)
             {
-                LONG boundaryX = cameraX == 0 ? 0 : framebufferWidth - 1;
-                DWORD boundaryColor = cameraX == 0 ? 0x00008000 : 0x00808000;
                 for (LONG y = 0; y < framebufferHeight; ++y)
                 {
-                    framebuffer[y * framebufferWidth + boundaryX] = boundaryColor;
+                    framebuffer[y * framebufferWidth] = 0x00008000;
+                }
+            }
+            if (cameraX == maximumCameraX)
+            {
+                LONG boundaryX = worldWidth - 1 - cameraX;
+                if (boundaryX >= 0 && boundaryX < framebufferWidth)
+                {
+                    for (LONG y = 0; y < framebufferHeight; ++y)
+                    {
+                        framebuffer[y * framebufferWidth + boundaryX] = 0x00808000;
+                    }
                 }
             }
 
@@ -2475,16 +2807,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
             }
 
-            for (LONG y = 8; y < 16; ++y)
-            {
-                for (LONG x = 8; x < 16; ++x)
-                {
-                    framebuffer[y * framebufferWidth + x] = updateColor;
-                }
-            }
-
             LONG drawingLeft = static_cast<LONG>(playerX) - playerWidth / 2 - cameraX;
             LONG drawingTop = static_cast<LONG>(playerY) - playerHeight / 2 - cameraY;
+            constexpr LONG healthBarWidth = 12;
+            constexpr LONG healthBarHeight = 2;
+            LONG healthBarLeft = static_cast<LONG>(playerX) - healthBarWidth / 2 - cameraX;
+            LONG healthBarTop = static_cast<LONG>(playerY) - playerHeight / 2 - 4 - cameraY;
+            LONG healthFillWidth = playerHP * healthBarWidth / 10;
+            for (LONG y = 0; y < healthBarHeight; ++y)
+            {
+                for (LONG x = 0; x < healthBarWidth; ++x)
+                {
+                    LONG pixelX = healthBarLeft + x;
+                    LONG pixelY = healthBarTop + y;
+                    if (pixelX >= 0 && pixelX < framebufferWidth
+                        && pixelY >= 0 && pixelY < framebufferHeight)
+                    {
+                        framebuffer[pixelY * framebufferWidth + pixelX]
+                            = x < healthFillWidth ? 0x0040D060 : 0x00302028;
+                    }
+                }
+            }
             for (LONG y = 0; y < playerHeight; ++y)
             {
                 for (LONG x = 0; x < playerWidth; ++x)
@@ -2537,23 +2880,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                 + runClearLeft + x]
                                 = 0x0080FFC0;
                         }
-                    }
-                }
-            }
-
-            for (LONG enemyIndex = 0; enemyIndex < enemyCount; ++enemyIndex)
-            {
-                if (!enemies[enemyIndex].alive)
-                {
-                    continue;
-                }
-                DWORD visionMarkerColor = enemies[enemyIndex].playerInVision
-                    ? 0x0000FF80 : 0x00202028;
-                for (LONG y = 8; y < 12; ++y)
-                {
-                    for (LONG x = 24 + enemyIndex * 5; x < 28 + enemyIndex * 5; ++x)
-                    {
-                        framebuffer[y * framebufferWidth + x] = visionMarkerColor;
                     }
                 }
             }
