@@ -87,6 +87,12 @@ LONG menuSelection = 0;
 LONG titleStatus = 0;
 bool newGameRequested = false;
 LONG currentRoom = 0;
+bool upgradeMenuActive = false;
+LONG upgradeSelection = 0;
+LONG upgradeOptionA = 0;
+LONG upgradeOptionB = 1;
+bool rerollUsed = false;
+bool upgradeConfirmRequested = false;
 bool gameplayInputBlocked = false;
 bool upPressed = false;
 bool downPressed = false;
@@ -466,7 +472,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'C')
     {
         bool pressed = message == WM_KEYDOWN;
-        if (applicationState == gameplayState && !gameplayInputBlocked
+        if (applicationState == gameplayState && !upgradeMenuActive && !gameplayInputBlocked
             && pressed && !cPressed)
         {
             executeRequested = true;
@@ -484,7 +490,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'X')
     {
         bool pressed = message == WM_KEYDOWN;
-        if (applicationState == gameplayState && !gameplayInputBlocked
+        if (applicationState == gameplayState && !upgradeMenuActive && !gameplayInputBlocked
             && pressed && !xPressed)
         {
             dashRequested = true;
@@ -504,9 +510,16 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         bool pressed = message == WM_KEYDOWN;
         if (applicationState == gameplayState)
         {
-            if (!gameplayInputBlocked && pressed && !zPressed)
+            if (pressed && !zPressed)
             {
-                slashRequested = true;
+                if (upgradeMenuActive)
+                {
+                    upgradeConfirmRequested = true;
+                }
+                else if (!gameplayInputBlocked)
+                {
+                    slashRequested = true;
+                }
             }
         }
         else if (pressed && !zPressed)
@@ -604,7 +617,24 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             rightPressed = pressed;
         }
 
-        if (applicationState != gameplayState && newlyPressed
+        if (upgradeMenuActive && newlyPressed
+            && (wParam == VK_UP || wParam == VK_DOWN))
+        {
+            LONG previousSelection = upgradeSelection;
+            if (wParam == VK_UP && upgradeSelection > 0)
+            {
+                --upgradeSelection;
+            }
+            else if (wParam == VK_DOWN && upgradeSelection < 2)
+            {
+                ++upgradeSelection;
+            }
+            if (upgradeSelection != previousSelection)
+            {
+                InvalidateRect(window, nullptr, FALSE);
+            }
+        }
+        else if (applicationState != gameplayState && newlyPressed
             && (wParam == VK_UP || wParam == VK_DOWN))
         {
             if (wParam == VK_UP && menuSelection > 0)
@@ -627,6 +657,11 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
 
         return 0;
+    }
+
+    if (message == WM_ERASEBKGND)
+    {
+        return 1;
     }
 
     if (message == WM_PAINT)
@@ -714,6 +749,32 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             &framebufferInfo,
             DIB_RGB_COLORS,
             SRCCOPY);
+        if (upgradeMenuActive)
+        {
+            SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
+            SetBkMode(deviceContext, TRANSPARENT);
+            RECT line = clientArea;
+            line.top = clientHeight / 5;
+            line.bottom = line.top + 30;
+            SetTextColor(deviceContext, RGB(220, 220, 220));
+            DrawTextW(deviceContext, L"UPGRADE", -1, &line,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            for (LONG item = 0; item < 3; ++item)
+            {
+                LONG upgrade = item ? upgradeOptionB : upgradeOptionA;
+                const wchar_t* text = item == 2
+                    ? (rerollUsed ? L"REROLL (USED)" : L"REROLL")
+                    : (upgrade == 0 ? L"MOVE+"
+                        : (upgrade == 1 ? L"SLASH+" : L"DASH+"));
+                line.top = clientHeight / 5 + 50 + item * 30;
+                line.bottom = line.top + 24;
+                SetTextColor(deviceContext, item == upgradeSelection
+                    ? (item == 2 && rerollUsed ? RGB(96, 96, 96) : RGB(255, 216, 0))
+                    : (item == 2 && rerollUsed ? RGB(64, 64, 64) : RGB(160, 160, 160)));
+                DrawTextW(deviceContext, text, -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+        }
         EndPaint(window, &paint);
         return 0;
     }
@@ -934,6 +995,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     float dashDistanceRemaining = 0.0f;
     float dashCooldownRemaining = 0.0f;
     bool dashActive = false;
+    float playerMoveSpeedCurrent = playerMoveSpeed;
+    float slashCooldownDurationCurrent = slashCooldownDuration;
+    float dashCooldownDurationCurrent = dashCooldownDuration;
+    DWORD upgradeRandomState = 0x2468ACE1;
     LONG slashLeft = 0;
     LONG slashTop = 0;
     LONG slashRight = 0;
@@ -982,12 +1047,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             if (newGameRequested)
             {
                 currentRoom = 0;
+                playerMoveSpeedCurrent = playerMoveSpeed;
+                slashCooldownDurationCurrent = slashCooldownDuration;
+                dashCooldownDurationCurrent = dashCooldownDuration;
+                upgradeRandomState = 0x2468ACE1;
+                rerollUsed = false;
+                upgradeOptionA = 0;
+                upgradeOptionB = 1;
             }
             else
             {
                 currentRoom = 1;
             }
             sequenceComplete = false;
+            upgradeMenuActive = false;
+            upgradeSelection = 0;
+            upgradeConfirmRequested = false;
             playerX = static_cast<float>(currentRoom ? room2PlayerStartX : playerCenterX);
             playerY = static_cast<float>(playerCenterY);
             facingX = 1;
@@ -1056,16 +1131,71 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
         LARGE_INTEGER currentTime{};
         QueryPerformanceCounter(&currentTime);
+        if (upgradeMenuActive)
+        {
+            previousUpdate = currentTime;
+            if (upgradeConfirmRequested)
+            {
+                if (upgradeSelection == 2)
+                {
+                    if (!rerollUsed)
+                    {
+                        LONG missingUpgrade = 3 - upgradeOptionA - upgradeOptionB;
+                        upgradeRandomState = upgradeRandomState * 1664525 + 1013904223;
+                        if (upgradeRandomState & 1)
+                        {
+                            upgradeOptionB = upgradeOptionA;
+                            upgradeOptionA = missingUpgrade;
+                        }
+                        else
+                        {
+                            upgradeOptionA = upgradeOptionB;
+                            upgradeOptionB = missingUpgrade;
+                        }
+                        rerollUsed = true;
+                        upgradeSelection = 0;
+                        InvalidateRect(window, nullptr, FALSE);
+                    }
+                }
+                else
+                {
+                    LONG upgrade = upgradeSelection ? upgradeOptionB : upgradeOptionA;
+                    if (upgrade == 0)
+                    {
+                        playerMoveSpeedCurrent = playerMoveSpeed * 1.1f;
+                    }
+                    else if (upgrade == 1)
+                    {
+                        slashCooldownDurationCurrent = slashCooldownDuration * 0.8f;
+                    }
+                    else
+                    {
+                        dashCooldownDurationCurrent = dashCooldownDuration * 0.8f;
+                    }
+                    upgradeMenuActive = false;
+                    sequenceComplete = true;
+                    gameplayInputBlocked = upPressed || downPressed || leftPressed
+                        || rightPressed || zPressed || xPressed || cPressed || spacePressed;
+                }
+                upgradeConfirmRequested = false;
+            }
+            if (upgradeMenuActive)
+            {
+                Sleep(1);
+                continue;
+            }
+        }
+
         if (currentTime.QuadPart - previousUpdate.QuadPart >= updateInterval)
         {
             float deltaTime = static_cast<float>(currentTime.QuadPart - previousUpdate.QuadPart)
                 / static_cast<float>(performanceFrequency.QuadPart);
             previousUpdate = currentTime;
             LONG movementX = gameplayInputBlocked || !playerAlive
-                || roomComplete || sequenceComplete ? 0
+                || roomComplete || sequenceComplete || upgradeMenuActive ? 0
                 : static_cast<LONG>(rightPressed) - static_cast<LONG>(leftPressed);
             LONG movementY = gameplayInputBlocked || !playerAlive
-                || roomComplete || sequenceComplete ? 0
+                || roomComplete || sequenceComplete || upgradeMenuActive ? 0
                 : static_cast<LONG>(downPressed) - static_cast<LONG>(upPressed);
             if (movementX || movementY)
             {
@@ -1078,13 +1208,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             }
             if (dashRequested)
             {
-                if (playerAlive && !roomComplete && !sequenceComplete && !dashActive
+                if (playerAlive && !roomComplete && !sequenceComplete
+                    && !upgradeMenuActive && !dashActive
                     && dashCooldownRemaining <= 0.0f)
                 {
                     dashDirectionX = facingX;
                     dashDirectionY = facingY;
                     dashDistanceRemaining = dashDistance;
-                    dashCooldownRemaining = dashCooldownDuration;
+                    dashCooldownRemaining = dashCooldownDurationCurrent;
                     dashActive = true;
                 }
                 dashRequested = false;
@@ -1092,8 +1223,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
             bool playerDashingThisUpdate = dashActive;
             float movementScale = movementX && movementY ? 0.70710678f : 1.0f;
-            float movementDeltaX = movementX * playerMoveSpeed * movementScale * deltaTime;
-            float movementDeltaY = movementY * playerMoveSpeed * movementScale * deltaTime;
+            float movementDeltaX = movementX * playerMoveSpeedCurrent
+                * movementScale * deltaTime;
+            float movementDeltaY = movementY * playerMoveSpeedCurrent
+                * movementScale * deltaTime;
             LONG movementSteps = 1;
             if (dashActive)
             {
@@ -1471,7 +1604,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
             if (slashRequested)
             {
-                if (playerAlive && !roomComplete && !sequenceComplete
+                if (playerAlive && !roomComplete && !sequenceComplete && !upgradeMenuActive
                     && !playerDashingThisUpdate
                     && slashCooldownRemaining <= 0.0f)
                 {
@@ -1510,7 +1643,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     }
 
                     slashVisualRemaining = slashVisualDuration;
-                    slashCooldownRemaining = slashCooldownDuration;
+                    slashCooldownRemaining = slashCooldownDurationCurrent;
                     if (enemyAlive
                         && slashLeft < enemyLeft + enemyWidth
                         && slashRight > enemyLeft
@@ -1538,7 +1671,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
             if (executeRequested)
             {
-                if (playerAlive && !roomComplete && !sequenceComplete && enemyAlive
+                if (playerAlive && !roomComplete && !sequenceComplete
+                    && !upgradeMenuActive && enemyAlive
                     && detectionProgress <= 0.0f)
                 {
                     LONG executeCenterX = static_cast<LONG>(playerX);
@@ -1642,7 +1776,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
                 else
                 {
-                    sequenceComplete = true;
+                    upgradeRandomState = upgradeRandomState * 1664525 + 1013904223;
+                    upgradeOptionA = upgradeRandomState % 3;
+                    upgradeRandomState = upgradeRandomState * 1664525 + 1013904223;
+                    upgradeOptionB = (upgradeOptionA + 1 + (upgradeRandomState & 1)) % 3;
+                    upgradeMenuActive = true;
+                    upgradeSelection = 0;
+                    upgradeConfirmRequested = false;
+                    gameplayInputBlocked = upPressed || downPressed || leftPressed
+                        || rightPressed || zPressed || xPressed || cPressed || spacePressed;
                 }
                 dashActive = false;
                 dashDistanceRemaining = 0.0f;
@@ -1907,7 +2049,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         LONG letter = x < 12 ? x / 4 : (x >= 16 ? x / 4 - 1 : -1);
                         LONG letterX = x & 3;
                         if (letter >= 0 && letterX < 3
-                            && (runClearLetters[letter] & (1 << (y * 3 + letterX))))
+                            && (runClearLetters[letter] & (1 << (y * 3 + (2 - letterX)))))
                         {
                             framebuffer[(runClearTop + y) * framebufferWidth
                                 + runClearLeft + x]
