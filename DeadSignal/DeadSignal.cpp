@@ -21,6 +21,10 @@ constexpr LONG wallWidth = 8;
 constexpr LONG wallHeight = 60;
 constexpr LONG wallRight = wallLeft + wallWidth;
 constexpr LONG wallBottom = wallTop + wallHeight;
+constexpr LONG exitLeft = 304;
+constexpr LONG exitTop = 78;
+constexpr LONG exitRight = 320;
+constexpr LONG exitBottom = 102;
 constexpr LONG enemyWidth = 8;
 constexpr LONG enemyHeight = 12;
 constexpr float enemyInitialX = 120.0f;
@@ -898,6 +902,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     float lostSightElapsed = 0.0f;
     bool enemyAlert = false;
     bool enemyAlive = true;
+    bool exitUnlocked = false;
+    bool roomComplete = false;
     DWORD updateColor = 0x00FF0000;
 
     MSG message{};
@@ -974,6 +980,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             lostSightElapsed = 0.0f;
             enemyAlert = false;
             enemyAlive = true;
+            exitUnlocked = false;
+            roomComplete = false;
             updateColor = 0x00FF0000;
             slashRequested = false;
             dashRequested = false;
@@ -999,9 +1007,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             float deltaTime = static_cast<float>(currentTime.QuadPart - previousUpdate.QuadPart)
                 / static_cast<float>(performanceFrequency.QuadPart);
             previousUpdate = currentTime;
-            LONG movementX = gameplayInputBlocked || !playerAlive ? 0
+            LONG movementX = gameplayInputBlocked || !playerAlive || roomComplete ? 0
                 : static_cast<LONG>(rightPressed) - static_cast<LONG>(leftPressed);
-            LONG movementY = gameplayInputBlocked || !playerAlive ? 0
+            LONG movementY = gameplayInputBlocked || !playerAlive || roomComplete ? 0
                 : static_cast<LONG>(downPressed) - static_cast<LONG>(upPressed);
             if (movementX || movementY)
             {
@@ -1014,7 +1022,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             }
             if (dashRequested)
             {
-                if (playerAlive && !dashActive && dashCooldownRemaining <= 0.0f)
+                if (playerAlive && !roomComplete && !dashActive
+                    && dashCooldownRemaining <= 0.0f)
                 {
                     dashDirectionX = facingX;
                     dashDirectionY = facingY;
@@ -1406,7 +1415,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
             if (slashRequested)
             {
-                if (playerAlive && !playerDashingThisUpdate
+                if (playerAlive && !roomComplete && !playerDashingThisUpdate
                     && slashCooldownRemaining <= 0.0f)
                 {
                     LONG slashCenterX = static_cast<LONG>(playerX);
@@ -1472,7 +1481,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
             if (executeRequested)
             {
-                if (playerAlive && enemyAlive && detectionProgress <= 0.0f)
+                if (playerAlive && !roomComplete && enemyAlive
+                    && detectionProgress <= 0.0f)
                 {
                     LONG executeCenterX = static_cast<LONG>(playerX);
                     LONG executeCenterY = static_cast<LONG>(playerY);
@@ -1558,6 +1568,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     playerInVision = false;
                 }
             }
+
+            if (playerAlive && !enemyAlive)
+            {
+                exitUnlocked = true;
+            }
+            if (playerAlive && exitUnlocked && !roomComplete
+                && playerX - playerHalfWidth < exitRight
+                && playerX + playerHalfWidth > exitLeft
+                && playerY - playerHalfHeight < exitBottom
+                && playerY + playerHalfHeight > exitTop)
+            {
+                roomComplete = true;
+                dashActive = false;
+                dashDistanceRemaining = 0.0f;
+                slashRequested = false;
+                dashRequested = false;
+                executeRequested = false;
+            }
             updateColor = (updateColor + 0x00050000) & 0x00FF0000;
 
             for (LONG pixel = 0; pixel < framebufferWidth * framebufferHeight; ++pixel)
@@ -1637,6 +1665,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 for (LONG x = wallLeft; x < wallRight; ++x)
                 {
                     framebuffer[y * framebufferWidth + x] = 0x00606070;
+                }
+            }
+
+            for (LONG y = exitTop; y < exitBottom; ++y)
+            {
+                for (LONG x = exitLeft; x < exitRight; ++x)
+                {
+                    framebuffer[y * framebufferWidth + x]
+                        = exitUnlocked ? 0x0040E080 : 0x00282830;
                 }
             }
 
@@ -1779,6 +1816,54 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         {
                             framebuffer[(deadTop + y) * framebufferWidth + deadLeft + x]
                                 = 0x00FF4040;
+                        }
+                    }
+                }
+            }
+
+            if (roomComplete)
+            {
+                constexpr LONG clearLeft = framebufferWidth / 2 - 9;
+                constexpr LONG clearTop = framebufferHeight / 2 - 14;
+                for (LONG y = 0; y < 5; ++y)
+                {
+                    for (LONG x = 0; x < 19; ++x)
+                    {
+                        LONG letter = x / 4;
+                        LONG letterX = x & 3;
+                        bool clearPixel = false;
+                        if (letterX < 3)
+                        {
+                            if (letter == 0)
+                            {
+                                clearPixel = letterX == 0 || y == 0 || y == 4;
+                            }
+                            else if (letter == 1)
+                            {
+                                clearPixel = letterX == 0 || y == 4;
+                            }
+                            else if (letter == 2)
+                            {
+                                clearPixel = letterX == 0 || y == 0 || y == 2 || y == 4;
+                            }
+                            else if (letter == 3)
+                            {
+                                clearPixel = y == 0 || y == 2
+                                    || (letterX == 0 && y > 0)
+                                    || (letterX == 2 && y > 0);
+                            }
+                            else
+                            {
+                                clearPixel = letterX == 0 || y == 0 || y == 2
+                                    || (letterX == 2 && y < 3)
+                                    || (letterX == 1 && y == 3)
+                                    || (letterX == 2 && y == 4);
+                            }
+                        }
+                        if (clearPixel)
+                        {
+                            framebuffer[(clearTop + y) * framebufferWidth + clearLeft + x]
+                                = 0x0080FFC0;
                         }
                     }
                 }
