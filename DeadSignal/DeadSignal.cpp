@@ -84,10 +84,14 @@ constexpr LONG gameStartMenuState = 1;
 constexpr LONG gameplayState = 2;
 constexpr LONG gameOverEndState = 1;
 constexpr LONG runClearEndState = 2;
+constexpr DWORD saveMagic = 0x56535344;
+constexpr DWORD saveVersion = 1;
+constexpr wchar_t saveFileName[] = L"DeadSignal.sav";
 LONG applicationState = titleMainState;
 LONG menuSelection = 0;
 LONG titleStatus = 0;
 bool newGameRequested = false;
+bool loadGameRequested = false;
 LONG currentRoom = 0;
 LONG runEndState = 0;
 LONG runEndSelection = 0;
@@ -117,6 +121,67 @@ short navigationParent[navigationNodeCount];
 unsigned short navigationScore[navigationNodeCount];
 BYTE navigationState[navigationNodeCount];
 unsigned short navigationPath[navigationNodeCount];
+
+struct SaveCheckpoint
+{
+    DWORD magic;
+    DWORD version;
+    LONG room;
+    float moveSpeed;
+    float slashCooldown;
+    float dashCooldown;
+    DWORD reroll;
+};
+
+static_assert(sizeof(SaveCheckpoint) == 28);
+
+bool ReadCheckpoint(SaveCheckpoint* checkpoint)
+{
+    HANDLE file = CreateFileW(saveFileName, GENERIC_READ, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        return false;
+    }
+
+    DWORD bytesRead = 0;
+    bool valid = GetFileSize(file, nullptr) == sizeof(*checkpoint)
+        && ReadFile(file, checkpoint, sizeof(*checkpoint), &bytesRead, nullptr)
+        && bytesRead == sizeof(*checkpoint);
+    CloseHandle(file);
+    return valid && checkpoint->magic == saveMagic && checkpoint->version == saveVersion
+        && (checkpoint->room == 0 || checkpoint->room == 1)
+        && (checkpoint->moveSpeed == playerMoveSpeed
+            || checkpoint->moveSpeed == playerMoveSpeed * 1.1f)
+        && (checkpoint->slashCooldown == slashCooldownDuration
+            || checkpoint->slashCooldown == slashCooldownDuration * 0.8f)
+        && (checkpoint->dashCooldown == dashCooldownDuration
+            || checkpoint->dashCooldown == dashCooldownDuration * 0.8f)
+        && checkpoint->reroll <= 1;
+}
+
+void WriteCheckpoint(LONG room, float moveSpeed, float slashCooldown,
+    float dashCooldown, bool reroll)
+{
+    SaveCheckpoint checkpoint
+    {
+        saveMagic,
+        saveVersion,
+        room,
+        moveSpeed,
+        slashCooldown,
+        dashCooldown,
+        static_cast<DWORD>(reroll)
+    };
+    HANDLE file = CreateFileW(saveFileName, GENERIC_WRITE, 0, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file != INVALID_HANDLE_VALUE)
+    {
+        DWORD bytesWritten = 0;
+        WriteFile(file, &checkpoint, sizeof(checkpoint), &bytesWritten, nullptr);
+        CloseHandle(file);
+    }
+}
 
 BITMAPINFO framebufferInfo
 {
@@ -556,7 +621,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 }
                 else if (menuSelection == 1)
                 {
-                    titleStatus = 1;
+                    loadGameRequested = true;
                 }
                 else if (menuSelection == 2)
                 {
@@ -574,7 +639,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             }
             else if (menuSelection == 1)
             {
-                titleStatus = 1;
+                loadGameRequested = true;
             }
             else
             {
@@ -753,7 +818,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 SetTextColor(deviceContext, RGB(220, 220, 220));
                 DrawTextW(deviceContext,
                     titleStatus == 1
-                        ? L"\uC800\uC7A5 \uAE30\uB2A5 \uBBF8\uAD6C\uD604"
+                        ? L"\uC800\uC7A5 \uC5C6\uC74C"
                         : L"\uC124\uC815 \uC900\uBE44 \uC911",
                     -1, &line, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
@@ -1105,7 +1170,33 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             tonePlaying = false;
         }
 
-        if (newGameRequested || (roomComplete && currentRoom == 0))
+        bool checkpointLoaded = false;
+        if (loadGameRequested)
+        {
+            SaveCheckpoint checkpoint{};
+            if (ReadCheckpoint(&checkpoint))
+            {
+                applicationState = gameplayState;
+                currentRoom = checkpoint.room;
+                playerMoveSpeedCurrent = checkpoint.moveSpeed;
+                slashCooldownDurationCurrent = checkpoint.slashCooldown;
+                dashCooldownDurationCurrent = checkpoint.dashCooldown;
+                rerollUsed = checkpoint.reroll != 0;
+                upgradeRandomState = 0x2468ACE1;
+                upgradeOptionA = 0;
+                upgradeOptionB = 1;
+                titleStatus = 0;
+                checkpointLoaded = true;
+            }
+            else
+            {
+                titleStatus = 1;
+                InvalidateRect(window, nullptr, FALSE);
+            }
+            loadGameRequested = false;
+        }
+
+        if (newGameRequested || checkpointLoaded || (roomComplete && currentRoom == 0))
         {
             if (newGameRequested)
             {
@@ -1118,7 +1209,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 upgradeOptionA = 0;
                 upgradeOptionB = 1;
             }
-            else
+            else if (!checkpointLoaded)
             {
                 currentRoom = 1;
             }
@@ -1182,6 +1273,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             executeRequested = false;
             gameplayInputBlocked = upPressed || downPressed || leftPressed || rightPressed
                 || zPressed || xPressed || cPressed || spacePressed;
+            if (!checkpointLoaded)
+            {
+                WriteCheckpoint(currentRoom, playerMoveSpeedCurrent,
+                    slashCooldownDurationCurrent, dashCooldownDurationCurrent, rerollUsed);
+            }
             newGameRequested = false;
             QueryPerformanceCounter(&previousUpdate);
             InvalidateRect(window, nullptr, FALSE);
@@ -1831,6 +1927,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     playerInVision = false;
                     runEndState = gameOverEndState;
                     runEndSelection = 0;
+                    DeleteFileW(saveFileName);
                 }
             }
 
@@ -2109,6 +2206,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             {
                 runEndState = runClearEndState;
                 runEndSelection = 0;
+                DeleteFileW(saveFileName);
             }
 
             InvalidateRect(window, nullptr, FALSE);
