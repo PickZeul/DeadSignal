@@ -21,15 +21,15 @@ constexpr LONG wallWidth = 8;
 constexpr LONG wallHeight = 60;
 constexpr LONG wallRight = wallLeft + wallWidth;
 constexpr LONG wallBottom = wallTop + wallHeight;
-constexpr LONG room2PlayerStartX = 40;
-constexpr LONG room2WallLeft = 152;
-constexpr LONG room2WallTop = 48;
-constexpr LONG room2WallRight = 160;
-constexpr LONG room2WallBottom = 132;
 constexpr LONG exitLeft = 304;
 constexpr LONG exitTop = 78;
 constexpr LONG exitRight = 320;
 constexpr LONG exitBottom = 102;
+constexpr LONG roomCount = 6;
+constexpr LONG openRoomType = 0;
+constexpr LONG pillarRoomType = 1;
+constexpr LONG mazeRoomType = 2;
+constexpr LONG maxRoomWalls = 3;
 constexpr LONG enemyWidth = 8;
 constexpr LONG enemyHeight = 12;
 constexpr float enemyInitialX = 120.0f;
@@ -42,9 +42,6 @@ constexpr float enemyHalfWidth = enemyWidth / 2.0f;
 constexpr float enemyHalfHeight = enemyHeight / 2.0f;
 constexpr float enemyPatrolLeftPoint = 80.0f;
 constexpr float enemyPatrolRightPoint = 140.0f;
-constexpr float room2EnemyInitialX = 220.0f;
-constexpr float room2EnemyPatrolLeftPoint = 200.0f;
-constexpr float room2EnemyPatrolRightPoint = 260.0f;
 constexpr float enemyPatrolSpeed = 24.0f;
 constexpr float enemyAlertSpeed = 58.0f;
 constexpr LONG enemyVisionRange = 70;
@@ -85,7 +82,7 @@ constexpr LONG gameplayState = 2;
 constexpr LONG gameOverEndState = 1;
 constexpr LONG runClearEndState = 2;
 constexpr DWORD saveMagic = 0x56535344;
-constexpr DWORD saveVersion = 1;
+constexpr DWORD saveVersion = 2;
 constexpr wchar_t saveFileName[] = L"DeadSignal.sav";
 LONG applicationState = titleMainState;
 LONG menuSelection = 0;
@@ -93,6 +90,26 @@ LONG titleStatus = 0;
 bool newGameRequested = false;
 bool loadGameRequested = false;
 LONG currentRoom = 0;
+DWORD runSeed = 0;
+LONG currentRoomType = openRoomType;
+LONG currentLayoutVariant = 0;
+LONG currentExitSide = 1;
+LONG currentWallCount = 0;
+LONG currentWallLeft[maxRoomWalls]{};
+LONG currentWallTop[maxRoomWalls]{};
+LONG currentWallRight[maxRoomWalls]{};
+LONG currentWallBottom[maxRoomWalls]{};
+LONG currentExitLeft = exitLeft;
+LONG currentExitTop = exitTop;
+LONG currentExitRight = exitRight;
+LONG currentExitBottom = exitBottom;
+float currentPlayerStartX = static_cast<float>(playerCenterX);
+float currentPlayerStartY = static_cast<float>(playerCenterY);
+float currentEnemyStartX = enemyInitialX;
+float currentEnemyStartY = enemyInitialY;
+float currentPatrolLeft = enemyPatrolLeftPoint;
+float currentPatrolRight = enemyPatrolRightPoint;
+bool currentPatrolStartsRight = true;
 LONG runEndState = 0;
 LONG runEndSelection = 0;
 bool upgradeMenuActive = false;
@@ -126,14 +143,16 @@ struct SaveCheckpoint
 {
     DWORD magic;
     DWORD version;
+    DWORD seed;
     LONG room;
+    LONG playerHP;
     float moveSpeed;
     float slashCooldown;
     float dashCooldown;
     DWORD reroll;
 };
 
-static_assert(sizeof(SaveCheckpoint) == 28);
+static_assert(sizeof(SaveCheckpoint) == 36);
 
 bool ReadCheckpoint(SaveCheckpoint* checkpoint)
 {
@@ -150,7 +169,8 @@ bool ReadCheckpoint(SaveCheckpoint* checkpoint)
         && bytesRead == sizeof(*checkpoint);
     CloseHandle(file);
     return valid && checkpoint->magic == saveMagic && checkpoint->version == saveVersion
-        && (checkpoint->room == 0 || checkpoint->room == 1)
+        && checkpoint->seed != 0 && checkpoint->room >= 0 && checkpoint->room < roomCount
+        && checkpoint->playerHP > 0 && checkpoint->playerHP <= 10
         && (checkpoint->moveSpeed == playerMoveSpeed
             || checkpoint->moveSpeed == playerMoveSpeed * 1.1f)
         && (checkpoint->slashCooldown == slashCooldownDuration
@@ -160,14 +180,16 @@ bool ReadCheckpoint(SaveCheckpoint* checkpoint)
         && checkpoint->reroll <= 1;
 }
 
-void WriteCheckpoint(LONG room, float moveSpeed, float slashCooldown,
-    float dashCooldown, bool reroll)
+void WriteCheckpoint(DWORD seed, LONG room, LONG playerHP, float moveSpeed,
+    float slashCooldown, float dashCooldown, bool reroll)
 {
     SaveCheckpoint checkpoint
     {
         saveMagic,
         saveVersion,
+        seed,
         room,
+        playerHP,
         moveSpeed,
         slashCooldown,
         dashCooldown,
@@ -195,57 +217,142 @@ BITMAPINFO framebufferInfo
     }
 };
 
-LONG CurrentWallLeft()
+DWORD RoomRandom(DWORD seed, LONG room)
 {
-    return currentRoom ? room2WallLeft : wallLeft;
+    DWORD value = seed ^ (0x9E3779B9u * static_cast<DWORD>(room + 1));
+    value ^= value >> 16;
+    value *= 0x7FEB352Du;
+    value ^= value >> 15;
+    value *= 0x846CA68Bu;
+    return value ^ (value >> 16);
 }
 
-LONG CurrentWallTop()
+DWORD NextRoomRandom(DWORD& state)
 {
-    return currentRoom ? room2WallTop : wallTop;
+    state = state * 1664525u + 1013904223u;
+    return state;
 }
 
-LONG CurrentWallRight()
+void AddRoomWall(LONG left, LONG top, LONG right, LONG bottom)
 {
-    return currentRoom ? room2WallRight : wallRight;
+    LONG wall = currentWallCount++;
+    currentWallLeft[wall] = left;
+    currentWallTop[wall] = top;
+    currentWallRight[wall] = right;
+    currentWallBottom[wall] = bottom;
 }
 
-LONG CurrentWallBottom()
+bool RectangleOverlapsRoomWall(float left, float top, float right, float bottom)
 {
-    return currentRoom ? room2WallBottom : wallBottom;
+    for (LONG wall = 0; wall < currentWallCount; ++wall)
+    {
+        if (left < currentWallRight[wall] && right > currentWallLeft[wall]
+            && top < currentWallBottom[wall] && bottom > currentWallTop[wall])
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
-float CurrentEnemyInitialX()
+void SetupCurrentRoom()
 {
-    return currentRoom ? room2EnemyInitialX : enemyInitialX;
+    DWORD state = RoomRandom(runSeed, currentRoom);
+    currentRoomType = NextRoomRandom(state) % 3;
+    currentLayoutVariant = currentRoomType == openRoomType
+        ? 0 : NextRoomRandom(state) >> 31;
+    currentExitSide = NextRoomRandom(state) >> 31;
+    currentPatrolStartsRight = (NextRoomRandom(state) >> 31) != 0;
+    currentWallCount = 0;
+
+    if (currentRoomType == pillarRoomType)
+    {
+        if (!currentLayoutVariant)
+        {
+            AddRoomWall(104, 44, 120, 68);
+            AddRoomWall(152, 108, 168, 132);
+            AddRoomWall(208, 44, 224, 68);
+        }
+        else
+        {
+            AddRoomWall(88, 108, 104, 132);
+            AddRoomWall(152, 44, 168, 68);
+            AddRoomWall(224, 108, 240, 132);
+        }
+    }
+    else if (currentRoomType == mazeRoomType)
+    {
+        if (!currentLayoutVariant)
+        {
+            AddRoomWall(96, 16, 112, 116);
+            AddRoomWall(200, 64, 216, 164);
+        }
+        else
+        {
+            AddRoomWall(64, 48, 184, 64);
+            AddRoomWall(136, 116, 256, 132);
+        }
+    }
+
+    if (currentExitSide)
+    {
+        currentExitLeft = 304;
+        currentExitRight = 320;
+        currentPlayerStartX = 28.0f;
+    }
+    else
+    {
+        currentExitLeft = 0;
+        currentExitRight = 16;
+        currentPlayerStartX = 292.0f;
+    }
+    currentExitTop = 78;
+    currentExitBottom = 102;
+    currentPlayerStartY = 90.0f;
+
+    constexpr float enemyCandidatesX[4] = { 124.0f, 196.0f, 148.0f, 220.0f };
+    constexpr float enemyCandidatesY[4] = { 90.0f, 90.0f, 88.0f, 88.0f };
+    LONG firstCandidate = NextRoomRandom(state) >> 30;
+    if (currentRoomType == mazeRoomType && !currentLayoutVariant)
+    {
+        currentEnemyStartX = (firstCandidate & 1) ? 156.0f : 260.0f;
+        currentEnemyStartY = 90.0f;
+    }
+    else
+    {
+        for (LONG attempt = 0; attempt < 4; ++attempt)
+        {
+            LONG candidate = (firstCandidate + attempt) & 3;
+            currentEnemyStartX = enemyCandidatesX[candidate];
+            currentEnemyStartY = enemyCandidatesY[candidate];
+            if (!RectangleOverlapsRoomWall(currentEnemyStartX - enemyHalfWidth,
+                currentEnemyStartY - enemyHalfHeight, currentEnemyStartX + enemyHalfWidth,
+                currentEnemyStartY + enemyHalfHeight))
+            {
+                break;
+            }
+        }
+    }
+    currentPatrolLeft = currentEnemyStartX - 28.0f;
+    currentPatrolRight = currentEnemyStartX + 28.0f;
 }
 
-float CurrentEnemyPatrolLeftPoint()
-{
-    return currentRoom ? room2EnemyPatrolLeftPoint : enemyPatrolLeftPoint;
-}
-
-float CurrentEnemyPatrolRightPoint()
-{
-    return currentRoom ? room2EnemyPatrolRightPoint : enemyPatrolRightPoint;
-}
-
-bool WallBlocksSegment(float startX, float startY, float endX, float endY)
+bool SingleWallBlocksSegment(LONG wall, float startX, float startY, float endX, float endY)
 {
     float enter = 0.0f;
     float exit = 1.0f;
     float difference = endX - startX;
     if (difference == 0.0f)
     {
-        if (startX < CurrentWallLeft() || startX >= CurrentWallRight())
+        if (startX < currentWallLeft[wall] || startX >= currentWallRight[wall])
         {
             return false;
         }
     }
     else
     {
-        float first = (CurrentWallLeft() - startX) / difference;
-        float second = (CurrentWallRight() - startX) / difference;
+        float first = (currentWallLeft[wall] - startX) / difference;
+        float second = (currentWallRight[wall] - startX) / difference;
         if (first > second)
         {
             float swap = first;
@@ -269,15 +376,15 @@ bool WallBlocksSegment(float startX, float startY, float endX, float endY)
     difference = endY - startY;
     if (difference == 0.0f)
     {
-        if (startY < CurrentWallTop() || startY >= CurrentWallBottom())
+        if (startY < currentWallTop[wall] || startY >= currentWallBottom[wall])
         {
             return false;
         }
     }
     else
     {
-        float first = (CurrentWallTop() - startY) / difference;
-        float second = (CurrentWallBottom() - startY) / difference;
+        float first = (currentWallTop[wall] - startY) / difference;
+        float second = (currentWallBottom[wall] - startY) / difference;
         if (first > second)
         {
             float swap = first;
@@ -295,6 +402,18 @@ bool WallBlocksSegment(float startX, float startY, float endX, float endY)
     }
 
     return enter <= exit && exit >= 0.0f && enter <= 1.0f;
+}
+
+bool WallBlocksSegment(float startX, float startY, float endX, float endY)
+{
+    for (LONG wall = 0; wall < currentWallCount; ++wall)
+    {
+        if (SingleWallBlocksSegment(wall, startX, startY, endX, endY))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 float TurnToward(float angle, float target, float amount)
@@ -329,10 +448,8 @@ bool NavigationCellValid(LONG column, LONG row)
     }
     float centerX = enemyHalfWidth + column * navigationCellSize;
     float centerY = enemyHalfHeight + row * navigationCellSize;
-    return !(centerX - enemyHalfWidth < CurrentWallRight()
-        && centerX + enemyHalfWidth > CurrentWallLeft()
-        && centerY - enemyHalfHeight < CurrentWallBottom()
-        && centerY + enemyHalfHeight > CurrentWallTop());
+    return !RectangleOverlapsRoomWall(centerX - enemyHalfWidth,
+        centerY - enemyHalfHeight, centerX + enemyHalfWidth, centerY + enemyHalfHeight);
 }
 
 LONG NavigationColumn(float x)
@@ -484,14 +601,17 @@ bool MoveEnemyToward(float& enemyX, float& enemyY, float targetX, float targetY,
         {
             nextX = framebufferWidth - enemyHalfWidth;
         }
-        if (movementDeltaX != 0.0f
-            && nextX - enemyHalfWidth < CurrentWallRight()
-            && nextX + enemyHalfWidth > CurrentWallLeft()
-            && enemyY - enemyHalfHeight < CurrentWallBottom()
-            && enemyY + enemyHalfHeight > CurrentWallTop())
+        for (LONG wall = 0; movementDeltaX != 0.0f && wall < currentWallCount; ++wall)
         {
-            nextX = movementDeltaX > 0.0f
-                ? CurrentWallLeft() - enemyHalfWidth : CurrentWallRight() + enemyHalfWidth;
+            if (nextX - enemyHalfWidth < currentWallRight[wall]
+                && nextX + enemyHalfWidth > currentWallLeft[wall]
+                && enemyY - enemyHalfHeight < currentWallBottom[wall]
+                && enemyY + enemyHalfHeight > currentWallTop[wall])
+            {
+                nextX = movementDeltaX > 0.0f
+                    ? currentWallLeft[wall] - enemyHalfWidth
+                    : currentWallRight[wall] + enemyHalfWidth;
+            }
         }
         if (movementDeltaX != 0.0f
             && nextX - enemyHalfWidth < playerX + playerHalfWidth
@@ -512,14 +632,17 @@ bool MoveEnemyToward(float& enemyX, float& enemyY, float targetX, float targetY,
         {
             nextY = framebufferHeight - enemyHalfHeight;
         }
-        if (movementDeltaY != 0.0f
-            && enemyX - enemyHalfWidth < CurrentWallRight()
-            && enemyX + enemyHalfWidth > CurrentWallLeft()
-            && nextY - enemyHalfHeight < CurrentWallBottom()
-            && nextY + enemyHalfHeight > CurrentWallTop())
+        for (LONG wall = 0; movementDeltaY != 0.0f && wall < currentWallCount; ++wall)
         {
-            nextY = movementDeltaY > 0.0f
-                ? CurrentWallTop() - enemyHalfHeight : CurrentWallBottom() + enemyHalfHeight;
+            if (enemyX - enemyHalfWidth < currentWallRight[wall]
+                && enemyX + enemyHalfWidth > currentWallLeft[wall]
+                && nextY - enemyHalfHeight < currentWallBottom[wall]
+                && nextY + enemyHalfHeight > currentWallTop[wall])
+            {
+                nextY = movementDeltaY > 0.0f
+                    ? currentWallTop[wall] - enemyHalfHeight
+                    : currentWallBottom[wall] + enemyHalfHeight;
+            }
         }
         if (movementDeltaY != 0.0f
             && enemyX - enemyHalfWidth < playerX + playerHalfWidth
@@ -1177,7 +1300,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             if (ReadCheckpoint(&checkpoint))
             {
                 applicationState = gameplayState;
+                runSeed = checkpoint.seed;
                 currentRoom = checkpoint.room;
+                playerHP = checkpoint.playerHP;
                 playerMoveSpeedCurrent = checkpoint.moveSpeed;
                 slashCooldownDurationCurrent = checkpoint.slashCooldown;
                 dashCooldownDurationCurrent = checkpoint.dashCooldown;
@@ -1196,11 +1321,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             loadGameRequested = false;
         }
 
-        if (newGameRequested || checkpointLoaded || (roomComplete && currentRoom == 0))
+        if (newGameRequested || checkpointLoaded
+            || (roomComplete && currentRoom < roomCount - 1))
         {
             if (newGameRequested)
             {
+                LARGE_INTEGER seedTime{};
+                QueryPerformanceCounter(&seedTime);
+                runSeed = seedTime.LowPart ^ seedTime.HighPart ^ GetTickCount();
+                if (!runSeed)
+                {
+                    runSeed = 0xA341316Cu;
+                }
                 currentRoom = 0;
+                playerHP = 10;
                 playerMoveSpeedCurrent = playerMoveSpeed;
                 slashCooldownDurationCurrent = slashCooldownDuration;
                 dashCooldownDurationCurrent = dashCooldownDuration;
@@ -1211,30 +1345,31 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             }
             else if (!checkpointLoaded)
             {
-                currentRoom = 1;
+                ++currentRoom;
             }
+            SetupCurrentRoom();
             sequenceComplete = false;
             runEndState = 0;
             runEndSelection = 0;
             upgradeMenuActive = false;
             upgradeSelection = 0;
             upgradeConfirmRequested = false;
-            playerX = static_cast<float>(currentRoom ? room2PlayerStartX : playerCenterX);
-            playerY = static_cast<float>(playerCenterY);
+            playerX = currentPlayerStartX;
+            playerY = currentPlayerStartY;
             facingX = 1;
             facingY = 0;
-            enemyX = CurrentEnemyInitialX();
-            enemyY = enemyInitialY;
+            enemyX = currentEnemyStartX;
+            enemyY = currentEnemyStartY;
             enemyFacingAngle = 0.0f;
-            enemyPatrolRight = true;
+            enemyPatrolRight = currentPatrolStartsRight;
             enemyReturningToPatrol = false;
-            enemyPatrolReturnX = CurrentEnemyInitialX();
+            enemyPatrolReturnX = currentEnemyStartX;
             playerInVision = false;
             lastSeenPlayerX = 0.0f;
             lastSeenPlayerY = 0.0f;
             lastSeenPlayerValid = false;
             alertLostElapsed = 0.0f;
-            searchRandomState = 0x13579BDF;
+            searchRandomState = RoomRandom(runSeed, currentRoom) ^ 0x13579BDFu;
             searchTargetX = 0.0f;
             searchTargetY = 0.0f;
             searchTargetValid = false;
@@ -1243,7 +1378,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             enemyScanning = false;
             scanElapsed = 0.0f;
             scanBaseFacing = 0.0f;
-            playerHP = 10;
             playerAlive = true;
             enemyHP = 3;
             enemyAttackCooldownRemaining = 0.0f;
@@ -1275,7 +1409,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 || zPressed || xPressed || cPressed || spacePressed;
             if (!checkpointLoaded)
             {
-                WriteCheckpoint(currentRoom, playerMoveSpeedCurrent,
+                WriteCheckpoint(runSeed, currentRoom, playerHP, playerMoveSpeedCurrent,
                     slashCooldownDurationCurrent, dashCooldownDurationCurrent, rerollUsed);
             }
             newGameRequested = false;
@@ -1341,7 +1475,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         dashCooldownDurationCurrent = dashCooldownDuration * 0.8f;
                     }
                     upgradeMenuActive = false;
-                    sequenceComplete = true;
+                    if (currentRoom == roomCount - 1)
+                    {
+                        sequenceComplete = true;
+                    }
+                    else
+                    {
+                        roomComplete = true;
+                    }
                     gameplayInputBlocked = upPressed || downPressed || leftPressed
                         || rightPressed || zPressed || xPressed || cPressed || spacePressed;
                 }
@@ -1443,15 +1584,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     nextPlayerX = framebufferWidth - playerHalfWidth;
                 }
 
-                if (movementDeltaX != 0.0f
-                    && nextPlayerX - playerHalfWidth < CurrentWallRight()
-                    && nextPlayerX + playerHalfWidth > CurrentWallLeft()
-                    && playerY - playerHalfHeight < CurrentWallBottom()
-                    && playerY + playerHalfHeight > CurrentWallTop())
+                for (LONG wall = 0; movementDeltaX != 0.0f
+                    && wall < currentWallCount; ++wall)
                 {
-                    nextPlayerX = movementDeltaX > 0.0f
-                        ? CurrentWallLeft() - playerHalfWidth
-                        : CurrentWallRight() + playerHalfWidth;
+                    if (nextPlayerX - playerHalfWidth < currentWallRight[wall]
+                        && nextPlayerX + playerHalfWidth > currentWallLeft[wall]
+                        && playerY - playerHalfHeight < currentWallBottom[wall]
+                        && playerY + playerHalfHeight > currentWallTop[wall])
+                    {
+                        nextPlayerX = movementDeltaX > 0.0f
+                            ? currentWallLeft[wall] - playerHalfWidth
+                            : currentWallRight[wall] + playerHalfWidth;
+                    }
                 }
                 playerX = nextPlayerX;
 
@@ -1465,15 +1609,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     nextPlayerY = framebufferHeight - playerHalfHeight;
                 }
 
-                if (movementDeltaY != 0.0f
-                    && playerX - playerHalfWidth < CurrentWallRight()
-                    && playerX + playerHalfWidth > CurrentWallLeft()
-                    && nextPlayerY - playerHalfHeight < CurrentWallBottom()
-                    && nextPlayerY + playerHalfHeight > CurrentWallTop())
+                for (LONG wall = 0; movementDeltaY != 0.0f
+                    && wall < currentWallCount; ++wall)
                 {
-                    nextPlayerY = movementDeltaY > 0.0f
-                        ? CurrentWallTop() - playerHalfHeight
-                        : CurrentWallBottom() + playerHalfHeight;
+                    if (playerX - playerHalfWidth < currentWallRight[wall]
+                        && playerX + playerHalfWidth > currentWallLeft[wall]
+                        && nextPlayerY - playerHalfHeight < currentWallBottom[wall]
+                        && nextPlayerY + playerHalfHeight > currentWallTop[wall])
+                    {
+                        nextPlayerY = movementDeltaY > 0.0f
+                            ? currentWallTop[wall] - playerHalfHeight
+                            : currentWallBottom[wall] + playerHalfHeight;
+                    }
                 }
                 playerY = nextPlayerY;
             }
@@ -1533,22 +1680,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             detectionProgress = 0.0f;
                             lostSightElapsed = 0.0f;
                             enemyPatrolReturnX = enemyX;
-                            if (enemyPatrolReturnX < CurrentEnemyPatrolLeftPoint())
+                            if (enemyPatrolReturnX < currentPatrolLeft)
                             {
-                                enemyPatrolReturnX = CurrentEnemyPatrolLeftPoint();
+                                enemyPatrolReturnX = currentPatrolLeft;
                             }
-                            else if (enemyPatrolReturnX > CurrentEnemyPatrolRightPoint())
+                            else if (enemyPatrolReturnX > currentPatrolRight)
                             {
-                                enemyPatrolReturnX = CurrentEnemyPatrolRightPoint();
+                                enemyPatrolReturnX = currentPatrolRight;
                             }
                             enemyReturningToPatrol
                                 = (enemyX - enemyPatrolReturnX) * (enemyX - enemyPatrolReturnX)
-                                + (enemyY - enemyInitialY) * (enemyY - enemyInitialY) > 0.25f;
+                                + (enemyY - currentEnemyStartY)
+                                * (enemyY - currentEnemyStartY) > 0.25f;
                             if (enemyReturningToPatrol)
                             {
                                 searchPathCount = FindEnemyPath(enemyX, enemyY,
                                     NavigationColumn(enemyPatrolReturnX),
-                                    NavigationRow(enemyInitialY));
+                                    NavigationRow(currentEnemyStartY));
                                 searchPathIndex = 0;
                             }
                         }
@@ -1642,10 +1790,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                         || candidateY < enemyHalfHeight
                                         || candidateY > framebufferHeight - enemyHalfHeight
                                         || !NavigationCellValid(targetColumn, targetRow)
-                                        || (candidateX - enemyHalfWidth < CurrentWallRight()
-                                            && candidateX + enemyHalfWidth > CurrentWallLeft()
-                                            && candidateY - enemyHalfHeight < CurrentWallBottom()
-                                            && candidateY + enemyHalfHeight > CurrentWallTop()))
+                                        || RectangleOverlapsRoomWall(
+                                            candidateX - enemyHalfWidth,
+                                            candidateY - enemyHalfHeight,
+                                            candidateX + enemyHalfWidth,
+                                            candidateY + enemyHalfHeight))
                                     {
                                         continue;
                                     }
@@ -1705,10 +1854,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 else
                 {
                     float patrolTargetX = enemyPatrolRight
-                        ? CurrentEnemyPatrolRightPoint() : CurrentEnemyPatrolLeftPoint();
+                        ? currentPatrolRight : currentPatrolLeft;
                     float movementTargetX = enemyReturningToPatrol
                         ? enemyPatrolReturnX : patrolTargetX;
-                    float movementTargetY = enemyInitialY;
+                    float movementTargetY = currentEnemyStartY;
                     if (enemyReturningToPatrol && searchPathIndex < searchPathCount)
                     {
                         LONG node = navigationPath[searchPathIndex];
@@ -1936,17 +2085,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 exitUnlocked = true;
             }
             if (playerAlive && exitUnlocked && !roomComplete && !sequenceComplete
-                && playerX - playerHalfWidth < exitRight
-                && playerX + playerHalfWidth > exitLeft
-                && playerY - playerHalfHeight < exitBottom
-                && playerY + playerHalfHeight > exitTop)
+                && playerX - playerHalfWidth < currentExitRight
+                && playerX + playerHalfWidth > currentExitLeft
+                && playerY - playerHalfHeight < currentExitBottom
+                && playerY + playerHalfHeight > currentExitTop)
             {
-                if (currentRoom == 0)
+                if ((currentRoom & 1) == 0)
                 {
                     roomComplete = true;
                 }
                 else
                 {
+                    upgradeRandomState = RoomRandom(runSeed, currentRoom) ^ 0x2468ACE1u;
                     upgradeRandomState = upgradeRandomState * 1664525 + 1013904223;
                     upgradeOptionA = upgradeRandomState % 3;
                     upgradeRandomState = upgradeRandomState * 1664525 + 1013904223;
@@ -2037,17 +2187,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
             }
 
-            for (LONG y = CurrentWallTop(); y < CurrentWallBottom(); ++y)
+            for (LONG wall = 0; wall < currentWallCount; ++wall)
             {
-                for (LONG x = CurrentWallLeft(); x < CurrentWallRight(); ++x)
+                for (LONG y = currentWallTop[wall]; y < currentWallBottom[wall]; ++y)
                 {
-                    framebuffer[y * framebufferWidth + x] = 0x00606070;
+                    for (LONG x = currentWallLeft[wall]; x < currentWallRight[wall]; ++x)
+                    {
+                        framebuffer[y * framebufferWidth + x] = 0x00606070;
+                    }
                 }
             }
 
-            for (LONG y = exitTop; y < exitBottom; ++y)
+            for (LONG y = currentExitTop; y < currentExitBottom; ++y)
             {
-                for (LONG x = exitLeft; x < exitRight; ++x)
+                for (LONG x = currentExitLeft; x < currentExitRight; ++x)
                 {
                     framebuffer[y * framebufferWidth + x]
                         = exitUnlocked ? 0x0040E080 : 0x00282830;
