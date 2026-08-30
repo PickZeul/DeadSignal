@@ -33,6 +33,7 @@ constexpr LONG openRoomType = 0;
 constexpr LONG pillarRoomType = 1;
 constexpr LONG mazeRoomType = 2;
 constexpr LONG trapRoomType = 3;
+constexpr LONG mixedRoomType = 4;
 constexpr LONG maxRoomWalls = 24;
 constexpr LONG maxRoomTraps = 19;
 constexpr LONG trapWidth = 24;
@@ -97,7 +98,7 @@ constexpr LONG gameplayState = 2;
 constexpr LONG gameOverEndState = 1;
 constexpr LONG runClearEndState = 2;
 constexpr DWORD saveMagic = 0x56535344;
-constexpr DWORD saveVersion = 4;
+constexpr DWORD saveVersion = 5;
 constexpr wchar_t saveFileName[] = L"DeadSignal.sav";
 LONG applicationState = titleMainState;
 LONG menuSelection = 0;
@@ -365,7 +366,7 @@ void SetupCurrentRoom()
     SetRoomSizeStage(currentRoom / 2 + 2);
 
     DWORD state = RoomRandom(runSeed, currentRoom);
-    currentRoomType = NextRoomRandom(state) % 4;
+    currentRoomType = NextRoomRandom(state) % 5;
     currentLayoutVariant = currentRoomType == openRoomType
         ? 0 : NextRoomRandom(state) >> 31;
     currentExitSide = NextRoomRandom(state) >> 31;
@@ -480,6 +481,28 @@ void SetupCurrentRoom()
             }
         }
     }
+    else if (currentRoomType == mixedRoomType)
+    {
+        constexpr LONG mixedCandidateX[12]
+            = { 3, 7, 5, 2, 8, 4, 6, 3, 7, 5, 2, 8 };
+        constexpr LONG mixedCandidateY[12]
+            = { 2, 2, 3, 4, 4, 6, 6, 8, 8, 7, 6, 5 };
+        constexpr LONG mixedWallCountsByStage[5] = { 1, 2, 4, 7, 12 };
+        LONG structureCount = mixedWallCountsByStage[roomSizeStage - 1];
+        for (LONG structure = 0; structure < structureCount; ++structure)
+        {
+            LONG x = mixedCandidateX[structure];
+            LONG y = mixedCandidateY[structure];
+            if (currentLayoutVariant)
+            {
+                x = 10 - x;
+                y = 10 - y;
+            }
+            LONG left = worldWidth * x / 10 - 8;
+            LONG top = worldHeight * y / 10 - 12;
+            AddRoomWall(left, top, left + 16, top + 24);
+        }
+    }
 
     if (currentExitSide)
     {
@@ -498,7 +521,7 @@ void SetupCurrentRoom()
     currentPlayerStartY = worldHeight / 2.0f;
 
     currentTrapCount = 0;
-    if (currentRoomType == trapRoomType)
+    if (currentRoomType == trapRoomType || currentRoomType == mixedRoomType)
     {
         constexpr LONG trapCandidateX[20]
             = { 1, 2, 3, 4, 5, 1, 2, 3, 4, 5,
@@ -507,7 +530,10 @@ void SetupCurrentRoom()
             = { 1, 1, 1, 1, 1, 2, 2, 2, 2, 2,
                 3, 3, 3, 3, 3, 4, 4, 4, 4, 4 };
         constexpr LONG trapCountsByStage[5] = { 1, 3, 7, 12, 19 };
-        LONG requestedTrapCount = trapCountsByStage[roomSizeStage - 1];
+        constexpr LONG mixedTrapCountsByStage[5] = { 1, 2, 4, 7, 11 };
+        LONG requestedTrapCount = currentRoomType == trapRoomType
+            ? trapCountsByStage[roomSizeStage - 1]
+            : mixedTrapCountsByStage[roomSizeStage - 1];
         LONG firstCandidate = NextRoomRandom(state) % 20;
         for (LONG attempt = 0; attempt < 20 && currentTrapCount < requestedTrapCount;
             ++attempt)
@@ -522,6 +548,9 @@ void SetupCurrentRoom()
                 || RectangleOverlapsRoomTrap(static_cast<float>(left - 2),
                     static_cast<float>(top - 2), static_cast<float>(right + 2),
                     static_cast<float>(bottom + 2))
+                || RectangleOverlapsRoomWall(static_cast<float>(left),
+                    static_cast<float>(top), static_cast<float>(right),
+                    static_cast<float>(bottom))
                 || (left < currentExitRight && right > currentExitLeft
                     && top < currentExitBottom && bottom > currentExitTop)
                 || (left < currentPlayerStartX + playerHalfWidth
@@ -1379,7 +1408,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
         const wchar_t* roomName = currentRoomType == openRoomType ? L"Open"
             : (currentRoomType == pillarRoomType ? L"Pillar"
-                : (currentRoomType == mazeRoomType ? L"Maze" : L"Trap"));
+                : (currentRoomType == mazeRoomType ? L"Maze"
+                    : (currentRoomType == trapRoomType ? L"Trap" : L"Mixed")));
         wsprintfW(hudText, L"%02ld.%s", currentRoom + 1, roomName);
         hudLine.left = destinationX + destinationWidth / 2 - 60;
         hudLine.right = destinationX + destinationWidth / 2 + 60;
@@ -1953,7 +1983,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             float deltaTime = static_cast<float>(currentTime.QuadPart - previousUpdate.QuadPart)
                 / static_cast<float>(performanceFrequency.QuadPart);
             previousUpdate = currentTime;
-            if (currentRoomType == trapRoomType)
+            if (currentTrapCount)
             {
                 trapCycleElapsed += deltaTime;
                 while (trapCycleElapsed >= trapCycleDuration)
@@ -2090,7 +2120,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 playerY = nextPlayerY;
             }
 
-            if (currentRoomType == trapRoomType && playerAlive
+            if (currentTrapCount && playerAlive
                 && trapDamageCooldownRemaining <= 0.0f)
             {
                 for (LONG trap = 0; trap < currentTrapCount; ++trap)
