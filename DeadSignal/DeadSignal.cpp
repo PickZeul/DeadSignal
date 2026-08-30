@@ -48,6 +48,12 @@ constexpr BYTE watcherEnemyRole = 1;
 constexpr BYTE hunterEnemyRole = 2;
 constexpr BYTE listenerEnemyRole = 3;
 constexpr BYTE spinnerEnemyRole = 4;
+constexpr BYTE pressureEnemyRole = 5;
+constexpr LONG pressureEnemyIndex = enemyCount;
+constexpr LONG pressureVisualWidth = 10;
+constexpr LONG pressureVisualHeight = 12;
+constexpr float pressureMoveSpeed = 29.0f;
+constexpr float pressureMinimumSpawnDistanceSquared = 80.0f * 80.0f;
 constexpr LONG enemyWidth = 8;
 constexpr LONG enemyHeight = 12;
 constexpr float enemyInitialX = 120.0f;
@@ -145,6 +151,9 @@ float currentEnemyStartFacing[enemyCount]{};
 float currentPatrolLeft[enemyCount]{};
 float currentPatrolRight[enemyCount]{};
 bool currentPatrolStartsRight[enemyCount]{};
+bool currentPressureActive = false;
+float currentPressureStartX = 0.0f;
+float currentPressureStartY = 0.0f;
 LONG runEndState = 0;
 LONG runEndSelection = 0;
 bool upgradeMenuActive = false;
@@ -177,7 +186,7 @@ WAVEHDR toneHeader{};
 short navigationParent[maxNavigationNodeCount];
 unsigned short navigationScore[maxNavigationNodeCount];
 BYTE navigationState[maxNavigationNodeCount];
-unsigned short navigationPath[enemyCount][maxNavigationNodeCount];
+unsigned short navigationPath[enemyCount + 1][maxNavigationNodeCount];
 
 struct EnemyRuntime
 {
@@ -673,6 +682,70 @@ void SetupCurrentRoom()
         }
     }
     currentEnemyStartFacing[2] = watcherFacingAngle[NextRoomRandom(state) & 3];
+
+    currentPressureActive = false;
+    currentPressureStartX = 0.0f;
+    currentPressureStartY = 0.0f;
+    if (currentRoomType == openRoomType)
+    {
+        LONG firstPressureCandidate = NextRoomRandom(state) % 12;
+        for (LONG attempt = 0; attempt < 12 && !currentPressureActive; ++attempt)
+        {
+            LONG candidate = (firstPressureCandidate + attempt) % 12;
+            float candidateX
+                = static_cast<float>(worldWidth * enemyCandidateX[candidate] / 8);
+            float candidateY
+                = static_cast<float>(worldHeight * enemyCandidateY[candidate] / 8);
+            float playerDifferenceX = candidateX - currentPlayerStartX;
+            float playerDifferenceY = candidateY - currentPlayerStartY;
+            bool enemyOverlap = false;
+            for (LONG enemy = 0; enemy < enemyCount && !enemyOverlap; ++enemy)
+            {
+                enemyOverlap = candidateX - pressureVisualWidth / 2.0f
+                    < currentEnemyStartX[enemy] + enemyHalfWidth
+                    && candidateX + pressureVisualWidth / 2.0f
+                    > currentEnemyStartX[enemy] - enemyHalfWidth
+                    && candidateY - pressureVisualHeight / 2.0f
+                    < currentEnemyStartY[enemy] + enemyHalfHeight
+                    && candidateY + pressureVisualHeight / 2.0f
+                    > currentEnemyStartY[enemy] - enemyHalfHeight;
+            }
+            LONG candidateColumn = static_cast<LONG>((candidateX - enemyHalfWidth
+                + navigationCellSize * 0.5f) / navigationCellSize);
+            LONG candidateRow = static_cast<LONG>((candidateY - enemyHalfHeight
+                + navigationCellSize * 0.5f) / navigationCellSize);
+            float cellX = enemyHalfWidth + candidateColumn * navigationCellSize;
+            float cellY = enemyHalfHeight + candidateRow * navigationCellSize;
+            if (candidateUsed[candidate] || enemyOverlap
+                || candidateX < pressureVisualWidth / 2.0f
+                || candidateX > worldWidth - pressureVisualWidth / 2.0f
+                || candidateY < pressureVisualHeight / 2.0f
+                || candidateY > worldHeight - pressureVisualHeight / 2.0f
+                || playerDifferenceX * playerDifferenceX
+                    + playerDifferenceY * playerDifferenceY
+                    < pressureMinimumSpawnDistanceSquared
+                || RectangleOverlapsRoomWall(
+                    candidateX - pressureVisualWidth / 2.0f,
+                    candidateY - pressureVisualHeight / 2.0f,
+                    candidateX + pressureVisualWidth / 2.0f,
+                    candidateY + pressureVisualHeight / 2.0f)
+                || candidateColumn < 0 || candidateColumn >= navigationColumns
+                || candidateRow < 0 || candidateRow >= navigationRows
+                || RectangleOverlapsRoomWall(cellX - enemyHalfWidth,
+                    cellY - enemyHalfHeight, cellX + enemyHalfWidth,
+                    cellY + enemyHalfHeight)
+                || (candidateX - pressureVisualWidth / 2.0f < currentExitRight
+                    && candidateX + pressureVisualWidth / 2.0f > currentExitLeft
+                    && candidateY - pressureVisualHeight / 2.0f < currentExitBottom
+                    && candidateY + pressureVisualHeight / 2.0f > currentExitTop))
+            {
+                continue;
+            }
+            currentPressureStartX = candidateX;
+            currentPressureStartY = candidateY;
+            currentPressureActive = true;
+        }
+    }
 }
 
 bool SingleWallBlocksSegment(LONG wall, float startX, float startY, float endX, float endY)
@@ -1750,6 +1823,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     LONG facingX = 1;
     LONG facingY = 0;
     EnemyRuntime enemies[enemyCount]{};
+    EnemyRuntime pressureEnemy{};
     LONG playerHP = 10;
     bool playerAlive = true;
     float playerHitRemaining = 0.0f;
@@ -1887,6 +1961,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 enemy.patrolRight = currentPatrolStartsRight[enemyIndex];
                 enemy.alive = true;
             }
+            pressureEnemy = {};
+            pressureEnemy.x = currentPressureStartX;
+            pressureEnemy.y = currentPressureStartY;
+            pressureEnemy.role = pressureEnemyRole;
+            pressureEnemy.searchRandomState = RoomRandom(runSeed, currentRoom)
+                ^ 0xB5297A4Du;
+            pressureEnemy.alive = currentPressureActive;
             playerAlive = true;
             currentEnemyRemaining = enemyCount;
             playerHitRemaining = 0.0f;
@@ -2679,6 +2760,102 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             }
             }
 
+            if (pressureEnemy.alive && playerAlive)
+            {
+                float playerDifferenceX = playerX - pressureEnemy.x;
+                float playerDifferenceY = playerY - pressureEnemy.y;
+                pressureEnemy.facingAngle = atan2f(playerDifferenceY, playerDifferenceX);
+                if (!WallBlocksSegment(pressureEnemy.x, pressureEnemy.y, playerX, playerY))
+                {
+                    pressureEnemy.searchTargetValid = false;
+                    pressureEnemy.searchPathCount = 0;
+                    pressureEnemy.searchPathIndex = 0;
+                    MoveEnemyToward(pressureEnemy.x, pressureEnemy.y, playerX, playerY,
+                        pressureMoveSpeed, deltaTime, playerX, playerY);
+                }
+                else
+                {
+                    float targetDifferenceX = playerX - pressureEnemy.lastSeenPlayerX;
+                    float targetDifferenceY = playerY - pressureEnemy.lastSeenPlayerY;
+                    if (!pressureEnemy.searchTargetValid
+                        || targetDifferenceX * targetDifferenceX
+                        + targetDifferenceY * targetDifferenceY
+                        >= navigationCellSize * navigationCellSize)
+                    {
+                        constexpr float targetOffsetX[4]
+                            = { 10.0f, -10.0f, 0.0f, 0.0f };
+                        constexpr float targetOffsetY[4]
+                            = { 0.0f, 0.0f, 12.0f, -12.0f };
+                        pressureEnemy.searchRandomState
+                            = pressureEnemy.searchRandomState * 1664525u + 1013904223u;
+                        LONG firstCandidate = (pressureEnemy.searchRandomState >> 30) & 3;
+                        pressureEnemy.searchTargetValid = false;
+                        for (LONG attempt = 0; attempt < 4
+                            && !pressureEnemy.searchTargetValid; ++attempt)
+                        {
+                            LONG candidate = (firstCandidate + attempt) & 3;
+                            float candidateX = playerX + targetOffsetX[candidate];
+                            float candidateY = playerY + targetOffsetY[candidate];
+                            LONG targetColumn = NavigationColumn(candidateX);
+                            LONG targetRow = NavigationRow(candidateY);
+                            if (candidateX < enemyHalfWidth
+                                || candidateX > worldWidth - enemyHalfWidth
+                                || candidateY < enemyHalfHeight
+                                || candidateY > worldHeight - enemyHalfHeight
+                                || !NavigationCellValid(targetColumn, targetRow)
+                                || RectangleOverlapsRoomWall(
+                                    candidateX - enemyHalfWidth,
+                                    candidateY - enemyHalfHeight,
+                                    candidateX + enemyHalfWidth,
+                                    candidateY + enemyHalfHeight)
+                                || WallBlocksSegment(
+                                    candidateX, candidateY, playerX, playerY))
+                            {
+                                continue;
+                            }
+                            pressureEnemy.lastSeenPlayerX = playerX;
+                            pressureEnemy.lastSeenPlayerY = playerY;
+                            pressureEnemy.searchTargetX = candidateX;
+                            pressureEnemy.searchTargetY = candidateY;
+                            pressureEnemy.searchPathCount = FindEnemyPath(
+                                pressureEnemy.x, pressureEnemy.y, targetColumn, targetRow,
+                                navigationPath[pressureEnemyIndex]);
+                            pressureEnemy.searchPathIndex = 0;
+                            pressureEnemy.searchTargetValid = true;
+                        }
+                    }
+
+                    if (pressureEnemy.searchTargetValid)
+                    {
+                        float movementTargetX = pressureEnemy.searchTargetX;
+                        float movementTargetY = pressureEnemy.searchTargetY;
+                        if (pressureEnemy.searchPathIndex < pressureEnemy.searchPathCount)
+                        {
+                            LONG node = navigationPath[pressureEnemyIndex]
+                                [pressureEnemy.searchPathIndex];
+                            movementTargetX = enemyHalfWidth
+                                + (node % navigationColumns) * navigationCellSize;
+                            movementTargetY = enemyHalfHeight
+                                + (node / navigationColumns) * navigationCellSize;
+                        }
+                        if (MoveEnemyToward(pressureEnemy.x, pressureEnemy.y,
+                            movementTargetX, movementTargetY, pressureMoveSpeed,
+                            deltaTime, playerX, playerY))
+                        {
+                            if (pressureEnemy.searchPathIndex
+                                < pressureEnemy.searchPathCount)
+                            {
+                                ++pressureEnemy.searchPathIndex;
+                            }
+                            else
+                            {
+                                pressureEnemy.searchTargetValid = false;
+                            }
+                        }
+                    }
+                }
+            }
+
             if (slashVisualRemaining > 0.0f)
             {
                 slashVisualRemaining -= deltaTime;
@@ -2706,6 +2883,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 {
                     enemy.executeFeedbackRemaining -= deltaTime;
                 }
+            }
+            if (pressureEnemy.attackCooldownRemaining > 0.0f)
+            {
+                pressureEnemy.attackCooldownRemaining -= deltaTime;
             }
 
             if (slashRequested)
@@ -2902,6 +3083,38 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         runEndSelection = 0;
                         DeleteFileW(saveFileName);
                     }
+                }
+            }
+            if (pressureEnemy.alive && playerAlive
+                && pressureEnemy.attackCooldownRemaining <= 0.0f
+                && pressureEnemy.x - enemyHalfWidth <= playerX + playerHalfWidth
+                    + enemyAttackContactTolerance
+                && pressureEnemy.x + enemyHalfWidth + enemyAttackContactTolerance
+                    >= playerX - playerHalfWidth
+                && pressureEnemy.y - enemyHalfHeight <= playerY + playerHalfHeight
+                    + enemyAttackContactTolerance
+                && pressureEnemy.y + enemyHalfHeight + enemyAttackContactTolerance
+                    >= playerY - playerHalfHeight)
+            {
+                --playerHP;
+                playerHitRemaining = playerHitFeedbackDuration;
+                pressureEnemy.attackCooldownRemaining = enemyAttackCooldownDuration;
+                if (playerHP <= 0)
+                {
+                    playerHP = 0;
+                    playerAlive = false;
+                    dashActive = false;
+                    dashDistanceRemaining = 0.0f;
+                    slashRequested = false;
+                    dashRequested = false;
+                    executeRequested = false;
+                    for (LONG enemyIndex = 0; enemyIndex < enemyCount; ++enemyIndex)
+                    {
+                        enemies[enemyIndex].playerInVision = false;
+                    }
+                    runEndState = gameOverEndState;
+                    runEndSelection = 0;
+                    DeleteFileW(saveFileName);
                 }
             }
 
@@ -3242,6 +3455,35 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             {
                                 framebuffer[screenY * framebufferWidth + screenX] = 0x00FFFF80;
                             }
+                        }
+                    }
+                }
+            }
+
+            if (pressureEnemy.alive)
+            {
+                LONG pressureLeft = static_cast<LONG>(pressureEnemy.x)
+                    - pressureVisualWidth / 2 - cameraX;
+                LONG pressureTop = static_cast<LONG>(pressureEnemy.y)
+                    - pressureVisualHeight / 2 - cameraY;
+                for (LONG y = 0; y < pressureVisualHeight; ++y)
+                {
+                    for (LONG x = 0; x < pressureVisualWidth; ++x)
+                    {
+                        bool head = y < 3 && x >= 1 && x < 9;
+                        bool body = y >= 3 && y < 9 && x >= 1 && x < 9;
+                        bool arm = y >= 4 && y < 8 && (x == 0 || x == 9);
+                        bool leg = y >= 9 && (x < 4 || x >= 6);
+                        bool pressureMark = (y == 4 || y == 6) && x >= 3 && x < 7;
+                        LONG pixelX = pressureLeft + x;
+                        LONG pixelY = pressureTop + y;
+                        if ((head || body || arm || leg)
+                            && pixelX >= 0 && pixelX < framebufferWidth
+                            && pixelY >= 0 && pixelY < framebufferHeight)
+                        {
+                            framebuffer[pixelY * framebufferWidth + pixelX]
+                                = pressureMark ? 0x00FFF080
+                                : (head ? 0x00D0A060 : 0x00705030);
                         }
                     }
                 }
