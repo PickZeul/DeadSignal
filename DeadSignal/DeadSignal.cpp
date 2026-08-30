@@ -118,6 +118,11 @@ constexpr BYTE piercerCharacter = 2;
 constexpr BYTE heavyCharacter = 3;
 constexpr BYTE rapidCharacter = 4;
 constexpr BYTE characterCount = 5;
+constexpr LONG characterUnlockCosts[characterCount]{ 0, 5, 10, 15, 20 };
+constexpr BYTE characterDashCaps[characterCount]{ 3, 3, 2, 2, 3 };
+constexpr LONG dashGrowthCosts[2]{ 5, 10 };
+constexpr BYTE maximumDashGrowthLevel = 2;
+constexpr LONG runClearCoinBonus = 3;
 
 struct CharacterProfile
 {
@@ -153,8 +158,11 @@ constexpr LONG gameplayState = 3;
 constexpr LONG gameOverEndState = 1;
 constexpr LONG runClearEndState = 2;
 constexpr DWORD saveMagic = 0x56535344;
-constexpr DWORD saveVersion = 7;
+constexpr DWORD saveVersion = 8;
 constexpr wchar_t saveFileName[] = L"DeadSignal.sav";
+constexpr DWORD metaMagic = 0x4154454D;
+constexpr DWORD metaVersion = 1;
+constexpr wchar_t metaFileName[] = L"DeadSignal.meta";
 LONG applicationState = titleMainState;
 LONG menuSelection = 0;
 LONG titleStatus = 0;
@@ -202,6 +210,12 @@ LONG upgradeSelection = 0;
 LONG upgradeOptionA = 0;
 LONG upgradeOptionB = 1;
 BYTE selectedCharacter = basicCharacter;
+LONG globalCoin = 0;
+BYTE unlockedCharacterMask = 1 << basicCharacter;
+BYTE dashGrowthLevel = 0;
+BYTE currentDashCharges = 1;
+BYTE currentDashMaxCharges = 1;
+bool runRewardGranted = false;
 BYTE moveUpgradeStack = 0;
 BYTE slashUpgradeStack = 0;
 BYTE dashUpgradeStack = 0;
@@ -283,10 +297,147 @@ struct SaveCheckpoint
     BYTE functionalFlags;
     BYTE reroll;
     BYTE character;
-    BYTE reserved[2];
+    BYTE dashCharges;
+    BYTE reserved;
 };
 
 static_assert(sizeof(SaveCheckpoint) == 32);
+
+struct MetaProfile
+{
+    DWORD magic;
+    DWORD version;
+    LONG coin;
+    BYTE unlockedMask;
+    BYTE dashGrowth;
+    BYTE reserved[2];
+};
+
+static_assert(sizeof(MetaProfile) == 16);
+
+void ResetMetaProfile()
+{
+    globalCoin = 0;
+    unlockedCharacterMask = 1 << basicCharacter;
+    dashGrowthLevel = 0;
+}
+
+bool ReadMetaProfile()
+{
+    MetaProfile profile{};
+    HANDLE file = CreateFileW(metaFileName, GENERIC_READ, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        ResetMetaProfile();
+        return false;
+    }
+    DWORD bytesRead = 0;
+    bool valid = GetFileSize(file, nullptr) == sizeof(profile)
+        && ReadFile(file, &profile, sizeof(profile), &bytesRead, nullptr)
+        && bytesRead == sizeof(profile);
+    CloseHandle(file);
+    valid = valid && profile.magic == metaMagic && profile.version == metaVersion
+        && profile.coin >= 0
+        && (profile.unlockedMask & (1 << basicCharacter)) != 0
+        && (profile.unlockedMask & ~((1 << characterCount) - 1)) == 0
+        && profile.dashGrowth <= maximumDashGrowthLevel
+        && profile.reserved[0] == 0 && profile.reserved[1] == 0;
+    if (!valid)
+    {
+        ResetMetaProfile();
+        return false;
+    }
+    globalCoin = profile.coin;
+    unlockedCharacterMask = profile.unlockedMask;
+    dashGrowthLevel = profile.dashGrowth;
+    return true;
+}
+
+void WriteMetaProfile()
+{
+    MetaProfile profile
+    {
+        metaMagic,
+        metaVersion,
+        globalCoin,
+        unlockedCharacterMask,
+        dashGrowthLevel,
+        { 0, 0 }
+    };
+    HANDLE file = CreateFileW(metaFileName, GENERIC_WRITE, 0, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file != INVALID_HANDLE_VALUE)
+    {
+        DWORD bytesWritten = 0;
+        WriteFile(file, &profile, sizeof(profile), &bytesWritten, nullptr);
+        CloseHandle(file);
+    }
+}
+
+BYTE CurrentDashCapacity()
+{
+    BYTE capacity = static_cast<BYTE>(1 + dashGrowthLevel);
+    BYTE cap = characterDashCaps[selectedCharacter];
+    return capacity < cap ? capacity : cap;
+}
+
+void ResetDashRecharge(float& rechargeRemaining, float rechargeDuration)
+{
+    if (currentDashCharges < currentDashMaxCharges)
+    {
+        ++currentDashCharges;
+    }
+    rechargeRemaining = currentDashCharges < currentDashMaxCharges
+        ? rechargeDuration : 0.0f;
+}
+
+void UpdateDashRecharge(float deltaTime, float rechargeDuration,
+    float& rechargeRemaining)
+{
+    if (currentDashCharges >= currentDashMaxCharges)
+    {
+        rechargeRemaining = 0.0f;
+        return;
+    }
+    if (rechargeRemaining > 0.0f)
+    {
+        rechargeRemaining -= deltaTime;
+    }
+    if (rechargeRemaining <= 0.0f)
+    {
+        ++currentDashCharges;
+        rechargeRemaining = currentDashCharges < currentDashMaxCharges
+            ? rechargeDuration : 0.0f;
+    }
+}
+
+bool ConsumeDashCharge(float rechargeDuration, float& rechargeRemaining)
+{
+    if (!currentDashCharges)
+    {
+        return false;
+    }
+    if (currentDashCharges == currentDashMaxCharges)
+    {
+        rechargeRemaining = rechargeDuration;
+    }
+    --currentDashCharges;
+    return true;
+}
+
+void GrantRunCoin(bool cleared)
+{
+    if (runRewardGranted)
+    {
+        return;
+    }
+    LONG reward = runKillCount + (cleared ? runClearCoinBonus : 0);
+    globalCoin = reward > 0x7fffffff - globalCoin
+        ? 0x7fffffff : globalCoin + reward;
+    runRewardGranted = true;
+    WriteMetaProfile();
+}
 
 bool ReadCheckpoint(SaveCheckpoint* checkpoint)
 {
@@ -310,7 +461,7 @@ bool ReadCheckpoint(SaveCheckpoint* checkpoint)
         && checkpoint->dashStack <= 2
         && (checkpoint->functionalFlags & ~7) == 0 && checkpoint->reroll <= 1
         && checkpoint->character < characterCount
-        && checkpoint->reserved[0] == 0 && checkpoint->reserved[1] == 0
+        && checkpoint->dashCharges <= 3 && checkpoint->reserved == 0
         && checkpoint->playerHP <= characterProfiles[checkpoint->character].maxHP
         && checkpoint->moveStack + checkpoint->slashStack + checkpoint->dashStack
             + ((checkpoint->functionalFlags & silentDashUpgradeFlag) != 0)
@@ -335,7 +486,8 @@ void WriteCheckpoint(DWORD seed, LONG room, LONG playerHP, LONG runKills)
         functionalUpgradeFlags,
         static_cast<BYTE>(rerollUsed),
         selectedCharacter,
-        { 0, 0 }
+        currentDashCharges,
+        0
     };
     HANDLE file = CreateFileW(saveFileName, GENERIC_WRITE, 0, nullptr,
         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -1506,11 +1658,47 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 applicationState = titleMainState;
                 menuSelection = 0;
             }
-            else if (menuSelection < characterCount)
+            else if (applicationState == characterSelectState
+                && menuSelection < characterCount)
             {
-                selectedCharacter = static_cast<BYTE>(menuSelection);
-                applicationState = gameplayState;
-                newGameRequested = true;
+                BYTE character = static_cast<BYTE>(menuSelection);
+                BYTE characterBit = static_cast<BYTE>(1 << character);
+                if (unlockedCharacterMask & characterBit)
+                {
+                    selectedCharacter = character;
+                    applicationState = gameplayState;
+                    newGameRequested = true;
+                }
+                else if (globalCoin >= characterUnlockCosts[character])
+                {
+                    globalCoin -= characterUnlockCosts[character];
+                    unlockedCharacterMask |= characterBit;
+                    WriteMetaProfile();
+                    titleStatus = 4;
+                }
+                else
+                {
+                    titleStatus = 3;
+                }
+            }
+            else if (applicationState == characterSelectState
+                && menuSelection == characterCount)
+            {
+                if (dashGrowthLevel >= maximumDashGrowthLevel)
+                {
+                    titleStatus = 5;
+                }
+                else if (globalCoin >= dashGrowthCosts[dashGrowthLevel])
+                {
+                    globalCoin -= dashGrowthCosts[dashGrowthLevel];
+                    ++dashGrowthLevel;
+                    WriteMetaProfile();
+                    titleStatus = 4;
+                }
+                else
+                {
+                    titleStatus = 3;
+                }
             }
             else
             {
@@ -1637,7 +1825,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             }
             else if (wParam == VK_DOWN
                 && menuSelection < (applicationState == titleMainState ? 3
-                    : (applicationState == characterSelectState ? characterCount : 2)))
+                    : (applicationState == characterSelectState ? characterCount + 1 : 2)))
             {
                 ++menuSelection;
             }
@@ -1681,8 +1869,22 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 ? L"\uCE90\uB9AD\uD130 \uC120\uD0DD" : L"DEAD SIGNAL", -1, &line,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
+            wchar_t titleText[32];
+            if (applicationState == characterSelectState)
+            {
+                line.top = clientHeight / 12 + 27;
+                line.bottom = line.top + 17;
+                wsprintfW(titleText, titleStatus == 3 ? L"Coin: %ld / LOW"
+                    : (titleStatus == 4 ? L"Coin: %ld / OK"
+                        : (titleStatus == 5 ? L"Coin: %ld / MAX" : L"Coin: %ld")),
+                    globalCoin);
+                SetTextColor(deviceContext, titleStatus == 3
+                    ? RGB(255, 96, 96) : RGB(220, 220, 220));
+                DrawTextW(deviceContext, titleText, -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
             LONG itemCount = applicationState == titleMainState ? 4
-                : (applicationState == characterSelectState ? characterCount + 1 : 3);
+                : (applicationState == characterSelectState ? characterCount + 2 : 3);
             for (LONG item = 0; item < itemCount; ++item)
             {
                 const wchar_t* text;
@@ -1699,26 +1901,55 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 }
                 else
                 {
-                    text = item == basicCharacter ? L"\uAE30\uBCF8\uD615"
-                        : (item == mobilityCharacter ? L"\uAE30\uB3D9\uD615"
-                            : (item == piercerCharacter ? L"\uCC0C\uB974\uAE30\uD615"
-                                : (item == heavyCharacter ? L"\uC911\uB7C9\uD615"
-                                    : (item == rapidCharacter ? L"\uC5F0\uACA9\uD615"
-                                        : L"\uB4A4\uB85C"))));
+                    if (item < characterCount)
+                    {
+                        const wchar_t* name = item == basicCharacter ? L"\uAE30\uBCF8\uD615"
+                            : (item == mobilityCharacter ? L"\uAE30\uB3D9\uD615"
+                                : (item == piercerCharacter ? L"\uCC0C\uB974\uAE30\uD615"
+                                    : (item == heavyCharacter ? L"\uC911\uB7C9\uD615"
+                                        : L"\uC5F0\uACA9\uD615")));
+                        if (unlockedCharacterMask & (1 << item))
+                        {
+                            wsprintfW(titleText, L"%s [OK]", name);
+                        }
+                        else
+                        {
+                            wsprintfW(titleText, L"%s [%ld]", name,
+                                characterUnlockCosts[item]);
+                        }
+                        text = titleText;
+                    }
+                    else if (item == characterCount)
+                    {
+                        if (dashGrowthLevel >= maximumDashGrowthLevel)
+                        {
+                            text = L"\uB300\uC2DC \uAC15\uD654 [MAX]";
+                        }
+                        else
+                        {
+                            wsprintfW(titleText, L"\uB300\uC2DC \uAC15\uD654 [%ld]",
+                                dashGrowthCosts[dashGrowthLevel]);
+                            text = titleText;
+                        }
+                    }
+                    else
+                    {
+                        text = L"\uB4A4\uB85C";
+                    }
                 }
 
                 line.top = applicationState == characterSelectState
-                    ? clientHeight / 12 + 30 + item * 20
+                    ? clientHeight / 12 + 44 + item * 18
                     : clientHeight / 5 + 50 + item * 30;
                 line.bottom = line.top
-                    + (applicationState == characterSelectState ? 18 : 24);
+                    + (applicationState == characterSelectState ? 16 : 24);
                 SetTextColor(deviceContext,
                     item == menuSelection ? RGB(255, 216, 0) : RGB(160, 160, 160));
                 DrawTextW(deviceContext, text, -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
 
-            if (titleStatus)
+            if (titleStatus && applicationState != characterSelectState)
             {
                 line.top = clientHeight / 5 + 190;
                 line.bottom = line.top + 24;
@@ -1914,6 +2145,10 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
     constexpr wchar_t windowClassName[] = L"DeadSignalWindow";
+    if (!ReadMetaProfile())
+    {
+        WriteMetaProfile();
+    }
 
     WNDCLASSW windowClass{};
     windowClass.style = CS_HREDRAW | CS_VREDRAW;
@@ -2165,8 +2400,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     slashCooldownDurationCurrent, dashCooldownDurationCurrent);
                 dashDistanceCurrent = dashDistance
                     * characterProfiles[selectedCharacter].dashDistanceScale;
+                currentDashMaxCharges = CurrentDashCapacity();
+                currentDashCharges = checkpoint.dashCharges < currentDashMaxCharges
+                    ? checkpoint.dashCharges : currentDashMaxCharges;
+                dashCooldownRemaining = currentDashCharges < currentDashMaxCharges
+                    ? dashCooldownDurationCurrent : 0.0f;
                 rerollUsed = checkpoint.reroll != 0;
                 runKillCount = checkpoint.runKills;
+                runRewardGranted = false;
                 upgradeOptionA = 0;
                 upgradeOptionB = 1;
                 titleStatus = 0;
@@ -2203,8 +2444,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     slashCooldownDurationCurrent, dashCooldownDurationCurrent);
                 dashDistanceCurrent = dashDistance
                     * characterProfiles[selectedCharacter].dashDistanceScale;
+                currentDashMaxCharges = CurrentDashCapacity();
+                currentDashCharges = currentDashMaxCharges;
+                dashCooldownRemaining = 0.0f;
                 rerollUsed = false;
                 runKillCount = 0;
+                runRewardGranted = false;
                 upgradeOptionA = 0;
                 upgradeOptionB = 1;
             }
@@ -2255,7 +2500,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             dashDirectionX = 0;
             dashDirectionY = 0;
             dashDistanceRemaining = 0.0f;
-            dashCooldownRemaining = 0.0f;
             dashActive = false;
             slashLeft = 0;
             slashTop = 0;
@@ -2360,6 +2604,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     }
                     RecalculateAugmentStats(playerMoveSpeedCurrent,
                         slashCooldownDurationCurrent, dashCooldownDurationCurrent);
+                    if (dashCooldownRemaining > dashCooldownDurationCurrent)
+                    {
+                        dashCooldownRemaining = dashCooldownDurationCurrent;
+                    }
                     upgradeMenuActive = false;
                     if (currentRoom == roomCount - 1)
                     {
@@ -2409,20 +2657,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 facingX = movementX;
                 facingY = movementY;
             }
-            if (dashCooldownRemaining > 0.0f)
-            {
-                dashCooldownRemaining -= deltaTime;
-            }
+            UpdateDashRecharge(deltaTime, dashCooldownDurationCurrent,
+                dashCooldownRemaining);
             if (dashRequested)
             {
                 if (playerAlive && !roomComplete && !sequenceComplete
                     && !upgradeMenuActive && !dashActive
-                    && dashCooldownRemaining <= 0.0f)
+                    && ConsumeDashCharge(dashCooldownDurationCurrent,
+                        dashCooldownRemaining))
                 {
                     dashDirectionX = facingX;
                     dashDirectionY = facingY;
                     dashDistanceRemaining = dashDistanceCurrent;
-                    dashCooldownRemaining = dashCooldownDurationCurrent;
                     dashActive = true;
                 }
                 dashRequested = false;
@@ -2560,6 +2806,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             }
                             runEndState = gameOverEndState;
                             runEndSelection = 0;
+                            GrantRunCoin(false);
                             DeleteFileW(saveFileName);
                         }
                         break;
@@ -3254,7 +3501,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                 --currentEnemyRemaining;
                                 ++runKillCount;
                                 slashCooldownRemaining = 0.0f;
-                                dashCooldownRemaining = 0.0f;
+                                ResetDashRecharge(dashCooldownRemaining,
+                                    dashCooldownDurationCurrent);
                                 enemy.playerInVision = false;
                                 enemy.searchTargetValid = false;
                                 enemy.searchPathCount = 0;
@@ -3345,7 +3593,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         ApplyFieldMedic(playerHP);
                         enemy.executeFeedbackRemaining = slashVisualDuration;
                         slashCooldownRemaining = 0.0f;
-                        dashCooldownRemaining = 0.0f;
+                        ResetDashRecharge(dashCooldownRemaining,
+                            dashCooldownDurationCurrent);
                         enemy.playerInVision = false;
                         enemy.searchTargetValid = false;
                         enemy.searchPathCount = 0;
@@ -3389,6 +3638,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         }
                         runEndState = gameOverEndState;
                         runEndSelection = 0;
+                        GrantRunCoin(false);
                         DeleteFileW(saveFileName);
                     }
                 }
@@ -3423,6 +3673,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     }
                     runEndState = gameOverEndState;
                     runEndSelection = 0;
+                    GrantRunCoin(false);
                     DeleteFileW(saveFileName);
                 }
             }
@@ -3856,6 +4107,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
             }
 
+            for (LONG charge = 0; charge < currentDashMaxCharges; ++charge)
+            {
+                for (LONG y = 16; y < 19; ++y)
+                {
+                    for (LONG x = 8 + charge * 5; x < 11 + charge * 5; ++x)
+                    {
+                        bool filled = charge < currentDashCharges;
+                        bool outline = x == 8 + charge * 5 || x == 10 + charge * 5
+                            || y == 16 || y == 18;
+                        framebuffer[y * framebufferWidth + x]
+                            = filled ? 0x0080FFFF
+                                : (outline ? 0x00405060 : 0x00101018);
+                    }
+                }
+            }
+
             if (sequenceComplete)
             {
                 constexpr unsigned short runClearLetters[8]
@@ -3892,6 +4159,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             {
                 runEndState = runClearEndState;
                 runEndSelection = 0;
+                GrantRunCoin(true);
                 DeleteFileW(saveFileName);
             }
 
