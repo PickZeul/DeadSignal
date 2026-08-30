@@ -15,6 +15,7 @@ constexpr LONG playerCenterX = framebufferWidth / 2;
 constexpr LONG playerCenterY = framebufferHeight / 2;
 constexpr LONG playerLeft = playerCenterX - playerWidth / 2;
 constexpr LONG playerTop = playerCenterY - playerHeight / 2;
+constexpr LONG basicPlayerMaxHP = 10;
 constexpr float playerMoveSpeed = 60.0f;
 constexpr float playerHalfWidth = playerWidth / 2.0f;
 constexpr float playerHalfHeight = playerHeight / 2.0f;
@@ -110,8 +111,34 @@ constexpr BYTE executeReachUpgradeFlag = 2;
 constexpr BYTE fieldMedicUpgradeFlag = 4;
 constexpr float dashDistance = 32.0f;
 constexpr float dashDuration = 0.12f;
-constexpr float dashSpeed = dashDistance / dashDuration;
 constexpr float dashCooldownDuration = 1.0f;
+constexpr BYTE basicCharacter = 0;
+constexpr BYTE mobilityCharacter = 1;
+constexpr BYTE piercerCharacter = 2;
+constexpr BYTE heavyCharacter = 3;
+constexpr BYTE rapidCharacter = 4;
+constexpr BYTE characterCount = 5;
+
+struct CharacterProfile
+{
+    LONG maxHP;
+    float moveScale;
+    float slashCooldownScale;
+    LONG slashReach;
+    LONG slashWidth;
+    LONG slashDamage;
+    LONG slashHitCap;
+    float dashDistanceScale;
+};
+
+constexpr CharacterProfile characterProfiles[characterCount]
+{
+    { basicPlayerMaxHP, 1.0f, 1.0f, slashReach, slashWidth, 1, 3, 1.0f },
+    { 9, 1.1f, 0.9f, slashReach - 1, slashWidth, 1, 2, 1.1f },
+    { 8, 1.05f, 1.1f, slashReach + slashReach / 2, slashWidth / 2, 1, 1, 1.0f },
+    { 12, 0.85f, 1.25f, slashReach - 1, slashWidth, 2, 4, 0.9f },
+    { 9, 1.05f, 0.75f, slashReach - 1, slashWidth, 1, 2, 1.0f }
+};
 constexpr DWORD toneSampleRate = 8000;
 constexpr DWORD toneFrequency = 440;
 constexpr DWORD toneDurationMilliseconds = 250;
@@ -121,11 +148,12 @@ DWORD framebuffer[framebufferWidth * framebufferHeight];
 
 constexpr LONG titleMainState = 0;
 constexpr LONG gameStartMenuState = 1;
-constexpr LONG gameplayState = 2;
+constexpr LONG characterSelectState = 2;
+constexpr LONG gameplayState = 3;
 constexpr LONG gameOverEndState = 1;
 constexpr LONG runClearEndState = 2;
 constexpr DWORD saveMagic = 0x56535344;
-constexpr DWORD saveVersion = 6;
+constexpr DWORD saveVersion = 7;
 constexpr wchar_t saveFileName[] = L"DeadSignal.sav";
 LONG applicationState = titleMainState;
 LONG menuSelection = 0;
@@ -173,6 +201,7 @@ bool upgradeMenuActive = false;
 LONG upgradeSelection = 0;
 LONG upgradeOptionA = 0;
 LONG upgradeOptionB = 1;
+BYTE selectedCharacter = basicCharacter;
 BYTE moveUpgradeStack = 0;
 BYTE slashUpgradeStack = 0;
 BYTE dashUpgradeStack = 0;
@@ -253,7 +282,8 @@ struct SaveCheckpoint
     BYTE dashStack;
     BYTE functionalFlags;
     BYTE reroll;
-    BYTE reserved[3];
+    BYTE character;
+    BYTE reserved[2];
 };
 
 static_assert(sizeof(SaveCheckpoint) == 32);
@@ -274,13 +304,14 @@ bool ReadCheckpoint(SaveCheckpoint* checkpoint)
     CloseHandle(file);
     return valid && checkpoint->magic == saveMagic && checkpoint->version == saveVersion
         && checkpoint->seed != 0 && checkpoint->room >= 0 && checkpoint->room < roomCount
-        && checkpoint->playerHP > 0 && checkpoint->playerHP <= 10
+        && checkpoint->playerHP > 0
         && checkpoint->runKills >= 0
         && checkpoint->moveStack <= 2 && checkpoint->slashStack <= 2
         && checkpoint->dashStack <= 2
         && (checkpoint->functionalFlags & ~7) == 0 && checkpoint->reroll <= 1
+        && checkpoint->character < characterCount
         && checkpoint->reserved[0] == 0 && checkpoint->reserved[1] == 0
-        && checkpoint->reserved[2] == 0
+        && checkpoint->playerHP <= characterProfiles[checkpoint->character].maxHP
         && checkpoint->moveStack + checkpoint->slashStack + checkpoint->dashStack
             + ((checkpoint->functionalFlags & silentDashUpgradeFlag) != 0)
             + ((checkpoint->functionalFlags & executeReachUpgradeFlag) != 0)
@@ -303,7 +334,8 @@ void WriteCheckpoint(DWORD seed, LONG room, LONG playerHP, LONG runKills)
         dashUpgradeStack,
         functionalUpgradeFlags,
         static_cast<BYTE>(rerollUsed),
-        { 0, 0, 0 }
+        selectedCharacter,
+        { 0, 0 }
     };
     HANDLE file = CreateFileW(saveFileName, GENERIC_WRITE, 0, nullptr,
         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -397,8 +429,11 @@ void GenerateUpgradeOffer(bool reroll)
 void RecalculateAugmentStats(float& moveSpeed, float& slashCooldown,
     float& dashCooldown)
 {
-    moveSpeed = playerMoveSpeed * (1.0f + moveUpgradeStack * 0.1f);
-    slashCooldown = slashCooldownDuration * (1.0f - slashUpgradeStack * 0.2f);
+    const CharacterProfile& profile = characterProfiles[selectedCharacter];
+    moveSpeed = playerMoveSpeed * profile.moveScale
+        * (1.0f + moveUpgradeStack * 0.1f);
+    slashCooldown = slashCooldownDuration * profile.slashCooldownScale
+        * (1.0f - slashUpgradeStack * 0.2f);
     dashCooldown = dashCooldownDuration * (1.0f - dashUpgradeStack * 0.2f);
 }
 
@@ -415,10 +450,65 @@ LONG CurrentExecuteReach()
 
 void ApplyFieldMedic(LONG& playerHP)
 {
-    if ((functionalUpgradeFlags & fieldMedicUpgradeFlag) && playerHP < 10)
+    if ((functionalUpgradeFlags & fieldMedicUpgradeFlag)
+        && playerHP < characterProfiles[selectedCharacter].maxHP)
     {
         ++playerHP;
     }
+}
+
+bool PiercerSlashHitsEnemy(float originX, float originY, LONG directionX,
+    LONG directionY, float enemyX, float enemyY)
+{
+    float scale = directionX && directionY ? 0.70710678f : 1.0f;
+    float forwardX = directionX * scale;
+    float forwardY = directionY * scale;
+    float differenceX = enemyX - originX;
+    float differenceY = enemyY - originY;
+    float forward = differenceX * forwardX + differenceY * forwardY;
+    float lateral = differenceX * -forwardY + differenceY * forwardX;
+    if (lateral < 0.0f)
+    {
+        lateral = -lateral;
+    }
+    float absoluteForwardX = forwardX < 0.0f ? -forwardX : forwardX;
+    float absoluteForwardY = forwardY < 0.0f ? -forwardY : forwardY;
+    float start = absoluteForwardX * playerHalfWidth
+        + absoluteForwardY * playerHalfHeight;
+    float enemyForwardRadius = absoluteForwardX * enemyHalfWidth
+        + absoluteForwardY * enemyHalfHeight;
+    float enemyLateralRadius = absoluteForwardY * enemyHalfWidth
+        + absoluteForwardX * enemyHalfHeight;
+    const CharacterProfile& profile = characterProfiles[piercerCharacter];
+    return forward + enemyForwardRadius > start
+        && forward - enemyForwardRadius < start + profile.slashReach
+        && lateral <= profile.slashWidth * 0.5f + enemyLateralRadius;
+}
+
+bool PiercerSlashOutlinePixel(float originX, float originY, LONG directionX,
+    LONG directionY, float pointX, float pointY)
+{
+    float scale = directionX && directionY ? 0.70710678f : 1.0f;
+    float forwardX = directionX * scale;
+    float forwardY = directionY * scale;
+    float differenceX = pointX - originX;
+    float differenceY = pointY - originY;
+    float forward = differenceX * forwardX + differenceY * forwardY;
+    float lateral = differenceX * -forwardY + differenceY * forwardX;
+    if (lateral < 0.0f)
+    {
+        lateral = -lateral;
+    }
+    float absoluteForwardX = forwardX < 0.0f ? -forwardX : forwardX;
+    float absoluteForwardY = forwardY < 0.0f ? -forwardY : forwardY;
+    float start = absoluteForwardX * playerHalfWidth
+        + absoluteForwardY * playerHalfHeight;
+    const CharacterProfile& profile = characterProfiles[piercerCharacter];
+    float end = start + profile.slashReach;
+    float halfWidth = profile.slashWidth * 0.5f;
+    return forward >= start && forward <= end && lateral <= halfWidth
+        && (forward < start + 1.0f || forward > end - 1.0f
+            || lateral > halfWidth - 1.0f);
 }
 
 void AddRoomWall(LONG left, LONG top, LONG right, LONG bottom)
@@ -1231,7 +1321,14 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == VK_ESCAPE)
     {
         bool pressed = message == WM_KEYDOWN;
-        if (applicationState == gameplayState && !runEndState && !upgradeMenuActive
+        if (applicationState == characterSelectState && pressed && !escapePressed)
+        {
+            applicationState = titleMainState;
+            menuSelection = 0;
+            titleStatus = 0;
+            InvalidateRect(window, nullptr, FALSE);
+        }
+        else if (applicationState == gameplayState && !runEndState && !upgradeMenuActive
             && pressed && !escapePressed)
         {
             if (gameplayMenuActive)
@@ -1395,14 +1492,25 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     DestroyWindow(window);
                 }
             }
-            else if (menuSelection == 0)
+            else if (applicationState == gameStartMenuState && menuSelection == 0)
             {
-                applicationState = gameplayState;
-                newGameRequested = true;
+                applicationState = characterSelectState;
+                menuSelection = 0;
             }
-            else if (menuSelection == 1)
+            else if (applicationState == gameStartMenuState && menuSelection == 1)
             {
                 loadGameRequested = true;
+            }
+            else if (applicationState == gameStartMenuState)
+            {
+                applicationState = titleMainState;
+                menuSelection = 0;
+            }
+            else if (menuSelection < characterCount)
+            {
+                selectedCharacter = static_cast<BYTE>(menuSelection);
+                applicationState = gameplayState;
+                newGameRequested = true;
             }
             else
             {
@@ -1528,7 +1636,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 --menuSelection;
             }
             else if (wParam == VK_DOWN
-                && menuSelection < (applicationState == titleMainState ? 3 : 2))
+                && menuSelection < (applicationState == titleMainState ? 3
+                    : (applicationState == characterSelectState ? characterCount : 2)))
             {
                 ++menuSelection;
             }
@@ -1565,12 +1674,16 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             SetTextColor(deviceContext, RGB(220, 220, 220));
             int clientHeight = clientArea.bottom - clientArea.top;
             RECT line = clientArea;
-            line.top = clientHeight / 5;
+            line.top = applicationState == characterSelectState
+                ? clientHeight / 12 : clientHeight / 5;
             line.bottom = line.top + 30;
-            DrawTextW(deviceContext, L"DEAD SIGNAL", -1, &line,
+            DrawTextW(deviceContext, applicationState == characterSelectState
+                ? L"\uCE90\uB9AD\uD130 \uC120\uD0DD" : L"DEAD SIGNAL", -1, &line,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-            for (LONG item = 0; item < (applicationState == titleMainState ? 4 : 3); ++item)
+            LONG itemCount = applicationState == titleMainState ? 4
+                : (applicationState == characterSelectState ? characterCount + 1 : 3);
+            for (LONG item = 0; item < itemCount; ++item)
             {
                 const wchar_t* text;
                 if (applicationState == titleMainState)
@@ -1579,14 +1692,26 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                         : (item == 1 ? L"\uC774\uC5B4\uD558\uAE30"
                             : (item == 2 ? L"\uC124\uC815" : L"\uC885\uB8CC"));
                 }
-                else
+                else if (applicationState == gameStartMenuState)
                 {
                     text = item == 0 ? L"\uC0C8 \uAC8C\uC784"
                         : (item == 1 ? L"\uBD88\uB7EC\uC624\uAE30" : L"\uB4A4\uB85C");
                 }
+                else
+                {
+                    text = item == basicCharacter ? L"\uAE30\uBCF8\uD615"
+                        : (item == mobilityCharacter ? L"\uAE30\uB3D9\uD615"
+                            : (item == piercerCharacter ? L"\uCC0C\uB974\uAE30\uD615"
+                                : (item == heavyCharacter ? L"\uC911\uB7C9\uD615"
+                                    : (item == rapidCharacter ? L"\uC5F0\uACA9\uD615"
+                                        : L"\uB4A4\uB85C"))));
+                }
 
-                line.top = clientHeight / 5 + 50 + item * 30;
-                line.bottom = line.top + 24;
+                line.top = applicationState == characterSelectState
+                    ? clientHeight / 12 + 30 + item * 20
+                    : clientHeight / 5 + 50 + item * 30;
+                line.bottom = line.top
+                    + (applicationState == characterSelectState ? 18 : 24);
                 SetTextColor(deviceContext,
                     item == menuSelection ? RGB(255, 216, 0) : RGB(160, 160, 160));
                 DrawTextW(deviceContext, text, -1, &line,
@@ -1965,11 +2090,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     LONG facingY = 0;
     EnemyRuntime enemies[maxEnemyCount]{};
     EnemyRuntime pressureEnemy{};
-    LONG playerHP = 10;
+    LONG playerMaxHP = characterProfiles[basicCharacter].maxHP;
+    LONG playerHP = playerMaxHP;
     bool playerAlive = true;
     float playerHitRemaining = 0.0f;
     LONG dashDirectionX = 0;
     LONG dashDirectionY = 0;
+    float dashDistanceCurrent = dashDistance;
     float dashDistanceRemaining = 0.0f;
     float dashCooldownRemaining = 0.0f;
     bool dashActive = false;
@@ -1980,6 +2107,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     LONG slashTop = 0;
     LONG slashRight = 0;
     LONG slashBottom = 0;
+    float slashOriginX = 0.0f;
+    float slashOriginY = 0.0f;
+    LONG slashDirectionX = 1;
+    LONG slashDirectionY = 0;
     float slashVisualRemaining = 0.0f;
     float slashCooldownRemaining = 0.0f;
     float trapCycleElapsed = 0.0f;
@@ -2023,6 +2154,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 applicationState = gameplayState;
                 runSeed = checkpoint.seed;
                 currentRoom = checkpoint.room;
+                selectedCharacter = checkpoint.character;
+                playerMaxHP = characterProfiles[selectedCharacter].maxHP;
                 playerHP = checkpoint.playerHP;
                 moveUpgradeStack = checkpoint.moveStack;
                 slashUpgradeStack = checkpoint.slashStack;
@@ -2030,6 +2163,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 functionalUpgradeFlags = checkpoint.functionalFlags;
                 RecalculateAugmentStats(playerMoveSpeedCurrent,
                     slashCooldownDurationCurrent, dashCooldownDurationCurrent);
+                dashDistanceCurrent = dashDistance
+                    * characterProfiles[selectedCharacter].dashDistanceScale;
                 rerollUsed = checkpoint.reroll != 0;
                 runKillCount = checkpoint.runKills;
                 upgradeOptionA = 0;
@@ -2058,14 +2193,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     runSeed = 0xA341316Cu;
                 }
                 currentRoom = 0;
-                playerHP = 10;
-                playerMoveSpeedCurrent = playerMoveSpeed;
-                slashCooldownDurationCurrent = slashCooldownDuration;
-                dashCooldownDurationCurrent = dashCooldownDuration;
+                playerMaxHP = characterProfiles[selectedCharacter].maxHP;
+                playerHP = playerMaxHP;
                 moveUpgradeStack = 0;
                 slashUpgradeStack = 0;
                 dashUpgradeStack = 0;
                 functionalUpgradeFlags = 0;
+                RecalculateAugmentStats(playerMoveSpeedCurrent,
+                    slashCooldownDurationCurrent, dashCooldownDurationCurrent);
+                dashDistanceCurrent = dashDistance
+                    * characterProfiles[selectedCharacter].dashDistanceScale;
                 rerollUsed = false;
                 runKillCount = 0;
                 upgradeOptionA = 0;
@@ -2124,6 +2261,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             slashTop = 0;
             slashRight = 0;
             slashBottom = 0;
+            slashOriginX = playerX;
+            slashOriginY = playerY;
+            slashDirectionX = facingX;
+            slashDirectionY = facingY;
             slashVisualRemaining = 0.0f;
             slashCooldownRemaining = 0.0f;
             trapCycleElapsed = 0.0f;
@@ -2280,7 +2421,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 {
                     dashDirectionX = facingX;
                     dashDirectionY = facingY;
-                    dashDistanceRemaining = dashDistance;
+                    dashDistanceRemaining = dashDistanceCurrent;
                     dashCooldownRemaining = dashCooldownDurationCurrent;
                     dashActive = true;
                 }
@@ -2298,7 +2439,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             LONG movementSteps = 1;
             if (dashActive)
             {
-                float dashFrameDistance = dashSpeed * deltaTime;
+                float dashFrameDistance
+                    = dashDistanceCurrent / dashDuration * deltaTime;
                 if (dashFrameDistance > dashDistanceRemaining)
                 {
                     dashFrameDistance = dashDistanceRemaining;
@@ -3035,54 +3177,76 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 {
                     LONG slashCenterX = static_cast<LONG>(playerX);
                     LONG slashCenterY = static_cast<LONG>(playerY);
-                    if (facingX < 0)
+                    const CharacterProfile& profile = characterProfiles[selectedCharacter];
+                    slashOriginX = playerX;
+                    slashOriginY = playerY;
+                    slashDirectionX = facingX;
+                    slashDirectionY = facingY;
+                    if (selectedCharacter == piercerCharacter)
                     {
-                        slashRight = slashCenterX - playerWidth / 2;
-                        slashLeft = slashRight - slashReach;
-                    }
-                    else if (facingX > 0)
-                    {
-                        slashLeft = slashCenterX + playerWidth / 2;
-                        slashRight = slashLeft + slashReach;
+                        LONG extent = profile.slashReach + playerHeight;
+                        slashLeft = slashCenterX - extent;
+                        slashRight = slashCenterX + extent + 1;
+                        slashTop = slashCenterY - extent;
+                        slashBottom = slashCenterY + extent + 1;
                     }
                     else
                     {
-                        slashLeft = slashCenterX - slashWidth / 2;
-                        slashRight = slashLeft + slashWidth;
-                    }
+                        if (facingX < 0)
+                        {
+                            slashRight = slashCenterX - playerWidth / 2;
+                            slashLeft = slashRight - profile.slashReach;
+                        }
+                        else if (facingX > 0)
+                        {
+                            slashLeft = slashCenterX + playerWidth / 2;
+                            slashRight = slashLeft + profile.slashReach;
+                        }
+                        else
+                        {
+                            slashLeft = slashCenterX - profile.slashWidth / 2;
+                            slashRight = slashLeft + profile.slashWidth;
+                        }
 
-                    if (facingY < 0)
-                    {
-                        slashBottom = slashCenterY - playerHeight / 2;
-                        slashTop = slashBottom - slashReach;
-                    }
-                    else if (facingY > 0)
-                    {
-                        slashTop = slashCenterY + playerHeight / 2;
-                        slashBottom = slashTop + slashReach;
-                    }
-                    else
-                    {
-                        slashTop = slashCenterY - slashWidth / 2;
-                        slashBottom = slashTop + slashWidth;
+                        if (facingY < 0)
+                        {
+                            slashBottom = slashCenterY - playerHeight / 2;
+                            slashTop = slashBottom - profile.slashReach;
+                        }
+                        else if (facingY > 0)
+                        {
+                            slashTop = slashCenterY + playerHeight / 2;
+                            slashBottom = slashTop + profile.slashReach;
+                        }
+                        else
+                        {
+                            slashTop = slashCenterY - profile.slashWidth / 2;
+                            slashBottom = slashTop + profile.slashWidth;
+                        }
                     }
 
                     slashVisualRemaining = slashVisualDuration;
                     slashCooldownRemaining = slashCooldownDurationCurrent;
+                    LONG slashHitCount = 0;
                     for (LONG enemyIndex = 0; enemyIndex < currentEnemyCount;
                         ++enemyIndex)
                     {
                         EnemyRuntime& enemy = enemies[enemyIndex];
                         LONG enemyLeft = static_cast<LONG>(enemy.x) - enemyWidth / 2;
                         LONG enemyTop = static_cast<LONG>(enemy.y) - enemyHeight / 2;
-                        if (enemy.alive
-                            && slashLeft < enemyLeft + enemyWidth
-                            && slashRight > enemyLeft
-                            && slashTop < enemyTop + enemyHeight
-                            && slashBottom > enemyTop)
+                        bool slashOverlap = selectedCharacter == piercerCharacter
+                            ? PiercerSlashHitsEnemy(slashOriginX, slashOriginY,
+                                slashDirectionX, slashDirectionY, enemy.x, enemy.y)
+                            : slashLeft < enemyLeft + enemyWidth
+                                && slashRight > enemyLeft
+                                && slashTop < enemyTop + enemyHeight
+                                && slashBottom > enemyTop;
+                        if (enemy.alive && slashOverlap
+                            && slashHitCount < profile.slashHitCap)
                         {
+                            ++slashHitCount;
                             enemy.hitRemaining = slashVisualDuration;
-                            --enemy.hp;
+                            enemy.hp -= profile.slashDamage;
                             if (enemy.hp <= 0)
                             {
                                 enemy.hp = 0;
@@ -3505,10 +3669,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     {
                         LONG screenX = x - cameraX;
                         LONG screenY = y - cameraY;
+                        bool outline = selectedCharacter == piercerCharacter
+                            ? PiercerSlashOutlinePixel(slashOriginX, slashOriginY,
+                                slashDirectionX, slashDirectionY,
+                                x + 0.5f, y + 0.5f)
+                            : x == slashLeft || x == slashRight - 1
+                                || y == slashTop || y == slashBottom - 1;
                         if (screenX >= 0 && screenX < framebufferWidth
                             && screenY >= 0 && screenY < framebufferHeight
-                            && (x == slashLeft || x == slashRight - 1
-                                || y == slashTop || y == slashBottom - 1))
+                            && outline)
                         {
                             framebuffer[screenY * framebufferWidth + screenX] = 0x00E0E0E0;
                         }
@@ -3636,7 +3805,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             constexpr LONG healthBarHeight = 2;
             LONG healthBarLeft = static_cast<LONG>(playerX) - healthBarWidth / 2 - cameraX;
             LONG healthBarTop = static_cast<LONG>(playerY) - playerHeight / 2 - 4 - cameraY;
-            LONG healthFillWidth = playerHP * healthBarWidth / 10;
+            LONG healthFillWidth = playerHP * healthBarWidth / playerMaxHP;
             for (LONG y = 0; y < healthBarHeight; ++y)
             {
                 for (LONG x = 0; x < healthBarWidth; ++x)
@@ -3659,6 +3828,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     bool body = y >= 3 && y < 8 && x >= 1 && x < 7;
                     bool arm = y >= 4 && y < 7 && (x == 0 || x == 7);
                     bool leg = y >= 8 && ((x >= 1 && x < 3) || (x >= 5 && x < 7));
+                    bool mobilityMark = selectedCharacter == mobilityCharacter
+                        && y == 4 && (x == 1 || x == 6);
+                    bool piercerMark = selectedCharacter == piercerCharacter
+                        && x == 3 && y >= 3 && y < 8;
+                    bool heavyMark = selectedCharacter == heavyCharacter
+                        && y == 6 && x >= 1 && x < 7;
+                    bool rapidMark = selectedCharacter == rapidCharacter
+                        && (y == 4 || y == 6) && (x == 3 || x == 4);
                     LONG pixelX = drawingLeft + x;
                     LONG pixelY = drawingTop + y;
                     if ((head || body || arm || leg)
@@ -3666,11 +3843,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         && pixelY >= 0 && pixelY < framebufferHeight)
                     {
                         framebuffer[pixelY * framebufferWidth + pixelX]
-                            = head ? 0x00FFFFFF
-                            : (!playerAlive ? 0x00404050
-                                : (playerHitRemaining > 0.0f ? 0x00FFFFFF
-                                    : (playerDashingThisUpdate
-                                        ? 0x0080FFFF : 0x0000A0FF)));
+                            = !playerAlive ? 0x00404050
+                            : (playerHitRemaining > 0.0f ? 0x00FFFFFF
+                                : (playerDashingThisUpdate ? 0x0080FFFF
+                                    : (head ? 0x00FFFFFF
+                                        : (mobilityMark ? 0x0040E0C0
+                                            : (piercerMark ? 0x00C060FF
+                                                : (heavyMark ? 0x00FF9040
+                                                    : (rapidMark ? 0x00FFF060
+                                                        : 0x0000A0FF)))))));
                     }
                 }
             }
