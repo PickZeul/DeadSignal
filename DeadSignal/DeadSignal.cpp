@@ -98,6 +98,16 @@ constexpr LONG slashWidth = 8;
 constexpr float slashVisualDuration = 0.10f;
 constexpr float slashCooldownDuration = 0.5f;
 constexpr LONG executeReach = 4;
+constexpr LONG moveUpgrade = 0;
+constexpr LONG slashUpgrade = 1;
+constexpr LONG dashUpgrade = 2;
+constexpr LONG silentDashUpgrade = 3;
+constexpr LONG executeReachUpgrade = 4;
+constexpr LONG fieldMedicUpgrade = 5;
+constexpr LONG upgradeCount = 6;
+constexpr BYTE silentDashUpgradeFlag = 1;
+constexpr BYTE executeReachUpgradeFlag = 2;
+constexpr BYTE fieldMedicUpgradeFlag = 4;
 constexpr float dashDistance = 32.0f;
 constexpr float dashDuration = 0.12f;
 constexpr float dashSpeed = dashDistance / dashDuration;
@@ -115,7 +125,7 @@ constexpr LONG gameplayState = 2;
 constexpr LONG gameOverEndState = 1;
 constexpr LONG runClearEndState = 2;
 constexpr DWORD saveMagic = 0x56535344;
-constexpr DWORD saveVersion = 5;
+constexpr DWORD saveVersion = 6;
 constexpr wchar_t saveFileName[] = L"DeadSignal.sav";
 LONG applicationState = titleMainState;
 LONG menuSelection = 0;
@@ -163,6 +173,10 @@ bool upgradeMenuActive = false;
 LONG upgradeSelection = 0;
 LONG upgradeOptionA = 0;
 LONG upgradeOptionB = 1;
+BYTE moveUpgradeStack = 0;
+BYTE slashUpgradeStack = 0;
+BYTE dashUpgradeStack = 0;
+BYTE functionalUpgradeFlags = 0;
 bool rerollUsed = false;
 bool upgradeConfirmRequested = false;
 bool gameplayMenuActive = false;
@@ -233,14 +247,16 @@ struct SaveCheckpoint
     DWORD seed;
     LONG room;
     LONG playerHP;
-    float moveSpeed;
-    float slashCooldown;
-    float dashCooldown;
-    DWORD reroll;
     LONG runKills;
+    BYTE moveStack;
+    BYTE slashStack;
+    BYTE dashStack;
+    BYTE functionalFlags;
+    BYTE reroll;
+    BYTE reserved[3];
 };
 
-static_assert(sizeof(SaveCheckpoint) == 40);
+static_assert(sizeof(SaveCheckpoint) == 32);
 
 bool ReadCheckpoint(SaveCheckpoint* checkpoint)
 {
@@ -259,17 +275,20 @@ bool ReadCheckpoint(SaveCheckpoint* checkpoint)
     return valid && checkpoint->magic == saveMagic && checkpoint->version == saveVersion
         && checkpoint->seed != 0 && checkpoint->room >= 0 && checkpoint->room < roomCount
         && checkpoint->playerHP > 0 && checkpoint->playerHP <= 10
-        && (checkpoint->moveSpeed == playerMoveSpeed
-            || checkpoint->moveSpeed == playerMoveSpeed * 1.1f)
-        && (checkpoint->slashCooldown == slashCooldownDuration
-            || checkpoint->slashCooldown == slashCooldownDuration * 0.8f)
-        && (checkpoint->dashCooldown == dashCooldownDuration
-            || checkpoint->dashCooldown == dashCooldownDuration * 0.8f)
-        && checkpoint->reroll <= 1 && checkpoint->runKills >= 0;
+        && checkpoint->runKills >= 0
+        && checkpoint->moveStack <= 2 && checkpoint->slashStack <= 2
+        && checkpoint->dashStack <= 2
+        && (checkpoint->functionalFlags & ~7) == 0 && checkpoint->reroll <= 1
+        && checkpoint->reserved[0] == 0 && checkpoint->reserved[1] == 0
+        && checkpoint->reserved[2] == 0
+        && checkpoint->moveStack + checkpoint->slashStack + checkpoint->dashStack
+            + ((checkpoint->functionalFlags & silentDashUpgradeFlag) != 0)
+            + ((checkpoint->functionalFlags & executeReachUpgradeFlag) != 0)
+            + ((checkpoint->functionalFlags & fieldMedicUpgradeFlag) != 0)
+            <= checkpoint->room / 2;
 }
 
-void WriteCheckpoint(DWORD seed, LONG room, LONG playerHP, float moveSpeed,
-    float slashCooldown, float dashCooldown, bool reroll, LONG runKills)
+void WriteCheckpoint(DWORD seed, LONG room, LONG playerHP, LONG runKills)
 {
     SaveCheckpoint checkpoint
     {
@@ -278,11 +297,13 @@ void WriteCheckpoint(DWORD seed, LONG room, LONG playerHP, float moveSpeed,
         seed,
         room,
         playerHP,
-        moveSpeed,
-        slashCooldown,
-        dashCooldown,
-        static_cast<DWORD>(reroll),
-        runKills
+        runKills,
+        moveUpgradeStack,
+        slashUpgradeStack,
+        dashUpgradeStack,
+        functionalUpgradeFlags,
+        static_cast<BYTE>(rerollUsed),
+        { 0, 0, 0 }
     };
     HANDLE file = CreateFileW(saveFileName, GENERIC_WRITE, 0, nullptr,
         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -320,6 +341,84 @@ DWORD NextRoomRandom(DWORD& state)
 {
     state = state * 1664525u + 1013904223u;
     return state;
+}
+
+BYTE CurrentUpgradeStack(LONG upgrade)
+{
+    if (upgrade == moveUpgrade)
+    {
+        return moveUpgradeStack;
+    }
+    if (upgrade == slashUpgrade)
+    {
+        return slashUpgradeStack;
+    }
+    if (upgrade == dashUpgrade)
+    {
+        return dashUpgradeStack;
+    }
+    return (functionalUpgradeFlags & (1 << (upgrade - silentDashUpgrade))) != 0;
+}
+
+void GenerateUpgradeOffer(bool reroll)
+{
+    LONG candidates[upgradeCount]{};
+    LONG candidateCount = 0;
+    for (LONG upgrade = 0; upgrade < upgradeCount; ++upgrade)
+    {
+        if (CurrentUpgradeStack(upgrade) < (upgrade <= dashUpgrade ? 2 : 1))
+        {
+            candidates[candidateCount++] = upgrade;
+        }
+    }
+
+    DWORD state = RoomRandom(runSeed, currentRoom)
+        ^ (reroll ? 0xA511E9B3u : 0x2468ACE1u);
+    for (LONG index = candidateCount - 1; index > 0; --index)
+    {
+        LONG other = NextRoomRandom(state) % (index + 1);
+        LONG upgrade = candidates[index];
+        candidates[index] = candidates[other];
+        candidates[other] = upgrade;
+    }
+
+    LONG previousA = upgradeOptionA;
+    LONG previousB = upgradeOptionB;
+    upgradeOptionA = candidates[0];
+    upgradeOptionB = candidates[1];
+    if (reroll && candidateCount > 2
+        && ((upgradeOptionA == previousA && upgradeOptionB == previousB)
+            || (upgradeOptionA == previousB && upgradeOptionB == previousA)))
+    {
+        upgradeOptionB = candidates[2];
+    }
+}
+
+void RecalculateAugmentStats(float& moveSpeed, float& slashCooldown,
+    float& dashCooldown)
+{
+    moveSpeed = playerMoveSpeed * (1.0f + moveUpgradeStack * 0.1f);
+    slashCooldown = slashCooldownDuration * (1.0f - slashUpgradeStack * 0.2f);
+    dashCooldown = dashCooldownDuration * (1.0f - dashUpgradeStack * 0.2f);
+}
+
+bool PlayerMovementIsAudible(bool moved, bool dashing)
+{
+    return moved && (!dashing || !(functionalUpgradeFlags & silentDashUpgradeFlag));
+}
+
+LONG CurrentExecuteReach()
+{
+    return functionalUpgradeFlags & executeReachUpgradeFlag
+        ? executeReach * 2 : executeReach;
+}
+
+void ApplyFieldMedic(LONG& playerHP)
+{
+    if ((functionalUpgradeFlags & fieldMedicUpgradeFlag) && playerHP < 10)
+    {
+        ++playerHP;
+    }
 }
 
 void AddRoomWall(LONG left, LONG top, LONG right, LONG bottom)
@@ -1626,10 +1725,21 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             for (LONG item = 0; item < 3; ++item)
             {
                 LONG upgrade = item ? upgradeOptionB : upgradeOptionA;
-                const wchar_t* text = item == 2
-                    ? (rerollUsed ? L"REROLL (USED)" : L"REROLL")
-                    : (upgrade == 0 ? L"MOVE+"
-                        : (upgrade == 1 ? L"SLASH+" : L"DASH+"));
+                const wchar_t* text = rerollUsed ? L"REROLL (USED)" : L"REROLL";
+                if (item != 2)
+                {
+                    const wchar_t* name = upgrade == moveUpgrade ? L"MOVE+"
+                        : (upgrade == slashUpgrade ? L"SLASH+"
+                            : (upgrade == dashUpgrade ? L"DASH+"
+                                : (upgrade == silentDashUpgrade ? L"SILENT DASH"
+                                    : (upgrade == executeReachUpgrade
+                                        ? L"EXECUTE REACH" : L"FIELD MEDIC"))));
+                    wsprintfW(hudText, L"[%s] %s %u/%u",
+                        upgrade <= dashUpgrade ? L"A" : L"F", name,
+                        static_cast<UINT>(CurrentUpgradeStack(upgrade)),
+                        static_cast<UINT>(upgrade <= dashUpgrade ? 2 : 1));
+                    text = hudText;
+                }
                 line.top = clientHeight / 5 + 50 + item * 30;
                 line.bottom = line.top + 24;
                 SetTextColor(deviceContext, item == upgradeSelection
@@ -1866,7 +1976,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     float playerMoveSpeedCurrent = playerMoveSpeed;
     float slashCooldownDurationCurrent = slashCooldownDuration;
     float dashCooldownDurationCurrent = dashCooldownDuration;
-    DWORD upgradeRandomState = 0x2468ACE1;
     LONG slashLeft = 0;
     LONG slashTop = 0;
     LONG slashRight = 0;
@@ -1915,12 +2024,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 runSeed = checkpoint.seed;
                 currentRoom = checkpoint.room;
                 playerHP = checkpoint.playerHP;
-                playerMoveSpeedCurrent = checkpoint.moveSpeed;
-                slashCooldownDurationCurrent = checkpoint.slashCooldown;
-                dashCooldownDurationCurrent = checkpoint.dashCooldown;
+                moveUpgradeStack = checkpoint.moveStack;
+                slashUpgradeStack = checkpoint.slashStack;
+                dashUpgradeStack = checkpoint.dashStack;
+                functionalUpgradeFlags = checkpoint.functionalFlags;
+                RecalculateAugmentStats(playerMoveSpeedCurrent,
+                    slashCooldownDurationCurrent, dashCooldownDurationCurrent);
                 rerollUsed = checkpoint.reroll != 0;
                 runKillCount = checkpoint.runKills;
-                upgradeRandomState = 0x2468ACE1;
                 upgradeOptionA = 0;
                 upgradeOptionB = 1;
                 titleStatus = 0;
@@ -1951,7 +2062,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 playerMoveSpeedCurrent = playerMoveSpeed;
                 slashCooldownDurationCurrent = slashCooldownDuration;
                 dashCooldownDurationCurrent = dashCooldownDuration;
-                upgradeRandomState = 0x2468ACE1;
+                moveUpgradeStack = 0;
+                slashUpgradeStack = 0;
+                dashUpgradeStack = 0;
+                functionalUpgradeFlags = 0;
                 rerollUsed = false;
                 runKillCount = 0;
                 upgradeOptionA = 0;
@@ -2023,9 +2137,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 || zPressed || xPressed || cPressed || spacePressed;
             if (!checkpointLoaded)
             {
-                WriteCheckpoint(runSeed, currentRoom, playerHP, playerMoveSpeedCurrent,
-                    slashCooldownDurationCurrent, dashCooldownDurationCurrent, rerollUsed,
-                    runKillCount);
+                WriteCheckpoint(runSeed, currentRoom, playerHP, runKillCount);
             }
             newGameRequested = false;
             QueryPerformanceCounter(&previousUpdate);
@@ -2034,9 +2146,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
         if (saveAndTitleRequested && applicationState == gameplayState)
         {
-            WriteCheckpoint(runSeed, currentRoom, playerHP, playerMoveSpeedCurrent,
-                slashCooldownDurationCurrent, dashCooldownDurationCurrent, rerollUsed,
-                runKillCount);
+            WriteCheckpoint(runSeed, currentRoom, playerHP, runKillCount);
             applicationState = titleMainState;
             menuSelection = 0;
             titleStatus = 0;
@@ -2082,18 +2192,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 {
                     if (!rerollUsed)
                     {
-                        LONG missingUpgrade = 3 - upgradeOptionA - upgradeOptionB;
-                        upgradeRandomState = upgradeRandomState * 1664525 + 1013904223;
-                        if (upgradeRandomState & 1)
-                        {
-                            upgradeOptionB = upgradeOptionA;
-                            upgradeOptionA = missingUpgrade;
-                        }
-                        else
-                        {
-                            upgradeOptionA = upgradeOptionB;
-                            upgradeOptionB = missingUpgrade;
-                        }
+                        GenerateUpgradeOffer(true);
                         rerollUsed = true;
                         upgradeSelection = 0;
                         InvalidateRect(window, nullptr, FALSE);
@@ -2102,18 +2201,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 else
                 {
                     LONG upgrade = upgradeSelection ? upgradeOptionB : upgradeOptionA;
-                    if (upgrade == 0)
+                    if (upgrade == moveUpgrade)
                     {
-                        playerMoveSpeedCurrent = playerMoveSpeed * 1.1f;
+                        ++moveUpgradeStack;
                     }
-                    else if (upgrade == 1)
+                    else if (upgrade == slashUpgrade)
                     {
-                        slashCooldownDurationCurrent = slashCooldownDuration * 0.8f;
+                        ++slashUpgradeStack;
+                    }
+                    else if (upgrade == dashUpgrade)
+                    {
+                        ++dashUpgradeStack;
                     }
                     else
                     {
-                        dashCooldownDurationCurrent = dashCooldownDuration * 0.8f;
+                        functionalUpgradeFlags |= 1 << (upgrade - silentDashUpgrade);
                     }
+                    RecalculateAugmentStats(playerMoveSpeedCurrent,
+                        slashCooldownDurationCurrent, dashCooldownDurationCurrent);
                     upgradeMenuActive = false;
                     if (currentRoom == roomCount - 1)
                     {
@@ -2280,6 +2385,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             }
             bool playerMovedThisUpdate
                 = playerX != playerPreviousX || playerY != playerPreviousY;
+            bool playerAudibleThisUpdate = PlayerMovementIsAudible(
+                playerMovedThisUpdate, playerDashingThisUpdate);
 
             if (currentTrapCount && playerAlive
                 && trapDamageCooldownRemaining <= 0.0f)
@@ -2376,7 +2483,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     && !WallBlocksSegment(enemyX, enemyY, playerX, playerY);
 
                 if (enemy.role == listenerEnemyRole && !playerInVision
-                    && detectionProgress <= 0.0f && playerMovedThisUpdate)
+                    && detectionProgress <= 0.0f && playerAudibleThisUpdate)
                 {
                     float hearingDifferenceX = playerX - enemyX;
                     float hearingDifferenceY = playerY - enemyY;
@@ -2685,7 +2792,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             float hearingRangeSquared = playerDashingThisUpdate
                                 ? listenerDashHearingRangeSquared
                                 : listenerMovementHearingRangeSquared;
-                            if (!playerMovedThisUpdate
+                            if (!playerAudibleThisUpdate
                                 || hearingDifferenceX * hearingDifferenceX
                                 + hearingDifferenceY * hearingDifferenceY
                                 > hearingRangeSquared)
@@ -3003,6 +3110,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 {
                     LONG executeCenterX = static_cast<LONG>(playerX);
                     LONG executeCenterY = static_cast<LONG>(playerY);
+                    LONG currentExecuteReach = CurrentExecuteReach();
                     LONG executeLeft;
                     LONG executeRight;
                     LONG executeTop;
@@ -3010,12 +3118,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     if (facingX < 0)
                     {
                         executeRight = executeCenterX - playerWidth / 2;
-                        executeLeft = executeRight - executeReach;
+                        executeLeft = executeRight - currentExecuteReach;
                     }
                     else if (facingX > 0)
                     {
                         executeLeft = executeCenterX + playerWidth / 2;
-                        executeRight = executeLeft + executeReach;
+                        executeRight = executeLeft + currentExecuteReach;
                     }
                     else
                     {
@@ -3026,12 +3134,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     if (facingY < 0)
                     {
                         executeBottom = executeCenterY - playerHeight / 2;
-                        executeTop = executeBottom - executeReach;
+                        executeTop = executeBottom - currentExecuteReach;
                     }
                     else if (facingY > 0)
                     {
                         executeTop = executeCenterY + playerHeight / 2;
-                        executeBottom = executeTop + executeReach;
+                        executeBottom = executeTop + currentExecuteReach;
                     }
                     else
                     {
@@ -3070,6 +3178,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         enemy.alive = false;
                         --currentEnemyRemaining;
                         ++runKillCount;
+                        ApplyFieldMedic(playerHP);
                         enemy.executeFeedbackRemaining = slashVisualDuration;
                         slashCooldownRemaining = 0.0f;
                         dashCooldownRemaining = 0.0f;
@@ -3167,11 +3276,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
                 else
                 {
-                    upgradeRandomState = RoomRandom(runSeed, currentRoom) ^ 0x2468ACE1u;
-                    upgradeRandomState = upgradeRandomState * 1664525 + 1013904223;
-                    upgradeOptionA = upgradeRandomState % 3;
-                    upgradeRandomState = upgradeRandomState * 1664525 + 1013904223;
-                    upgradeOptionB = (upgradeOptionA + 1 + (upgradeRandomState & 1)) % 3;
+                    GenerateUpgradeOffer(false);
                     upgradeMenuActive = true;
                     upgradeSelection = 0;
                     upgradeConfirmRequested = false;
