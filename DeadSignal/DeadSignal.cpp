@@ -47,6 +47,7 @@ constexpr BYTE patrollerEnemyRole = 0;
 constexpr BYTE watcherEnemyRole = 1;
 constexpr BYTE hunterEnemyRole = 2;
 constexpr BYTE listenerEnemyRole = 3;
+constexpr BYTE spinnerEnemyRole = 4;
 constexpr LONG enemyWidth = 8;
 constexpr LONG enemyHeight = 12;
 constexpr float enemyInitialX = 120.0f;
@@ -67,6 +68,7 @@ constexpr float enemyReacquireRangeSquared = 42.0f * 42.0f;
 constexpr float hunterReacquireRangeSquared = 70.0f * 70.0f;
 constexpr float listenerMovementHearingRangeSquared = 80.0f * 80.0f;
 constexpr float listenerDashHearingRangeSquared = 120.0f * 120.0f;
+constexpr float spinnerRotationSpeed = 1.04719755f;
 constexpr float enemyFacingTurnSpeed = 2.0943951f;
 constexpr float enemyScanAngle = 0.47996554f;
 constexpr float enemyAlertSearchDuration = 10.0f;
@@ -670,6 +672,7 @@ void SetupCurrentRoom()
             break;
         }
     }
+    currentEnemyStartFacing[2] = watcherFacingAngle[NextRoomRandom(state) & 3];
 }
 
 bool SingleWallBlocksSegment(LONG wall, float startX, float startY, float endX, float endY)
@@ -1874,7 +1877,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 enemy.x = currentEnemyStartX[enemyIndex];
                 enemy.y = currentEnemyStartY[enemyIndex];
                 enemy.role = enemyIndex == 0 ? watcherEnemyRole
-                    : (enemyIndex == 1 ? hunterEnemyRole : listenerEnemyRole);
+                    : (enemyIndex == 1 ? listenerEnemyRole : spinnerEnemyRole);
                 enemy.facingAngle = currentEnemyStartFacing[enemyIndex];
                 enemy.surveillanceFacingAngle = enemy.facingAngle;
                 enemy.patrolReturnX = enemy.x;
@@ -2233,6 +2236,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 bool& enemyAlive = enemy.alive;
 
                 playerInVision = false;
+            if (enemyAlive && playerAlive && enemy.role == spinnerEnemyRole
+                && !enemyAlert && detectionProgress <= 0.0f
+                && !enemyReturningToPatrol)
+            {
+                enemyFacingAngle += spinnerRotationSpeed * deltaTime;
+                if (enemyFacingAngle > 3.14159265f)
+                {
+                    enemyFacingAngle -= 6.28318531f;
+                }
+            }
             if (enemyAlive && playerAlive && !enemyAlert)
             {
                 float facingX = cosf(enemyFacingAngle);
@@ -2360,13 +2373,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             detectionProgress = 0.0f;
                             lostSightElapsed = 0.0f;
                             enemyPatrolReturnX = enemy.role == watcherEnemyRole
+                                || enemy.role == spinnerEnemyRole
                                 ? currentEnemyStartX[enemyIndex] : enemyX;
                             if (enemy.role != watcherEnemyRole
+                                && enemy.role != spinnerEnemyRole
                                 && enemyPatrolReturnX < currentPatrolLeft[enemyIndex])
                             {
                                 enemyPatrolReturnX = currentPatrolLeft[enemyIndex];
                             }
                             else if (enemy.role != watcherEnemyRole
+                                && enemy.role != spinnerEnemyRole
                                 && enemyPatrolReturnX > currentPatrolRight[enemyIndex])
                             {
                                 enemyPatrolReturnX = currentPatrolRight[enemyIndex];
@@ -2599,7 +2615,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         enemyFacingAngle = TurnToward(enemyFacingAngle,
                             atan2f(lastSeenPlayerY - enemyY, lastSeenPlayerX - enemyX),
                             enemyFacingTurnSpeed * deltaTime);
-                        if (enemy.role != watcherEnemyRole)
+                        if (enemy.role != watcherEnemyRole
+                            && enemy.role != spinnerEnemyRole)
                         {
                             MoveEnemyToward(enemyX, enemyY,
                                 lastSeenPlayerX, lastSeenPlayerY,
@@ -2609,9 +2626,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
                 else
                 {
-                    if (enemy.role == watcherEnemyRole && !enemyReturningToPatrol)
+                    if ((enemy.role == watcherEnemyRole || enemy.role == spinnerEnemyRole)
+                        && !enemyReturningToPatrol)
                     {
-                        enemyFacingAngle = enemy.surveillanceFacingAngle;
+                        if (enemy.role == watcherEnemyRole)
+                        {
+                            enemyFacingAngle = enemy.surveillanceFacingAngle;
+                        }
                     }
                     else
                     {
@@ -3164,6 +3185,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                 && y >= 4 && y < 8 && x == 3;
                             bool listenerMark = enemy.role == listenerEnemyRole
                                 && y == 1 && (x == 1 || x == 6);
+                            bool spinnerMark = enemy.role == spinnerEnemyRole
+                                && y == 4 && x >= 2 && x < 6;
                             LONG pixelX = enemyLeft + x - cameraX;
                             LONG pixelY = enemyTop + y - cameraY;
                             if ((head || body || arm || leg)
@@ -3176,7 +3199,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                         : (watcherEye ? 0x00FFD060
                                             : (hunterMark ? 0x00C060FF
                                                 : (listenerMark ? 0x0040E0C0
-                                                    : (head ? 0x00FF4040 : 0x00A02020))));
+                                                    : (spinnerMark ? 0x00FF9040
+                                                        : (head ? 0x00FF4040 : 0x00A02020)))));
                             }
                         }
                     }
