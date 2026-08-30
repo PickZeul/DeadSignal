@@ -46,6 +46,7 @@ constexpr LONG enemyCount = 3;
 constexpr BYTE patrollerEnemyRole = 0;
 constexpr BYTE watcherEnemyRole = 1;
 constexpr BYTE hunterEnemyRole = 2;
+constexpr BYTE listenerEnemyRole = 3;
 constexpr LONG enemyWidth = 8;
 constexpr LONG enemyHeight = 12;
 constexpr float enemyInitialX = 120.0f;
@@ -64,6 +65,8 @@ constexpr LONG enemyVisionRange = 70;
 constexpr float enemyVisionSlope = 0.520567f;
 constexpr float enemyReacquireRangeSquared = 42.0f * 42.0f;
 constexpr float hunterReacquireRangeSquared = 70.0f * 70.0f;
+constexpr float listenerMovementHearingRangeSquared = 80.0f * 80.0f;
+constexpr float listenerDashHearingRangeSquared = 120.0f * 120.0f;
 constexpr float enemyFacingTurnSpeed = 2.0943951f;
 constexpr float enemyScanAngle = 0.47996554f;
 constexpr float enemyAlertSearchDuration = 10.0f;
@@ -202,6 +205,7 @@ struct EnemyRuntime
     bool returningToPatrol;
     bool playerInVision;
     bool lastSeenPlayerValid;
+    bool heardSuspicion;
     bool searchTargetValid;
     bool scanning;
     bool alert;
@@ -1870,7 +1874,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 enemy.x = currentEnemyStartX[enemyIndex];
                 enemy.y = currentEnemyStartY[enemyIndex];
                 enemy.role = enemyIndex == 0 ? watcherEnemyRole
-                    : (enemyIndex == 2 ? hunterEnemyRole : patrollerEnemyRole);
+                    : (enemyIndex == 1 ? hunterEnemyRole : listenerEnemyRole);
                 enemy.facingAngle = currentEnemyStartFacing[enemyIndex];
                 enemy.surveillanceFacingAngle = enemy.facingAngle;
                 enemy.patrolReturnX = enemy.x;
@@ -2065,6 +2069,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             }
 
             bool playerDashingThisUpdate = dashActive;
+            float playerPreviousX = playerX;
+            float playerPreviousY = playerY;
             float movementScale = movementX && movementY ? 0.70710678f : 1.0f;
             float movementDeltaX = movementX * playerMoveSpeedCurrent
                 * movementScale * deltaTime;
@@ -2158,6 +2164,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
                 playerY = nextPlayerY;
             }
+            bool playerMovedThisUpdate
+                = playerX != playerPreviousX || playerY != playerPreviousY;
 
             if (currentTrapCount && playerAlive
                 && trapDamageCooldownRemaining <= 0.0f)
@@ -2208,6 +2216,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 float& lastSeenPlayerX = enemy.lastSeenPlayerX;
                 float& lastSeenPlayerY = enemy.lastSeenPlayerY;
                 bool& lastSeenPlayerValid = enemy.lastSeenPlayerValid;
+                bool& heardSuspicion = enemy.heardSuspicion;
                 float& alertLostElapsed = enemy.alertLostElapsed;
                 DWORD& searchRandomState = enemy.searchRandomState;
                 float& searchTargetX = enemy.searchTargetX;
@@ -2241,8 +2250,80 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     && visionLateral <= visionForward * enemyVisionSlope
                     && !WallBlocksSegment(enemyX, enemyY, playerX, playerY);
 
+                if (enemy.role == listenerEnemyRole && !playerInVision
+                    && detectionProgress <= 0.0f && playerMovedThisUpdate)
+                {
+                    float hearingDifferenceX = playerX - enemyX;
+                    float hearingDifferenceY = playerY - enemyY;
+                    float hearingRangeSquared = playerDashingThisUpdate
+                        ? listenerDashHearingRangeSquared
+                        : listenerMovementHearingRangeSquared;
+                    float heardTargetDifferenceX = playerX - lastSeenPlayerX;
+                    float heardTargetDifferenceY = playerY - lastSeenPlayerY;
+                    if (hearingDifferenceX * hearingDifferenceX
+                        + hearingDifferenceY * hearingDifferenceY <= hearingRangeSquared
+                        && (!heardSuspicion
+                            || heardTargetDifferenceX * heardTargetDifferenceX
+                            + heardTargetDifferenceY * heardTargetDifferenceY
+                            >= navigationCellSize * navigationCellSize))
+                    {
+                        constexpr float hearingTargetOffsetX[4]
+                            = { 10.0f, -10.0f, 0.0f, 0.0f };
+                        constexpr float hearingTargetOffsetY[4]
+                            = { 0.0f, 0.0f, 12.0f, -12.0f };
+                        LONG firstCandidate = (searchRandomState >> 30) & 3;
+                        bool hearingTargetValid = false;
+                        float hearingTargetX = 0.0f;
+                        float hearingTargetY = 0.0f;
+                        LONG hearingTargetColumn = 0;
+                        LONG hearingTargetRow = 0;
+                        for (LONG attempt = 0; attempt < 4 && !hearingTargetValid; ++attempt)
+                        {
+                            LONG candidate = (firstCandidate + attempt) & 3;
+                            hearingTargetX = playerX + hearingTargetOffsetX[candidate];
+                            hearingTargetY = playerY + hearingTargetOffsetY[candidate];
+                            hearingTargetColumn = NavigationColumn(hearingTargetX);
+                            hearingTargetRow = NavigationRow(hearingTargetY);
+                            hearingTargetValid
+                                = hearingTargetX >= enemyHalfWidth
+                                && hearingTargetX <= worldWidth - enemyHalfWidth
+                                && hearingTargetY >= enemyHalfHeight
+                                && hearingTargetY <= worldHeight - enemyHalfHeight
+                                && NavigationCellValid(hearingTargetColumn, hearingTargetRow)
+                                && !RectangleOverlapsRoomWall(
+                                    hearingTargetX - enemyHalfWidth,
+                                    hearingTargetY - enemyHalfHeight,
+                                    hearingTargetX + enemyHalfWidth,
+                                    hearingTargetY + enemyHalfHeight);
+                        }
+                        if (hearingTargetValid)
+                        {
+                            lastSeenPlayerX = playerX;
+                            lastSeenPlayerY = playerY;
+                            lastSeenPlayerValid = true;
+                            heardSuspicion = true;
+                            lostSightElapsed = 0.0f;
+                            enemyReturningToPatrol = false;
+                            searchTargetX = hearingTargetX;
+                            searchTargetY = hearingTargetY;
+                            searchTargetValid = true;
+                            searchPathCount = FindEnemyPath(enemyX, enemyY,
+                                hearingTargetColumn, hearingTargetRow,
+                                navigationPath[enemyIndex]);
+                            searchPathIndex = 0;
+                        }
+                    }
+                }
+
                 if (playerInVision)
                 {
+                    if (enemy.role == listenerEnemyRole)
+                    {
+                        heardSuspicion = false;
+                        searchTargetValid = false;
+                        searchPathCount = 0;
+                        searchPathIndex = 0;
+                    }
                     lastSeenPlayerX = playerX;
                     lastSeenPlayerY = playerY;
                     lastSeenPlayerValid = true;
@@ -2255,6 +2336,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     {
                         detectionProgress = 1.0f;
                         enemyAlert = true;
+                        heardSuspicion = false;
                         alertLostElapsed = 0.0f;
                         searchTargetValid = false;
                         searchPathCount = 0;
@@ -2440,6 +2522,71 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                         scanElapsed = 0.0f;
                                         scanBaseFacing = enemyFacingAngle;
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (heardSuspicion && searchTargetValid)
+                {
+                    float movementTargetX = searchTargetX;
+                    float movementTargetY = searchTargetY;
+                    if (searchPathIndex < searchPathCount)
+                    {
+                        LONG node = navigationPath[enemyIndex][searchPathIndex];
+                        movementTargetX = enemyHalfWidth
+                            + (node % navigationColumns) * navigationCellSize;
+                        movementTargetY = enemyHalfHeight
+                            + (node / navigationColumns) * navigationCellSize;
+                    }
+                    enemyFacingAngle = TurnToward(enemyFacingAngle,
+                        atan2f(movementTargetY - enemyY, movementTargetX - enemyX),
+                        enemyFacingTurnSpeed * deltaTime);
+                    if (MoveEnemyToward(enemyX, enemyY,
+                        movementTargetX, movementTargetY,
+                        enemyPatrolSpeed, deltaTime, playerX, playerY))
+                    {
+                        if (searchPathIndex < searchPathCount)
+                        {
+                            ++searchPathIndex;
+                        }
+                        else
+                        {
+                            float hearingDifferenceX = playerX - enemyX;
+                            float hearingDifferenceY = playerY - enemyY;
+                            float hearingRangeSquared = playerDashingThisUpdate
+                                ? listenerDashHearingRangeSquared
+                                : listenerMovementHearingRangeSquared;
+                            if (!playerMovedThisUpdate
+                                || hearingDifferenceX * hearingDifferenceX
+                                + hearingDifferenceY * hearingDifferenceY
+                                > hearingRangeSquared)
+                            {
+                                heardSuspicion = false;
+                                lastSeenPlayerValid = false;
+                                searchTargetValid = false;
+                                searchPathCount = 0;
+                                searchPathIndex = 0;
+                                enemyPatrolReturnX = enemyX;
+                                if (enemyPatrolReturnX < currentPatrolLeft[enemyIndex])
+                                {
+                                    enemyPatrolReturnX = currentPatrolLeft[enemyIndex];
+                                }
+                                else if (enemyPatrolReturnX > currentPatrolRight[enemyIndex])
+                                {
+                                    enemyPatrolReturnX = currentPatrolRight[enemyIndex];
+                                }
+                                enemyReturningToPatrol
+                                    = (enemyX - enemyPatrolReturnX)
+                                    * (enemyX - enemyPatrolReturnX)
+                                    + (enemyY - currentEnemyStartY[enemyIndex])
+                                    * (enemyY - currentEnemyStartY[enemyIndex]) > 0.25f;
+                                if (enemyReturningToPatrol)
+                                {
+                                    searchPathCount = FindEnemyPath(enemyX, enemyY,
+                                        NavigationColumn(enemyPatrolReturnX),
+                                        NavigationRow(currentEnemyStartY[enemyIndex]),
+                                        navigationPath[enemyIndex]);
                                 }
                             }
                         }
@@ -2670,6 +2817,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         float distanceSquared = differenceX * differenceX
                             + differenceY * differenceY;
                         if (enemy.alive && enemy.detectionProgress <= 0.0f
+                            && !enemy.heardSuspicion
                             && executeLeft < enemyLeft + enemyWidth
                             && executeRight > enemyLeft
                             && executeTop < enemyTop + enemyHeight
@@ -3014,6 +3162,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                 && y == 1 && x >= 2 && x < 6;
                             bool hunterMark = enemy.role == hunterEnemyRole
                                 && y >= 4 && y < 8 && x == 3;
+                            bool listenerMark = enemy.role == listenerEnemyRole
+                                && y == 1 && (x == 1 || x == 6);
                             LONG pixelX = enemyLeft + x - cameraX;
                             LONG pixelY = enemyTop + y - cameraY;
                             if ((head || body || arm || leg)
@@ -3025,13 +3175,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                         ? 0x00FFFFFF
                                         : (watcherEye ? 0x00FFD060
                                             : (hunterMark ? 0x00C060FF
-                                                : (head ? 0x00FF4040 : 0x00A02020)));
+                                                : (listenerMark ? 0x0040E0C0
+                                                    : (head ? 0x00FF4040 : 0x00A02020))));
                             }
                         }
                     }
                 }
 
-                if (enemy.alive && enemy.detectionProgress > 0.0f)
+                if (enemy.alive
+                    && (enemy.detectionProgress > 0.0f || enemy.heardSuspicion))
                 {
                     for (LONG y = 0; y < 5; ++y)
                     {
