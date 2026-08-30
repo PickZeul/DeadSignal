@@ -169,6 +169,8 @@ LONG titleStatus = 0;
 bool settingsActive = false;
 bool settingsFromGameplay = false;
 LONG settingsSelection = 0;
+bool helpActive = false;
+bool helpFromGameplay = false;
 bool audioEnabled = true;
 bool newGameRequested = false;
 bool loadGameRequested = false;
@@ -1473,6 +1475,22 @@ void CloseSettings()
     }
 }
 
+void CloseHelp()
+{
+    helpActive = false;
+    if (helpFromGameplay)
+    {
+        helpFromGameplay = false;
+        gameplayMenuSelection = 2;
+    }
+    else
+    {
+        applicationState = titleMainState;
+        menuSelection = 3;
+        titleStatus = 0;
+    }
+}
+
 void ChangeAudioSetting()
 {
     audioEnabled = !audioEnabled;
@@ -1491,6 +1509,11 @@ void ConfirmGameplayMenu(HWND window)
         settingsFromGameplay = true;
         settingsSelection = 0;
     }
+    else if (gameplayMenuSelection == 2)
+    {
+        helpActive = true;
+        helpFromGameplay = true;
+    }
     else
     {
         saveAndTitleRequested = true;
@@ -1503,7 +1526,12 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == VK_ESCAPE)
     {
         bool pressed = message == WM_KEYDOWN;
-        if (settingsActive && pressed && !escapePressed)
+        if (helpActive && pressed && !escapePressed)
+        {
+            CloseHelp();
+            InvalidateRect(window, nullptr, FALSE);
+        }
+        else if (settingsActive && pressed && !escapePressed)
         {
             CloseSettings();
             InvalidateRect(window, nullptr, FALSE);
@@ -1541,7 +1569,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     }
 
     if (message == WM_LBUTTONDOWN && applicationState == gameplayState
-        && !runEndState && !upgradeMenuActive && !settingsActive)
+        && !runEndState && !upgradeMenuActive && !settingsActive && !helpActive)
     {
         RECT client{};
         GetClientRect(window, &client);
@@ -1572,7 +1600,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         else if (gameplayMenuActive && mouseX >= clientWidth / 2 - 120
             && mouseX <= clientWidth / 2 + 120)
         {
-            for (LONG item = 0; item < 3; ++item)
+            for (LONG item = 0; item < 4; ++item)
             {
                 LONG top = clientHeight / 5 + 50 + item * 30;
                 if (mouseY >= top && mouseY < top + 24)
@@ -1627,7 +1655,15 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == 'Z')
     {
         bool pressed = message == WM_KEYDOWN;
-        if (settingsActive)
+        if (helpActive)
+        {
+            if (pressed && !zPressed)
+            {
+                CloseHelp();
+                InvalidateRect(window, nullptr, FALSE);
+            }
+        }
+        else if (settingsActive)
         {
             if (pressed && !zPressed)
             {
@@ -1695,6 +1731,11 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     settingsActive = true;
                     settingsFromGameplay = false;
                     settingsSelection = 0;
+                }
+                else if (menuSelection == 3)
+                {
+                    helpActive = true;
+                    helpFromGameplay = false;
                 }
                 else
                 {
@@ -1821,6 +1862,10 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             rightPressed = pressed;
         }
 
+        if (helpActive)
+        {
+            return 0;
+        }
         if (settingsActive && newlyPressed)
         {
             if (wParam == VK_UP && settingsSelection > 0)
@@ -1846,7 +1891,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             {
                 --gameplayMenuSelection;
             }
-            else if (wParam == VK_DOWN && gameplayMenuSelection < 2)
+            else if (wParam == VK_DOWN && gameplayMenuSelection < 3)
             {
                 ++gameplayMenuSelection;
             }
@@ -1897,7 +1942,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 --menuSelection;
             }
             else if (wParam == VK_DOWN
-                && menuSelection < (applicationState == titleMainState ? 3
+                && menuSelection < (applicationState == titleMainState ? 4
                     : (applicationState == characterSelectState ? characterCount + 1 : 2)))
             {
                 ++menuSelection;
@@ -1927,6 +1972,48 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         RECT clientArea{};
         GetClientRect(window, &clientArea);
         FillRect(deviceContext, &clientArea, reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+
+        if (helpActive)
+        {
+            SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
+            SetBkMode(deviceContext, TRANSPARENT);
+            SetTextColor(deviceContext, RGB(220, 220, 220));
+            constexpr const wchar_t* helpLines[11]
+            {
+                L"\uB3C4\uC6C0\uB9D0",
+                L"[\uC870\uC791]",
+                L"\uBC29\uD5A5\uD0A4 : \uC774\uB3D9",
+                L"Z : \uBCA0\uAE30 / \uC120\uD0DD",
+                L"X : \uB300\uC2DC",
+                L"C : \uCC98\uD615",
+                L"ESC : \uBA54\uB274 / \uB4A4\uB85C",
+                L"[\uBAA9\uD45C]",
+                L"\uC77C\uBC18 \uC801 \uC804\uBA78 \uC2DC \uCD9C\uAD6C\uAC00 \uC5F4\uB9B0\uB2E4.",
+                L"\uC5F4\uB9B0 \uCD9C\uAD6C\uB85C \uC774\uB3D9\uD574 \uB2E4\uC74C \uBC29\uC73C\uB85C \uC9C4\uD589\uD55C\uB2E4.",
+                L"OPEN \uBB34\uC801 \uC555\uBC15\uD615\uC740 \uCC98\uCE58 \uB300\uC0C1\uC774 \uC544\uB2C8\uB2E4."
+            };
+            int clientHeight = clientArea.bottom - clientArea.top;
+            LONG top = (clientHeight - framebufferHeight) / 2;
+            if (top < 0)
+            {
+                top = 0;
+            }
+            RECT line = clientArea;
+            for (LONG item = 0; item < 11; ++item)
+            {
+                line.top = top + (item ? 18 + (item - 1) * 14 : 2);
+                line.bottom = line.top + 14;
+                DrawTextW(deviceContext, helpLines[item], -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+            line.top = top + 164;
+            line.bottom = line.top + 16;
+            SetTextColor(deviceContext, RGB(255, 216, 0));
+            DrawTextW(deviceContext, L"\uB4A4\uB85C", -1, &line,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            EndPaint(window, &paint);
+            return 0;
+        }
 
         if (settingsActive)
         {
@@ -1983,7 +2070,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 DrawTextW(deviceContext, titleText, -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
-            LONG itemCount = applicationState == titleMainState ? 4
+            LONG itemCount = applicationState == titleMainState ? 5
                 : (applicationState == characterSelectState ? characterCount + 2 : 3);
             for (LONG item = 0; item < itemCount; ++item)
             {
@@ -1992,7 +2079,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 {
                     text = item == 0 ? L"\uAC8C\uC784 \uC2DC\uC791"
                         : (item == 1 ? L"\uC774\uC5B4\uD558\uAE30"
-                            : (item == 2 ? L"\uC124\uC815" : L"\uC885\uB8CC"));
+                            : (item == 2 ? L"\uC124\uC815"
+                                : (item == 3 ? L"\uB3C4\uC6C0\uB9D0" : L"\uC885\uB8CC")));
                 }
                 else if (applicationState == gameStartMenuState)
                 {
@@ -2144,11 +2232,12 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             SetTextColor(deviceContext, RGB(220, 220, 220));
             DrawTextW(deviceContext, L"MENU", -1, &line,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            for (LONG item = 0; item < 3; ++item)
+            for (LONG item = 0; item < 4; ++item)
             {
                 const wchar_t* text = item == 0 ? L"\uAC8C\uC784\uC73C\uB85C \uB3CC\uC544\uAC00\uAE30"
                     : (item == 1 ? L"\uC124\uC815"
-                        : L"\uC800\uC7A5 \uD6C4 \uD0C0\uC774\uD2C0\uB85C \uAC00\uAE30");
+                        : (item == 2 ? L"\uB3C4\uC6C0\uB9D0"
+                            : L"\uC800\uC7A5 \uD6C4 \uD0C0\uC774\uD2C0\uB85C \uAC00\uAE30"));
                 line.top = clientHeight / 5 + 50 + item * 30;
                 line.bottom = line.top + 24;
                 SetTextColor(deviceContext, item == gameplayMenuSelection
@@ -2632,7 +2721,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             InvalidateRect(window, nullptr, FALSE);
         }
 
-        if (settingsActive)
+        if (settingsActive || helpActive)
         {
             QueryPerformanceCounter(&previousUpdate);
             Sleep(1);
