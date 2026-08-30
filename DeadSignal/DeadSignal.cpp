@@ -43,6 +43,8 @@ constexpr float trapActiveDuration = 0.75f;
 constexpr float trapCycleDuration = trapOffDuration + trapActiveDuration;
 constexpr float trapDamageCooldownDuration = 0.5f;
 constexpr LONG enemyCount = 3;
+constexpr BYTE patrollerEnemyRole = 0;
+constexpr BYTE watcherEnemyRole = 1;
 constexpr LONG enemyWidth = 8;
 constexpr LONG enemyHeight = 12;
 constexpr float enemyInitialX = 120.0f;
@@ -131,6 +133,7 @@ float currentPlayerStartX = static_cast<float>(playerCenterX);
 float currentPlayerStartY = static_cast<float>(playerCenterY);
 float currentEnemyStartX[enemyCount]{};
 float currentEnemyStartY[enemyCount]{};
+float currentEnemyStartFacing[enemyCount]{};
 float currentPatrolLeft[enemyCount]{};
 float currentPatrolRight[enemyCount]{};
 bool currentPatrolStartsRight[enemyCount]{};
@@ -173,6 +176,7 @@ struct EnemyRuntime
     float x;
     float y;
     float facingAngle;
+    float surveillanceFacingAngle;
     float patrolReturnX;
     float lastSeenPlayerX;
     float lastSeenPlayerY;
@@ -190,6 +194,7 @@ struct EnemyRuntime
     LONG searchPathCount;
     LONG searchPathIndex;
     LONG hp;
+    BYTE role;
     bool patrolRight;
     bool returningToPatrol;
     bool playerInVision;
@@ -360,6 +365,8 @@ void SetRoomSizeStage(LONG stage)
     navigationRows = (worldHeight - enemyHeight) / navigationCellSize + 1;
     navigationNodeCount = navigationColumns * navigationRows;
 }
+
+bool WallBlocksSegment(float startX, float startY, float endX, float endY);
 
 void SetupCurrentRoom()
 {
@@ -630,6 +637,31 @@ void SetupCurrentRoom()
             currentPatrolRight[enemy] = worldWidth - enemyHalfWidth;
         }
         currentPatrolStartsRight[enemy] = (NextRoomRandom(state) >> 31) != 0;
+    }
+
+    constexpr float watcherFacingAngle[4]
+        = { 0.0f, 1.57079633f, 3.14159265f, -1.57079633f };
+    constexpr LONG watcherFacingX[4] = { 1, 0, -1, 0 };
+    constexpr LONG watcherFacingY[4] = { 0, 1, 0, -1 };
+    for (LONG enemy = 0; enemy < enemyCount; ++enemy)
+    {
+        currentEnemyStartFacing[enemy] = 0.0f;
+    }
+    LONG firstFacing = NextRoomRandom(state) & 3;
+    currentEnemyStartFacing[0] = watcherFacingAngle[firstFacing];
+    for (LONG attempt = 0; attempt < 4; ++attempt)
+    {
+        LONG facing = (firstFacing + attempt) & 3;
+        float targetX = currentEnemyStartX[0] + watcherFacingX[facing] * enemyWidth * 3;
+        float targetY = currentEnemyStartY[0] + watcherFacingY[facing] * enemyWidth * 3;
+        if (targetX >= 0.0f && targetX <= worldWidth
+            && targetY >= 0.0f && targetY <= worldHeight
+            && !WallBlocksSegment(currentEnemyStartX[0], currentEnemyStartY[0],
+                targetX, targetY))
+        {
+            currentEnemyStartFacing[0] = watcherFacingAngle[facing];
+            break;
+        }
     }
 }
 
@@ -1834,6 +1866,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 enemy = {};
                 enemy.x = currentEnemyStartX[enemyIndex];
                 enemy.y = currentEnemyStartY[enemyIndex];
+                enemy.role = enemyIndex ? patrollerEnemyRole : watcherEnemyRole;
+                enemy.facingAngle = currentEnemyStartFacing[enemyIndex];
+                enemy.surveillanceFacingAngle = enemy.facingAngle;
                 enemy.patrolReturnX = enemy.x;
                 enemy.searchRandomState = RoomRandom(runSeed, currentRoom)
                     ^ (0x13579BDFu + 0x9E3779B9u * enemyIndex);
@@ -2238,12 +2273,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         {
                             detectionProgress = 0.0f;
                             lostSightElapsed = 0.0f;
-                            enemyPatrolReturnX = enemyX;
-                            if (enemyPatrolReturnX < currentPatrolLeft[enemyIndex])
+                            enemyPatrolReturnX = enemy.role == watcherEnemyRole
+                                ? currentEnemyStartX[enemyIndex] : enemyX;
+                            if (enemy.role == patrollerEnemyRole
+                                && enemyPatrolReturnX < currentPatrolLeft[enemyIndex])
                             {
                                 enemyPatrolReturnX = currentPatrolLeft[enemyIndex];
                             }
-                            else if (enemyPatrolReturnX > currentPatrolRight[enemyIndex])
+                            else if (enemy.role == patrollerEnemyRole
+                                && enemyPatrolReturnX > currentPatrolRight[enemyIndex])
                             {
                                 enemyPatrolReturnX = currentPatrolRight[enemyIndex];
                             }
@@ -2407,43 +2445,59 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         enemyFacingAngle = TurnToward(enemyFacingAngle,
                             atan2f(lastSeenPlayerY - enemyY, lastSeenPlayerX - enemyX),
                             enemyFacingTurnSpeed * deltaTime);
-                        MoveEnemyToward(enemyX, enemyY, lastSeenPlayerX, lastSeenPlayerY,
-                            enemyPatrolSpeed, deltaTime, playerX, playerY);
+                        if (enemy.role == patrollerEnemyRole)
+                        {
+                            MoveEnemyToward(enemyX, enemyY,
+                                lastSeenPlayerX, lastSeenPlayerY,
+                                enemyPatrolSpeed, deltaTime, playerX, playerY);
+                        }
                     }
                 }
                 else
                 {
-                    float patrolTargetX = enemyPatrolRight
-                        ? currentPatrolRight[enemyIndex] : currentPatrolLeft[enemyIndex];
-                    float movementTargetX = enemyReturningToPatrol
-                        ? enemyPatrolReturnX : patrolTargetX;
-                    float movementTargetY = currentEnemyStartY[enemyIndex];
-                    if (enemyReturningToPatrol && searchPathIndex < searchPathCount)
+                    if (enemy.role == watcherEnemyRole && !enemyReturningToPatrol)
                     {
-                        LONG node = navigationPath[enemyIndex][searchPathIndex];
-                        movementTargetX = enemyHalfWidth
-                            + (node % navigationColumns) * navigationCellSize;
-                        movementTargetY = enemyHalfHeight
-                            + (node / navigationColumns) * navigationCellSize;
+                        enemyFacingAngle = enemy.surveillanceFacingAngle;
                     }
-                    enemyFacingAngle = atan2f(movementTargetY - enemyY,
-                        movementTargetX - enemyX);
-                    if (MoveEnemyToward(enemyX, enemyY, movementTargetX, movementTargetY,
-                        enemyPatrolSpeed, deltaTime, playerX, playerY))
+                    else
                     {
-                        enemyX = movementTargetX;
-                        enemyY = movementTargetY;
+                        float patrolTargetX = enemyPatrolRight
+                            ? currentPatrolRight[enemyIndex] : currentPatrolLeft[enemyIndex];
+                        float movementTargetX = enemyReturningToPatrol
+                            ? enemyPatrolReturnX : patrolTargetX;
+                        float movementTargetY = currentEnemyStartY[enemyIndex];
                         if (enemyReturningToPatrol && searchPathIndex < searchPathCount)
                         {
-                            ++searchPathIndex;
+                            LONG node = navigationPath[enemyIndex][searchPathIndex];
+                            movementTargetX = enemyHalfWidth
+                                + (node % navigationColumns) * navigationCellSize;
+                            movementTargetY = enemyHalfHeight
+                                + (node / navigationColumns) * navigationCellSize;
                         }
-                        else if (enemyReturningToPatrol)
+                        enemyFacingAngle = atan2f(movementTargetY - enemyY,
+                            movementTargetX - enemyX);
+                        if (MoveEnemyToward(enemyX, enemyY,
+                            movementTargetX, movementTargetY,
+                            enemyPatrolSpeed, deltaTime, playerX, playerY))
                         {
-                            enemyReturningToPatrol = false;
-                        }
-                        else
-                        {
-                            enemyPatrolRight = !enemyPatrolRight;
+                            enemyX = movementTargetX;
+                            enemyY = movementTargetY;
+                            if (enemyReturningToPatrol && searchPathIndex < searchPathCount)
+                            {
+                                ++searchPathIndex;
+                            }
+                            else if (enemyReturningToPatrol)
+                            {
+                                enemyReturningToPatrol = false;
+                                if (enemy.role == watcherEnemyRole)
+                                {
+                                    enemyFacingAngle = enemy.surveillanceFacingAngle;
+                                }
+                            }
+                            else
+                            {
+                                enemyPatrolRight = !enemyPatrolRight;
+                            }
                         }
                     }
                 }
@@ -2949,6 +3003,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             bool body = y >= 3 && y < 9 && x >= 2 && x < 6;
                             bool arm = y >= 4 && y < 8 && (x == 0 || x == 7);
                             bool leg = y >= 9 && (x < 3 || x >= 5);
+                            bool watcherEye = enemy.role == watcherEnemyRole
+                                && y == 1 && x >= 2 && x < 6;
                             LONG pixelX = enemyLeft + x - cameraX;
                             LONG pixelY = enemyTop + y - cameraY;
                             if ((head || body || arm || leg)
@@ -2958,7 +3014,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                 framebuffer[pixelY * framebufferWidth + pixelX]
                                     = enemy.hitRemaining > 0.0f
                                         ? 0x00FFFFFF
-                                        : (head ? 0x00FF4040 : 0x00A02020);
+                                        : (watcherEye ? 0x00FFD060
+                                            : (head ? 0x00FF4040 : 0x00A02020));
                             }
                         }
                     }
