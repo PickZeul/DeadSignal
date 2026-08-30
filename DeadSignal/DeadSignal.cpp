@@ -45,6 +45,7 @@ constexpr float trapDamageCooldownDuration = 0.5f;
 constexpr LONG enemyCount = 3;
 constexpr BYTE patrollerEnemyRole = 0;
 constexpr BYTE watcherEnemyRole = 1;
+constexpr BYTE hunterEnemyRole = 2;
 constexpr LONG enemyWidth = 8;
 constexpr LONG enemyHeight = 12;
 constexpr float enemyInitialX = 120.0f;
@@ -62,9 +63,11 @@ constexpr float enemyAlertSpeed = 58.0f;
 constexpr LONG enemyVisionRange = 70;
 constexpr float enemyVisionSlope = 0.520567f;
 constexpr float enemyReacquireRangeSquared = 42.0f * 42.0f;
+constexpr float hunterReacquireRangeSquared = 70.0f * 70.0f;
 constexpr float enemyFacingTurnSpeed = 2.0943951f;
 constexpr float enemyScanAngle = 0.47996554f;
 constexpr float enemyAlertSearchDuration = 10.0f;
+constexpr float hunterAlertSearchDuration = 15.0f;
 constexpr float enemyScanDuration = 2.0f;
 constexpr float enemyAttackCooldownDuration = 1.0f;
 constexpr float enemyAttackContactTolerance = 1.0f;
@@ -1866,7 +1869,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 enemy = {};
                 enemy.x = currentEnemyStartX[enemyIndex];
                 enemy.y = currentEnemyStartY[enemyIndex];
-                enemy.role = enemyIndex ? patrollerEnemyRole : watcherEnemyRole;
+                enemy.role = enemyIndex == 0 ? watcherEnemyRole
+                    : (enemyIndex == 2 ? hunterEnemyRole : patrollerEnemyRole);
                 enemy.facingAngle = currentEnemyStartFacing[enemyIndex];
                 enemy.surveillanceFacingAngle = enemy.facingAngle;
                 enemy.patrolReturnX = enemy.x;
@@ -2275,12 +2279,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             lostSightElapsed = 0.0f;
                             enemyPatrolReturnX = enemy.role == watcherEnemyRole
                                 ? currentEnemyStartX[enemyIndex] : enemyX;
-                            if (enemy.role == patrollerEnemyRole
+                            if (enemy.role != watcherEnemyRole
                                 && enemyPatrolReturnX < currentPatrolLeft[enemyIndex])
                             {
                                 enemyPatrolReturnX = currentPatrolLeft[enemyIndex];
                             }
-                            else if (enemy.role == patrollerEnemyRole
+                            else if (enemy.role != watcherEnemyRole
                                 && enemyPatrolReturnX > currentPatrolRight[enemyIndex])
                             {
                                 enemyPatrolReturnX = currentPatrolRight[enemyIndex];
@@ -2310,7 +2314,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     float playerDifferenceY = playerY - enemyY;
                     bool playerReacquired
                         = playerDifferenceX * playerDifferenceX
-                        + playerDifferenceY * playerDifferenceY <= enemyReacquireRangeSquared
+                        + playerDifferenceY * playerDifferenceY
+                        <= (enemy.role == hunterEnemyRole
+                            ? hunterReacquireRangeSquared : enemyReacquireRangeSquared)
                         && !WallBlocksSegment(enemyX, enemyY, playerX, playerY);
                     playerInVision = playerReacquired;
                     if (playerReacquired)
@@ -2327,7 +2333,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     else
                     {
                         alertLostElapsed += deltaTime;
-                        if (alertLostElapsed >= enemyAlertSearchDuration)
+                        if (alertLostElapsed >= (enemy.role == hunterEnemyRole
+                            ? hunterAlertSearchDuration : enemyAlertSearchDuration))
                         {
                             enemyAlert = false;
                             lostSightElapsed = lostSightHoldDuration;
@@ -2445,7 +2452,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         enemyFacingAngle = TurnToward(enemyFacingAngle,
                             atan2f(lastSeenPlayerY - enemyY, lastSeenPlayerX - enemyX),
                             enemyFacingTurnSpeed * deltaTime);
-                        if (enemy.role == patrollerEnemyRole)
+                        if (enemy.role != watcherEnemyRole)
                         {
                             MoveEnemyToward(enemyX, enemyY,
                                 lastSeenPlayerX, lastSeenPlayerY,
@@ -3005,6 +3012,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             bool leg = y >= 9 && (x < 3 || x >= 5);
                             bool watcherEye = enemy.role == watcherEnemyRole
                                 && y == 1 && x >= 2 && x < 6;
+                            bool hunterMark = enemy.role == hunterEnemyRole
+                                && y >= 4 && y < 8 && x == 3;
                             LONG pixelX = enemyLeft + x - cameraX;
                             LONG pixelY = enemyTop + y - cameraY;
                             if ((head || body || arm || leg)
@@ -3015,7 +3024,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                     = enemy.hitRemaining > 0.0f
                                         ? 0x00FFFFFF
                                         : (watcherEye ? 0x00FFD060
-                                            : (head ? 0x00FF4040 : 0x00A02020));
+                                            : (hunterMark ? 0x00C060FF
+                                                : (head ? 0x00FF4040 : 0x00A02020)));
                             }
                         }
                     }
