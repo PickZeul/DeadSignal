@@ -1,6 +1,9 @@
 #include <windows.h>
 #include <timeapi.h>
 #include <math.h>
+#ifdef DEAD_SIGNAL_B01_VALIDATION
+#include <stdio.h>
+#endif
 
 #pragma comment(lib, "winmm.lib")
 
@@ -29,7 +32,7 @@ constexpr LONG exitLeft = 304;
 constexpr LONG exitTop = 78;
 constexpr LONG exitRight = 320;
 constexpr LONG exitBottom = 102;
-constexpr LONG roomCount = 6;
+constexpr LONG roomCount = 12;
 constexpr LONG openRoomType = 0;
 constexpr LONG pillarRoomType = 1;
 constexpr LONG mazeRoomType = 2;
@@ -43,7 +46,7 @@ constexpr float trapOffDuration = 1.25f;
 constexpr float trapActiveDuration = 0.75f;
 constexpr float trapCycleDuration = trapOffDuration + trapActiveDuration;
 constexpr float trapDamageCooldownDuration = 0.5f;
-constexpr LONG maxEnemyCount = 4;
+constexpr LONG maxEnemyCount = 24;
 constexpr LONG enemyRoleCount = 5;
 constexpr BYTE patrollerEnemyRole = 0;
 constexpr BYTE watcherEnemyRole = 1;
@@ -672,13 +675,36 @@ bool PiercerSlashOutlinePixel(float originX, float originY, LONG directionX,
             || lateral > halfWidth - 1.0f);
 }
 
+bool RectangleOverlapsRoomWall(float left, float top, float right, float bottom);
+
 void AddRoomWall(LONG left, LONG top, LONG right, LONG bottom)
 {
+    if (currentWallCount >= maxRoomWalls)
+    {
+        return;
+    }
     LONG wall = currentWallCount++;
     currentWallLeft[wall] = left;
     currentWallTop[wall] = top;
     currentWallRight[wall] = right;
     currentWallBottom[wall] = bottom;
+}
+
+bool RoomWallPlacementValid(LONG left, LONG top, LONG right, LONG bottom)
+{
+    if (left < 24 || top < 24 || right > worldWidth - 24 || bottom > worldHeight - 24
+        || (left < currentExitRight && right > currentExitLeft
+            && top < currentExitBottom && bottom > currentExitTop)
+        || (left < currentPlayerStartX + playerHalfWidth + 8.0f
+            && right > currentPlayerStartX - playerHalfWidth - 8.0f
+            && top < currentPlayerStartY + playerHalfHeight + 8.0f
+            && bottom > currentPlayerStartY - playerHalfHeight - 8.0f))
+    {
+        return false;
+    }
+    return !RectangleOverlapsRoomWall(static_cast<float>(left - 8),
+        static_cast<float>(top - 8), static_cast<float>(right + 8),
+        static_cast<float>(bottom + 8));
 }
 
 bool RectangleOverlapsRoomWall(float left, float top, float right, float bottom)
@@ -743,31 +769,57 @@ void SetupCurrentRoom()
 {
     DWORD state = RoomRandom(runSeed, currentRoom);
     currentRoomType = NextRoomRandom(state) % 5;
-    currentEnemyCount = 2 + currentRoom / 2;
-    LONG sizeStage = currentEnemyCount <= 2 ? 2
-        : (currentEnemyCount == 3 ? 3 : (currentEnemyCount == 4 ? 4 : 5));
+    currentEnemyCount = 2 + currentRoom * 2;
+    LONG sizeStage = currentEnemyCount <= 4 ? 2
+        : (currentEnemyCount <= 10 ? 3 : (currentEnemyCount <= 18 ? 4 : 5));
     SetRoomSizeStage(sizeStage);
 
-    BYTE roleOrder[enemyRoleCount]
-        = { patrollerEnemyRole, watcherEnemyRole, hunterEnemyRole,
-            listenerEnemyRole, spinnerEnemyRole };
     DWORD roleState = RoomRandom(runSeed, currentRoom) ^ 0xD1B54A35u;
-    for (LONG index = enemyRoleCount - 1; index > 0; --index)
-    {
-        LONG other = NextRoomRandom(roleState) % (index + 1);
-        BYTE role = roleOrder[index];
-        roleOrder[index] = roleOrder[other];
-        roleOrder[other] = role;
-    }
     for (LONG enemy = 0; enemy < currentEnemyCount; ++enemy)
     {
-        currentEnemyRole[enemy] = roleOrder[enemy];
+        currentEnemyRole[enemy]
+            = static_cast<BYTE>(NextRoomRandom(roleState) % enemyRoleCount);
     }
 
-    currentLayoutVariant = currentRoomType == openRoomType
-        ? 0 : NextRoomRandom(state) >> 31;
-    currentExitSide = NextRoomRandom(state) >> 31;
+    currentLayoutVariant = NextRoomRandom(state) >> 31;
+    currentExitSide = NextRoomRandom(state) & 3;
     currentWallCount = 0;
+    if (currentExitSide == 0)
+    {
+        currentExitLeft = 0;
+        currentExitTop = worldHeight / 2 - 12;
+        currentExitRight = 16;
+        currentExitBottom = worldHeight / 2 + 12;
+        currentPlayerStartX = worldWidth - 28.0f;
+        currentPlayerStartY = worldHeight / 2.0f;
+    }
+    else if (currentExitSide == 1)
+    {
+        currentExitLeft = worldWidth - 16;
+        currentExitTop = worldHeight / 2 - 12;
+        currentExitRight = worldWidth;
+        currentExitBottom = worldHeight / 2 + 12;
+        currentPlayerStartX = 28.0f;
+        currentPlayerStartY = worldHeight / 2.0f;
+    }
+    else if (currentExitSide == 2)
+    {
+        currentExitLeft = worldWidth / 2 - 12;
+        currentExitTop = 0;
+        currentExitRight = worldWidth / 2 + 12;
+        currentExitBottom = 16;
+        currentPlayerStartX = worldWidth / 2.0f;
+        currentPlayerStartY = worldHeight - 28.0f;
+    }
+    else
+    {
+        currentExitLeft = worldWidth / 2 - 12;
+        currentExitTop = worldHeight - 16;
+        currentExitRight = worldWidth / 2 + 12;
+        currentExitBottom = worldHeight;
+        currentPlayerStartX = worldWidth / 2.0f;
+        currentPlayerStartY = 28.0f;
+    }
 
     if (currentRoomType == openRoomType)
     {
@@ -783,161 +835,93 @@ void SetupCurrentRoom()
     }
     else if (currentRoomType == pillarRoomType)
     {
-        LONG columns = roomSizeStage;
-        LONG rows = roomSizeStage < 3 ? roomSizeStage : roomSizeStage - 1;
-        for (LONG row = 0; row < rows; ++row)
+        constexpr LONG pillarCountsByStage[5] = { 1, 4, 6, 12, 20 };
+        LONG requestedWallCount = pillarCountsByStage[roomSizeStage - 1];
+        for (LONG attempt = 0; attempt < 2048 && currentWallCount < requestedWallCount;
+            ++attempt)
         {
-            for (LONG column = 0; column < columns; ++column)
+            LONG left = 24 + NextRoomRandom(state) % (worldWidth - 64);
+            LONG top = 24 + NextRoomRandom(state) % (worldHeight - 72);
+            if (RoomWallPlacementValid(left, top, left + 16, top + 24))
             {
-                LONG left = worldWidth * (column + 1) / (columns + 1) - 8;
-                if (currentLayoutVariant && (row & 1))
-                {
-                    left += worldWidth / (columns + 1) / 3;
-                }
-                if (left + 16 > worldWidth - 32)
-                {
-                    left = worldWidth - 48;
-                }
-                LONG top = worldHeight * (row + 1) / (rows + 1) - 12;
                 AddRoomWall(left, top, left + 16, top + 24);
             }
         }
     }
     else if (currentRoomType == mazeRoomType)
     {
-        if (!currentLayoutVariant)
+        bool firstHorizontal = (NextRoomRandom(state) & 1) != 0;
+        for (LONG quadrant = 0; quadrant < 4; ++quadrant)
         {
-            if (worldHeight < 100)
+            LONG quadrantLeft = (quadrant & 1) ? worldWidth / 2 + 16 : 24;
+            LONG quadrantRight = (quadrant & 1) ? worldWidth - 24 : worldWidth / 2 - 16;
+            LONG quadrantTop = (quadrant & 2) ? worldHeight / 2 + 16 : 24;
+            LONG quadrantBottom = (quadrant & 2) ? worldHeight - 24 : worldHeight / 2 - 16;
+            LONG segmentCount = 1 + (NextRoomRandom(state) & 1);
+            for (LONG segment = 0; segment < segmentCount; ++segment)
             {
-                AddRoomWall(worldWidth / 2 - 60, 12,
-                    worldWidth / 2 + 60, 28);
-            }
-            else
-            {
-                LONG columns = roomSizeStage + 1;
-                LONG segmentsPerColumn = worldHeight >= 270 ? 2 : 1;
-                for (LONG column = 0; column < columns; ++column)
+                bool horizontal = (NextRoomRandom(state) & 1) != 0;
+                if (segment == 0 && quadrant < 2)
                 {
-                    LONG left = worldWidth * (column + 1) / (columns + 1) - 8;
-                    for (LONG segment = 0; segment < segmentsPerColumn; ++segment)
-                    {
-                        LONG top = segmentsPerColumn == 1
-                            ? worldHeight / 2 - 50
-                            : (segment ? worldHeight - 116 : 16);
-                        if ((column + segment) & 1)
-                        {
-                            top += segmentsPerColumn == 1 ? 20 : 32;
-                        }
-                        if (top + 100 > worldHeight)
-                        {
-                            top = worldHeight - 100;
-                        }
-                        AddRoomWall(left, top, left + 16, top + 100);
-                    }
+                    horizontal = quadrant ? !firstHorizontal : firstHorizontal;
                 }
-            }
-        }
-        else
-        {
-            LONG columns = (worldWidth - 64) / 144;
-            if (!columns)
-            {
-                columns = 1;
-            }
-            LONG rows = worldHeight / 96;
-            if (!rows)
-            {
-                rows = 1;
-            }
-            for (LONG row = 0; row < rows; ++row)
-            {
-                for (LONG column = 0; column < columns; ++column)
+                for (LONG attempt = 0; attempt < 64; ++attempt)
                 {
-                    LONG left = 32 + (worldWidth - 64) * (column * 2 + 1)
-                        / (columns * 2) - 60;
-                    LONG top = worldHeight < 100 ? 12
-                        : worldHeight * (row + 1) / (rows + 1) - 8;
-                    if ((row + column) & 1)
+                    LONG width = horizontal ? 64 + NextRoomRandom(state) % 41 : 16;
+                    LONG height = horizontal ? 16
+                        : 32 + NextRoomRandom(state) % 41;
+                    LONG availableWidth = quadrantRight - quadrantLeft;
+                    LONG availableHeight = quadrantBottom - quadrantTop;
+                    if (width > availableWidth)
                     {
-                        left += 24;
+                        width = availableWidth;
                     }
-                    if (worldWidth < 200)
+                    if (height > availableHeight)
                     {
-                        left = 20;
+                        height = availableHeight;
                     }
-                    else if (left < 32)
+                    LONG left = quadrantLeft + NextRoomRandom(state)
+                        % (availableWidth - width + 1);
+                    LONG top = quadrantTop + NextRoomRandom(state)
+                        % (availableHeight - height + 1);
+                    if (RoomWallPlacementValid(left, top, left + width, top + height))
                     {
-                        left = 32;
+                        AddRoomWall(left, top, left + width, top + height);
+                        break;
                     }
-                    else if (left + 120 > worldWidth - 32)
-                    {
-                        left = worldWidth - 152;
-                    }
-                    AddRoomWall(left, top, left + 120, top + 16);
                 }
             }
         }
     }
     else if (currentRoomType == mixedRoomType)
     {
-        constexpr LONG mixedCandidateX[12]
-            = { 3, 7, 5, 2, 8, 4, 6, 3, 7, 5, 2, 8 };
-        constexpr LONG mixedCandidateY[12]
-            = { 2, 2, 3, 4, 4, 6, 6, 8, 8, 7, 6, 5 };
         constexpr LONG mixedWallCountsByStage[5] = { 1, 2, 4, 7, 12 };
-        LONG structureCount = mixedWallCountsByStage[roomSizeStage - 1];
-        for (LONG structure = 0; structure < structureCount; ++structure)
+        LONG requestedWallCount = mixedWallCountsByStage[roomSizeStage - 1];
+        for (LONG attempt = 0; attempt < 1024 && currentWallCount < requestedWallCount;
+            ++attempt)
         {
-            LONG x = mixedCandidateX[structure];
-            LONG y = mixedCandidateY[structure];
-            if (currentLayoutVariant)
+            LONG left = 24 + NextRoomRandom(state) % (worldWidth - 64);
+            LONG top = 24 + NextRoomRandom(state) % (worldHeight - 72);
+            if (RoomWallPlacementValid(left, top, left + 16, top + 24))
             {
-                x = 10 - x;
-                y = 10 - y;
+                AddRoomWall(left, top, left + 16, top + 24);
             }
-            LONG left = worldWidth * x / 10 - 8;
-            LONG top = worldHeight * y / 10 - 12;
-            AddRoomWall(left, top, left + 16, top + 24);
         }
     }
-
-    if (currentExitSide)
-    {
-        currentExitLeft = worldWidth - 16;
-        currentExitRight = worldWidth;
-        currentPlayerStartX = 28.0f;
-    }
-    else
-    {
-        currentExitLeft = 0;
-        currentExitRight = 16;
-        currentPlayerStartX = worldWidth - 28.0f;
-    }
-    currentExitTop = worldHeight / 2 - 12;
-    currentExitBottom = worldHeight / 2 + 12;
-    currentPlayerStartY = worldHeight / 2.0f;
 
     currentTrapCount = 0;
     if (currentRoomType == trapRoomType || currentRoomType == mixedRoomType)
     {
-        constexpr LONG trapCandidateX[20]
-            = { 1, 2, 3, 4, 5, 1, 2, 3, 4, 5,
-                1, 2, 3, 4, 5, 1, 2, 3, 4, 5 };
-        constexpr LONG trapCandidateY[20]
-            = { 1, 1, 1, 1, 1, 2, 2, 2, 2, 2,
-                3, 3, 3, 3, 3, 4, 4, 4, 4, 4 };
         constexpr LONG trapCountsByStage[5] = { 1, 3, 7, 12, 19 };
         constexpr LONG mixedTrapCountsByStage[5] = { 1, 2, 4, 7, 11 };
         LONG requestedTrapCount = currentRoomType == trapRoomType
             ? trapCountsByStage[roomSizeStage - 1]
             : mixedTrapCountsByStage[roomSizeStage - 1];
-        LONG firstCandidate = NextRoomRandom(state) % 20;
-        for (LONG attempt = 0; attempt < 20 && currentTrapCount < requestedTrapCount;
+        for (LONG attempt = 0; attempt < 2048 && currentTrapCount < requestedTrapCount;
             ++attempt)
         {
-            LONG candidate = (firstCandidate + attempt) % 20;
-            LONG left = worldWidth * trapCandidateX[candidate] / 6 - trapWidth / 2;
-            LONG top = worldHeight * trapCandidateY[candidate] / 5 - trapHeight / 2;
+            LONG left = 2 + NextRoomRandom(state) % (worldWidth - trapWidth - 3);
+            LONG top = 2 + NextRoomRandom(state) % (worldHeight - trapHeight - 3);
             LONG right = left + trapWidth;
             LONG bottom = top + trapHeight;
             if (left < 2 || top < 2 || right > worldWidth - 2
@@ -967,52 +951,46 @@ void SetupCurrentRoom()
         }
     }
 
-    constexpr LONG enemyCandidateX[12] = { 2, 4, 6, 2, 4, 6, 2, 4, 6, 3, 5, 3 };
-    constexpr LONG enemyCandidateY[12] = { 4, 4, 4, 2, 2, 2, 6, 6, 6, 3, 5, 5 };
-    bool candidateUsed[12]{};
     for (LONG enemy = 0; enemy < currentEnemyCount; ++enemy)
     {
-        LONG firstCandidate = NextRoomRandom(state) % 12;
-        for (LONG attempt = 0; attempt < 12; ++attempt)
+        LONG firstCell = NextRoomRandom(state) % navigationNodeCount;
+        for (LONG attempt = 0; attempt < navigationNodeCount * 3; ++attempt)
         {
-            LONG candidate = (firstCandidate + attempt) % 12;
-            float candidateX = static_cast<float>(worldWidth * enemyCandidateX[candidate] / 8);
-            float candidateY = static_cast<float>(worldHeight * enemyCandidateY[candidate] / 8);
-            LONG candidateColumn = static_cast<LONG>((candidateX - enemyHalfWidth
-                + navigationCellSize * 0.5f) / navigationCellSize);
-            LONG candidateRow = static_cast<LONG>((candidateY - enemyHalfHeight
-                + navigationCellSize * 0.5f) / navigationCellSize);
+            LONG candidate = attempt < navigationNodeCount * 2
+                ? NextRoomRandom(state) % navigationNodeCount
+                : (firstCell + attempt) % navigationNodeCount;
+            LONG candidateColumn = candidate % navigationColumns;
+            LONG candidateRow = candidate / navigationColumns;
             float cellX = enemyHalfWidth + candidateColumn * navigationCellSize;
             float cellY = enemyHalfHeight + candidateRow * navigationCellSize;
-            if (candidateUsed[candidate]
-                || RectangleOverlapsRoomWall(candidateX - enemyHalfWidth,
-                    candidateY - enemyHalfHeight, candidateX + enemyHalfWidth,
-                    candidateY + enemyHalfHeight)
-                || candidateColumn < 0 || candidateColumn >= navigationColumns
-                || candidateRow < 0 || candidateRow >= navigationRows
-                || RectangleOverlapsRoomWall(cellX - enemyHalfWidth,
+            bool enemyOverlap = false;
+            for (LONG other = 0; other < enemy && !enemyOverlap; ++other)
+            {
+                enemyOverlap = cellX - enemyHalfWidth
+                    < currentEnemyStartX[other] + enemyHalfWidth
+                    && cellX + enemyHalfWidth > currentEnemyStartX[other] - enemyHalfWidth
+                    && cellY - enemyHalfHeight < currentEnemyStartY[other] + enemyHalfHeight
+                    && cellY + enemyHalfHeight > currentEnemyStartY[other] - enemyHalfHeight;
+            }
+            if (enemyOverlap || RectangleOverlapsRoomWall(cellX - enemyHalfWidth,
                     cellY - enemyHalfHeight, cellX + enemyHalfWidth,
                     cellY + enemyHalfHeight)
-                || RectangleOverlapsRoomTrap(candidateX - enemyHalfWidth,
-                    candidateY - enemyHalfHeight, candidateX + enemyHalfWidth,
-                    candidateY + enemyHalfHeight)
                 || RectangleOverlapsRoomTrap(cellX - enemyHalfWidth,
                     cellY - enemyHalfHeight, cellX + enemyHalfWidth,
                     cellY + enemyHalfHeight)
-                || (candidateX - enemyHalfWidth < currentExitRight
-                    && candidateX + enemyHalfWidth > currentExitLeft
-                    && candidateY - enemyHalfHeight < currentExitBottom
-                    && candidateY + enemyHalfHeight > currentExitTop)
-                || (candidateX - enemyHalfWidth < currentPlayerStartX + playerHalfWidth
-                    && candidateX + enemyHalfWidth > currentPlayerStartX - playerHalfWidth
-                    && candidateY - enemyHalfHeight < currentPlayerStartY + playerHalfHeight
-                    && candidateY + enemyHalfHeight > currentPlayerStartY - playerHalfHeight))
+                || (cellX - enemyHalfWidth < currentExitRight
+                    && cellX + enemyHalfWidth > currentExitLeft
+                    && cellY - enemyHalfHeight < currentExitBottom
+                    && cellY + enemyHalfHeight > currentExitTop)
+                || (cellX - enemyHalfWidth < currentPlayerStartX + playerHalfWidth
+                    && cellX + enemyHalfWidth > currentPlayerStartX - playerHalfWidth
+                    && cellY - enemyHalfHeight < currentPlayerStartY + playerHalfHeight
+                    && cellY + enemyHalfHeight > currentPlayerStartY - playerHalfHeight))
             {
                 continue;
             }
-            candidateUsed[candidate] = true;
-            currentEnemyStartX[enemy] = candidateX;
-            currentEnemyStartY[enemy] = candidateY;
+            currentEnemyStartX[enemy] = cellX;
+            currentEnemyStartY[enemy] = cellY;
             break;
         }
         float patrolHalfLength = 24.0f + enemy * 8.0f;
@@ -1069,14 +1047,17 @@ void SetupCurrentRoom()
     currentPressureStartY = 0.0f;
     if (currentRoomType == openRoomType)
     {
-        LONG firstPressureCandidate = NextRoomRandom(state) % 12;
-        for (LONG attempt = 0; attempt < 12 && !currentPressureActive; ++attempt)
+        LONG firstPressureCell = NextRoomRandom(state) % navigationNodeCount;
+        for (LONG attempt = 0; attempt < navigationNodeCount * 3
+            && !currentPressureActive; ++attempt)
         {
-            LONG candidate = (firstPressureCandidate + attempt) % 12;
-            float candidateX
-                = static_cast<float>(worldWidth * enemyCandidateX[candidate] / 8);
-            float candidateY
-                = static_cast<float>(worldHeight * enemyCandidateY[candidate] / 8);
+            LONG candidate = attempt < navigationNodeCount * 2
+                ? NextRoomRandom(state) % navigationNodeCount
+                : (firstPressureCell + attempt) % navigationNodeCount;
+            LONG candidateColumn = candidate % navigationColumns;
+            LONG candidateRow = candidate / navigationColumns;
+            float candidateX = enemyHalfWidth + candidateColumn * navigationCellSize;
+            float candidateY = enemyHalfHeight + candidateRow * navigationCellSize;
             float playerDifferenceX = candidateX - currentPlayerStartX;
             float playerDifferenceY = candidateY - currentPlayerStartY;
             bool enemyOverlap = false;
@@ -1091,13 +1072,9 @@ void SetupCurrentRoom()
                     && candidateY + pressureVisualHeight / 2.0f
                     > currentEnemyStartY[enemy] - enemyHalfHeight;
             }
-            LONG candidateColumn = static_cast<LONG>((candidateX - enemyHalfWidth
-                + navigationCellSize * 0.5f) / navigationCellSize);
-            LONG candidateRow = static_cast<LONG>((candidateY - enemyHalfHeight
-                + navigationCellSize * 0.5f) / navigationCellSize);
             float cellX = enemyHalfWidth + candidateColumn * navigationCellSize;
             float cellY = enemyHalfHeight + candidateRow * navigationCellSize;
-            if (candidateUsed[candidate] || enemyOverlap
+            if (enemyOverlap
                 || candidateX < pressureVisualWidth / 2.0f
                 || candidateX > worldWidth - pressureVisualWidth / 2.0f
                 || candidateY < pressureVisualHeight / 2.0f
@@ -1115,6 +1092,11 @@ void SetupCurrentRoom()
                 || RectangleOverlapsRoomWall(cellX - enemyHalfWidth,
                     cellY - enemyHalfHeight, cellX + enemyHalfWidth,
                     cellY + enemyHalfHeight)
+                || RectangleOverlapsRoomTrap(
+                    candidateX - pressureVisualWidth / 2.0f,
+                    candidateY - pressureVisualHeight / 2.0f,
+                    candidateX + pressureVisualWidth / 2.0f,
+                    candidateY + pressureVisualHeight / 2.0f)
                 || (candidateX - pressureVisualWidth / 2.0f < currentExitRight
                     && candidateX + pressureVisualWidth / 2.0f > currentExitLeft
                     && candidateY - pressureVisualHeight / 2.0f < currentExitBottom
@@ -4360,3 +4342,440 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     waveOutClose(audioOutput);
     return static_cast<int>(message.wParam);
 }
+
+#ifdef DEAD_SIGNAL_B01_VALIDATION
+DWORD ValidationHashValue(DWORD hash, DWORD value)
+{
+    return (hash ^ value) * 16777619u;
+}
+
+DWORD ValidationHashFloat(DWORD hash, float value)
+{
+    return ValidationHashValue(hash, *reinterpret_cast<DWORD*>(&value));
+}
+
+DWORD CurrentGenerationHash()
+{
+    DWORD hash = 2166136261u;
+    hash = ValidationHashValue(hash, currentRoomType);
+    hash = ValidationHashValue(hash, currentEnemyCount);
+    hash = ValidationHashValue(hash, roomSizeStage);
+    hash = ValidationHashValue(hash, currentExitSide);
+    hash = ValidationHashValue(hash, currentExitLeft);
+    hash = ValidationHashValue(hash, currentExitTop);
+    hash = ValidationHashValue(hash, currentExitRight);
+    hash = ValidationHashValue(hash, currentExitBottom);
+    hash = ValidationHashFloat(hash, currentPlayerStartX);
+    hash = ValidationHashFloat(hash, currentPlayerStartY);
+    hash = ValidationHashValue(hash, currentWallCount);
+    for (LONG wall = 0; wall < currentWallCount; ++wall)
+    {
+        hash = ValidationHashValue(hash, currentWallLeft[wall]);
+        hash = ValidationHashValue(hash, currentWallTop[wall]);
+        hash = ValidationHashValue(hash, currentWallRight[wall]);
+        hash = ValidationHashValue(hash, currentWallBottom[wall]);
+    }
+    hash = ValidationHashValue(hash, currentTrapCount);
+    for (LONG trap = 0; trap < currentTrapCount; ++trap)
+    {
+        hash = ValidationHashValue(hash, currentTrapLeft[trap]);
+        hash = ValidationHashValue(hash, currentTrapTop[trap]);
+        hash = ValidationHashValue(hash, currentTrapRight[trap]);
+        hash = ValidationHashValue(hash, currentTrapBottom[trap]);
+        hash = ValidationHashFloat(hash, currentTrapPhaseOffset[trap]);
+    }
+    for (LONG enemy = 0; enemy < currentEnemyCount; ++enemy)
+    {
+        hash = ValidationHashFloat(hash, currentEnemyStartX[enemy]);
+        hash = ValidationHashFloat(hash, currentEnemyStartY[enemy]);
+        hash = ValidationHashFloat(hash, currentEnemyStartFacing[enemy]);
+        hash = ValidationHashFloat(hash, currentPatrolLeft[enemy]);
+        hash = ValidationHashFloat(hash, currentPatrolRight[enemy]);
+        hash = ValidationHashValue(hash, currentPatrolStartsRight[enemy]);
+        hash = ValidationHashValue(hash, currentEnemyRole[enemy]);
+    }
+    hash = ValidationHashValue(hash, currentPressureActive);
+    hash = ValidationHashFloat(hash, currentPressureStartX);
+    return ValidationHashFloat(hash, currentPressureStartY);
+}
+
+bool ValidationOverlap(float leftA, float topA, float rightA, float bottomA,
+    float leftB, float topB, float rightB, float bottomB)
+{
+    return leftA < rightB && rightA > leftB && topA < bottomB && bottomA > topB;
+}
+
+void MarkValidationReachable()
+{
+    for (LONG node = 0; node < navigationNodeCount; ++node)
+    {
+        navigationState[node] = 0;
+    }
+    LONG startColumn = NavigationColumn(currentPlayerStartX);
+    LONG startRow = NavigationRow(currentPlayerStartY);
+    LONG start = startRow * navigationColumns + startColumn;
+    LONG read = 0;
+    LONG written = 0;
+    if (NavigationCellValid(startColumn, startRow))
+    {
+        navigationState[start] = 1;
+        navigationPath[pressureEnemyIndex][written++] = static_cast<unsigned short>(start);
+    }
+    constexpr LONG neighborX[4] = { -1, 1, 0, 0 };
+    constexpr LONG neighborY[4] = { 0, 0, -1, 1 };
+    while (read < written)
+    {
+        LONG node = navigationPath[pressureEnemyIndex][read++];
+        LONG column = node % navigationColumns;
+        LONG row = node / navigationColumns;
+        for (LONG neighbor = 0; neighbor < 4; ++neighbor)
+        {
+            LONG nextColumn = column + neighborX[neighbor];
+            LONG nextRow = row + neighborY[neighbor];
+            if (NavigationCellValid(nextColumn, nextRow))
+            {
+                LONG next = nextRow * navigationColumns + nextColumn;
+                if (!navigationState[next])
+                {
+                    navigationState[next] = 1;
+                    navigationPath[pressureEnemyIndex][written++]
+                        = static_cast<unsigned short>(next);
+                }
+            }
+        }
+    }
+}
+
+int main()
+{
+    unsigned long long wrongEnemyCount = 0;
+    unsigned long long wrongRoomSize = 0;
+    unsigned long long enemyCapacityOverflow = 0;
+    unsigned long long invalidRole = 0;
+    unsigned long long deterministicMismatch = 0;
+    unsigned long long playerOverlap = 0;
+    unsigned long long enemyOverlap = 0;
+    unsigned long long wallOverlap = 0;
+    unsigned long long trapOverlap = 0;
+    unsigned long long exitOverlap = 0;
+    unsigned long long pressureInvalidSpawn = 0;
+    unsigned long long wallTrapOverlap = 0;
+    unsigned long long exitBlocked = 0;
+    unsigned long long unreachablePlayerExit = 0;
+    unsigned long long unreachableEnemy = 0;
+    unsigned long long mazeQuadrantCount = 0;
+    unsigned long long mazeOrientationFailure = 0;
+    unsigned long long densityCountFailure = 0;
+    unsigned long long invalidExitSide = 0;
+    bool exitSeen[4]{};
+    bool roleSeen[enemyRoleCount]{};
+    bool duplicateRoleSeen = false;
+
+    for (DWORD seed = 1; seed <= 100000; ++seed)
+    {
+        for (currentRoom = 0; currentRoom < roomCount; ++currentRoom)
+        {
+            runSeed = seed;
+            SetupCurrentRoom();
+            LONG expectedEnemyCount = 2 + currentRoom * 2;
+            LONG expectedSize = expectedEnemyCount <= 4 ? 2
+                : (expectedEnemyCount <= 10 ? 3 : (expectedEnemyCount <= 18 ? 4 : 5));
+            wrongEnemyCount += currentEnemyCount != expectedEnemyCount;
+            wrongRoomSize += roomSizeStage != expectedSize;
+            enemyCapacityOverflow += currentEnemyCount > maxEnemyCount;
+            invalidExitSide += currentExitSide < 0 || currentExitSide > 3;
+            if (currentExitSide >= 0 && currentExitSide < 4)
+            {
+                exitSeen[currentExitSide] = true;
+            }
+
+            LONG expectedWalls = -1;
+            LONG expectedTraps = 0;
+            constexpr LONG pillarCounts[5] = { 1, 4, 6, 12, 20 };
+            constexpr LONG trapCounts[5] = { 1, 3, 7, 12, 19 };
+            constexpr LONG mixedWallCounts[5] = { 1, 2, 4, 7, 12 };
+            constexpr LONG mixedTrapCounts[5] = { 1, 2, 4, 7, 11 };
+            if (currentRoomType == pillarRoomType)
+            {
+                expectedWalls = pillarCounts[roomSizeStage - 1];
+            }
+            else if (currentRoomType == trapRoomType)
+            {
+                expectedTraps = trapCounts[roomSizeStage - 1];
+            }
+            else if (currentRoomType == mixedRoomType)
+            {
+                expectedWalls = mixedWallCounts[roomSizeStage - 1];
+                expectedTraps = mixedTrapCounts[roomSizeStage - 1];
+            }
+            densityCountFailure += (expectedWalls >= 0 && currentWallCount != expectedWalls)
+                || currentTrapCount != expectedTraps;
+
+            bool roomHasDuplicateRole = false;
+            for (LONG enemy = 0; enemy < currentEnemyCount; ++enemy)
+            {
+                BYTE role = currentEnemyRole[enemy];
+                if (role >= enemyRoleCount)
+                {
+                    ++invalidRole;
+                }
+                else
+                {
+                    roleSeen[role] = true;
+                    for (LONG other = 0; other < enemy; ++other)
+                    {
+                        roomHasDuplicateRole |= role == currentEnemyRole[other];
+                    }
+                }
+            }
+            duplicateRoleSeen |= roomHasDuplicateRole;
+
+            MarkValidationReachable();
+            LONG exitX = currentExitSide == 0 ? 4
+                : (currentExitSide == 1 ? worldWidth - 4 : worldWidth / 2);
+            LONG exitY = currentExitSide == 2 ? 6
+                : (currentExitSide == 3 ? worldHeight - 6 : worldHeight / 2);
+            LONG exitNode = NavigationRow(static_cast<float>(exitY)) * navigationColumns
+                + NavigationColumn(static_cast<float>(exitX));
+            unreachablePlayerExit += !navigationState[exitNode];
+
+            bool playerInvalid = RectangleOverlapsRoomWall(
+                currentPlayerStartX - playerHalfWidth,
+                currentPlayerStartY - playerHalfHeight,
+                currentPlayerStartX + playerHalfWidth,
+                currentPlayerStartY + playerHalfHeight)
+                || RectangleOverlapsRoomTrap(currentPlayerStartX - playerHalfWidth,
+                    currentPlayerStartY - playerHalfHeight,
+                    currentPlayerStartX + playerHalfWidth,
+                    currentPlayerStartY + playerHalfHeight)
+                || ValidationOverlap(currentPlayerStartX - playerHalfWidth,
+                    currentPlayerStartY - playerHalfHeight,
+                    currentPlayerStartX + playerHalfWidth,
+                    currentPlayerStartY + playerHalfHeight,
+                    static_cast<float>(currentExitLeft), static_cast<float>(currentExitTop),
+                    static_cast<float>(currentExitRight), static_cast<float>(currentExitBottom));
+            playerOverlap += playerInvalid;
+
+            for (LONG wall = 0; wall < currentWallCount; ++wall)
+            {
+                bool invalidWall = currentWallLeft[wall] < 0 || currentWallTop[wall] < 0
+                    || currentWallRight[wall] > worldWidth
+                    || currentWallBottom[wall] > worldHeight;
+                wallOverlap += invalidWall;
+                exitBlocked += ValidationOverlap(static_cast<float>(currentWallLeft[wall]),
+                    static_cast<float>(currentWallTop[wall]),
+                    static_cast<float>(currentWallRight[wall]),
+                    static_cast<float>(currentWallBottom[wall]),
+                    static_cast<float>(currentExitLeft), static_cast<float>(currentExitTop),
+                    static_cast<float>(currentExitRight), static_cast<float>(currentExitBottom));
+                for (LONG other = wall + 1; other < currentWallCount; ++other)
+                {
+                    wallOverlap += ValidationOverlap(
+                        static_cast<float>(currentWallLeft[wall]),
+                        static_cast<float>(currentWallTop[wall]),
+                        static_cast<float>(currentWallRight[wall]),
+                        static_cast<float>(currentWallBottom[wall]),
+                        static_cast<float>(currentWallLeft[other]),
+                        static_cast<float>(currentWallTop[other]),
+                        static_cast<float>(currentWallRight[other]),
+                        static_cast<float>(currentWallBottom[other]));
+                }
+            }
+            for (LONG trap = 0; trap < currentTrapCount; ++trap)
+            {
+                trapOverlap += currentTrapLeft[trap] < 0 || currentTrapTop[trap] < 0
+                    || currentTrapRight[trap] > worldWidth
+                    || currentTrapBottom[trap] > worldHeight;
+                exitOverlap += ValidationOverlap(static_cast<float>(currentTrapLeft[trap]),
+                    static_cast<float>(currentTrapTop[trap]),
+                    static_cast<float>(currentTrapRight[trap]),
+                    static_cast<float>(currentTrapBottom[trap]),
+                    static_cast<float>(currentExitLeft), static_cast<float>(currentExitTop),
+                    static_cast<float>(currentExitRight), static_cast<float>(currentExitBottom));
+                for (LONG other = trap + 1; other < currentTrapCount; ++other)
+                {
+                    trapOverlap += ValidationOverlap(
+                        static_cast<float>(currentTrapLeft[trap]),
+                        static_cast<float>(currentTrapTop[trap]),
+                        static_cast<float>(currentTrapRight[trap]),
+                        static_cast<float>(currentTrapBottom[trap]),
+                        static_cast<float>(currentTrapLeft[other]),
+                        static_cast<float>(currentTrapTop[other]),
+                        static_cast<float>(currentTrapRight[other]),
+                        static_cast<float>(currentTrapBottom[other]));
+                }
+                for (LONG wall = 0; wall < currentWallCount; ++wall)
+                {
+                    wallTrapOverlap += ValidationOverlap(
+                        static_cast<float>(currentTrapLeft[trap]),
+                        static_cast<float>(currentTrapTop[trap]),
+                        static_cast<float>(currentTrapRight[trap]),
+                        static_cast<float>(currentTrapBottom[trap]),
+                        static_cast<float>(currentWallLeft[wall]),
+                        static_cast<float>(currentWallTop[wall]),
+                        static_cast<float>(currentWallRight[wall]),
+                        static_cast<float>(currentWallBottom[wall]));
+                }
+            }
+
+            for (LONG enemy = 0; enemy < currentEnemyCount; ++enemy)
+            {
+                float left = currentEnemyStartX[enemy] - enemyHalfWidth;
+                float top = currentEnemyStartY[enemy] - enemyHalfHeight;
+                float right = currentEnemyStartX[enemy] + enemyHalfWidth;
+                float bottom = currentEnemyStartY[enemy] + enemyHalfHeight;
+                bool invalidSpawn = left < 0.0f || top < 0.0f || right > worldWidth
+                    || bottom > worldHeight
+                    || RectangleOverlapsRoomWall(left, top, right, bottom)
+                    || RectangleOverlapsRoomTrap(left, top, right, bottom);
+                wallOverlap += invalidSpawn;
+                playerOverlap += ValidationOverlap(left, top, right, bottom,
+                    currentPlayerStartX - playerHalfWidth,
+                    currentPlayerStartY - playerHalfHeight,
+                    currentPlayerStartX + playerHalfWidth,
+                    currentPlayerStartY + playerHalfHeight);
+                exitOverlap += ValidationOverlap(left, top, right, bottom,
+                    static_cast<float>(currentExitLeft), static_cast<float>(currentExitTop),
+                    static_cast<float>(currentExitRight), static_cast<float>(currentExitBottom));
+                LONG node = NavigationRow(currentEnemyStartY[enemy]) * navigationColumns
+                    + NavigationColumn(currentEnemyStartX[enemy]);
+                unreachableEnemy += !navigationState[node];
+                for (LONG other = enemy + 1; other < currentEnemyCount; ++other)
+                {
+                    enemyOverlap += ValidationOverlap(left, top, right, bottom,
+                        currentEnemyStartX[other] - enemyHalfWidth,
+                        currentEnemyStartY[other] - enemyHalfHeight,
+                        currentEnemyStartX[other] + enemyHalfWidth,
+                        currentEnemyStartY[other] + enemyHalfHeight);
+                }
+            }
+
+            if (currentPressureActive)
+            {
+                float left = currentPressureStartX - pressureVisualWidth / 2.0f;
+                float top = currentPressureStartY - pressureVisualHeight / 2.0f;
+                float right = currentPressureStartX + pressureVisualWidth / 2.0f;
+                float bottom = currentPressureStartY + pressureVisualHeight / 2.0f;
+                bool invalid = currentRoomType != openRoomType || left < 0.0f || top < 0.0f
+                    || right > worldWidth || bottom > worldHeight
+                    || RectangleOverlapsRoomWall(left, top, right, bottom)
+                    || RectangleOverlapsRoomTrap(left, top, right, bottom)
+                    || ValidationOverlap(left, top, right, bottom,
+                        currentPlayerStartX - playerHalfWidth,
+                        currentPlayerStartY - playerHalfHeight,
+                        currentPlayerStartX + playerHalfWidth,
+                        currentPlayerStartY + playerHalfHeight)
+                    || ValidationOverlap(left, top, right, bottom,
+                        static_cast<float>(currentExitLeft), static_cast<float>(currentExitTop),
+                        static_cast<float>(currentExitRight),
+                        static_cast<float>(currentExitBottom));
+                for (LONG enemy = 0; enemy < currentEnemyCount; ++enemy)
+                {
+                    invalid |= ValidationOverlap(left, top, right, bottom,
+                        currentEnemyStartX[enemy] - enemyHalfWidth,
+                        currentEnemyStartY[enemy] - enemyHalfHeight,
+                        currentEnemyStartX[enemy] + enemyHalfWidth,
+                        currentEnemyStartY[enemy] + enemyHalfHeight);
+                }
+                LONG node = NavigationRow(currentPressureStartY) * navigationColumns
+                    + NavigationColumn(currentPressureStartX);
+                invalid |= !navigationState[node];
+                pressureInvalidSpawn += invalid;
+            }
+            else
+            {
+                pressureInvalidSpawn += currentRoomType == openRoomType;
+            }
+
+            if (currentRoomType == mazeRoomType)
+            {
+                LONG quadrantWalls[4]{};
+                LONG orientationMask = 0;
+                for (LONG wall = 0; wall < currentWallCount; ++wall)
+                {
+                    LONG centerX = (currentWallLeft[wall] + currentWallRight[wall]) / 2;
+                    LONG centerY = (currentWallTop[wall] + currentWallBottom[wall]) / 2;
+                    ++quadrantWalls[(centerX >= worldWidth / 2)
+                        | ((centerY >= worldHeight / 2) << 1)];
+                    orientationMask |= currentWallRight[wall] - currentWallLeft[wall]
+                        > currentWallBottom[wall] - currentWallTop[wall] ? 1 : 2;
+                }
+                for (LONG quadrant = 0; quadrant < 4; ++quadrant)
+                {
+                    mazeQuadrantCount += quadrantWalls[quadrant] < 1
+                        || quadrantWalls[quadrant] > 2;
+                }
+                mazeOrientationFailure += orientationMask != 3;
+            }
+
+            DWORD firstHash = CurrentGenerationHash();
+            SetupCurrentRoom();
+            deterministicMismatch += firstHash != CurrentGenerationHash();
+        }
+    }
+
+    LONG missingExitSide = 0;
+    LONG missingRole = 0;
+    for (LONG side = 0; side < 4; ++side)
+    {
+        missingExitSide += !exitSeen[side];
+    }
+    for (LONG role = 0; role < enemyRoleCount; ++role)
+    {
+        missingRole += !roleSeen[role];
+    }
+    LONG upgradeCompatibilityFailure = 0;
+    for (LONG move = 0; move <= 2; ++move)
+    {
+        for (LONG slash = 0; slash <= 2; ++slash)
+        {
+            for (LONG dash = 0; dash <= 2; ++dash)
+            {
+                for (LONG flags = 0; flags < 8; ++flags)
+                {
+                    LONG selected = move + slash + dash + ((flags & 1) != 0)
+                        + ((flags & 2) != 0) + ((flags & 4) != 0);
+                    if (selected <= 5)
+                    {
+                        LONG available = (move < 2) + (slash < 2) + (dash < 2)
+                            + ((flags & 1) == 0) + ((flags & 2) == 0)
+                            + ((flags & 4) == 0);
+                        upgradeCompatibilityFailure += available < 2;
+                    }
+                }
+            }
+        }
+    }
+
+    printf("rooms=1200000 wrong_enemy=%llu wrong_size=%llu capacity=%llu invalid_role=%llu determinism=%llu\n",
+        wrongEnemyCount, wrongRoomSize, enemyCapacityOverflow, invalidRole,
+        deterministicMismatch);
+    printf("player_overlap=%llu enemy_overlap=%llu wall_invalid=%llu trap_overlap=%llu exit_overlap=%llu pressure_invalid=%llu\n",
+        playerOverlap, enemyOverlap, wallOverlap, trapOverlap, exitOverlap,
+        pressureInvalidSpawn);
+    printf("wall_trap=%llu exit_blocked=%llu player_exit_unreachable=%llu enemy_unreachable=%llu density=%llu\n",
+        wallTrapOverlap, exitBlocked, unreachablePlayerExit, unreachableEnemy,
+        densityCountFailure);
+    printf("maze_quadrant=%llu maze_orientation=%llu invalid_exit=%llu missing_exit=%ld duplicate_role_seen=%d missing_role=%ld upgrade_compat=%ld\n",
+        mazeQuadrantCount, mazeOrientationFailure, invalidExitSide, missingExitSide,
+        duplicateRoleSeen, missingRole, upgradeCompatibilityFailure);
+    return wrongEnemyCount || wrongRoomSize || enemyCapacityOverflow || invalidRole
+        || deterministicMismatch || playerOverlap || enemyOverlap || wallOverlap
+        || trapOverlap || exitOverlap || pressureInvalidSpawn || wallTrapOverlap
+        || exitBlocked || unreachablePlayerExit || unreachableEnemy || densityCountFailure
+        || mazeQuadrantCount || mazeOrientationFailure || invalidExitSide
+        || missingExitSide || !duplicateRoleSeen || missingRole || upgradeCompatibilityFailure;
+}
+
+extern "C" __declspec(dllexport) void CALLBACK RunB01Validation(HWND, HINSTANCE,
+    LPSTR, int)
+{
+    FILE* output = nullptr;
+    freopen_s(&output, "B01Validation.txt", "w", stdout);
+    main();
+    if (output)
+    {
+        fclose(output);
+    }
+}
+#endif
