@@ -1,7 +1,7 @@
 #include <windows.h>
 #include <timeapi.h>
 #include <math.h>
-#ifdef DEAD_SIGNAL_B01_VALIDATION
+#if defined(DEAD_SIGNAL_B01_VALIDATION) || defined(DEAD_SIGNAL_B02_VALIDATION)
 #include <stdio.h>
 #endif
 
@@ -58,7 +58,7 @@ constexpr BYTE pressureEnemyRole = 5;
 constexpr LONG pressureEnemyIndex = maxEnemyCount;
 constexpr LONG pressureVisualWidth = 10;
 constexpr LONG pressureVisualHeight = 12;
-constexpr float pressureMoveSpeed = 29.0f;
+constexpr float pressureMoveSpeed = 32.0f;
 constexpr float pressureMinimumSpawnDistanceSquared = 80.0f * 80.0f;
 constexpr LONG enemyWidth = 8;
 constexpr LONG enemyHeight = 12;
@@ -74,6 +74,7 @@ constexpr float enemyPatrolLeftPoint = 80.0f;
 constexpr float enemyPatrolRightPoint = 140.0f;
 constexpr float enemyPatrolSpeed = 24.0f;
 constexpr float enemyAlertSpeed = 58.0f;
+constexpr float hunterAlertSpeed = 62.0f;
 constexpr LONG enemyVisionRange = 70;
 constexpr float enemyVisionSlope = 0.520567f;
 constexpr float enemyReacquireRangeSquared = 42.0f * 42.0f;
@@ -276,6 +277,9 @@ struct EnemyRuntime
     float executeFeedbackRemaining;
     float detectionProgress;
     float lostSightElapsed;
+    float patrolTurnRemaining;
+    float patrolTurnX;
+    float patrolTurnY;
     DWORD searchRandomState;
     LONG searchPathCount;
     LONG searchPathIndex;
@@ -291,6 +295,59 @@ struct EnemyRuntime
     bool alert;
     bool alive;
 };
+
+bool EnterEnemyAlert(EnemyRuntime& enemy)
+{
+    if (!enemy.alive || enemy.alert)
+    {
+        return false;
+    }
+    enemy.alert = true;
+    enemy.detectionProgress = 1.0f;
+    enemy.lostSightElapsed = 0.0f;
+    enemy.alertLostElapsed = 0.0f;
+    enemy.heardSuspicion = false;
+    enemy.searchTargetValid = false;
+    enemy.searchPathCount = 0;
+    enemy.searchPathIndex = 0;
+    enemy.scanning = false;
+    enemy.scanElapsed = 0.0f;
+    enemy.patrolTurnRemaining = 0.0f;
+    return true;
+}
+
+LONG PropagateListenerAlert(EnemyRuntime* enemies, LONG enemyCount)
+{
+    LONG entered = 0;
+    for (LONG enemyIndex = 0; enemyIndex < enemyCount; ++enemyIndex)
+    {
+        BYTE role = enemies[enemyIndex].role;
+        if (role == patrollerEnemyRole || role == hunterEnemyRole
+            || role == listenerEnemyRole)
+        {
+            entered += EnterEnemyAlert(enemies[enemyIndex]);
+        }
+    }
+    return entered;
+}
+
+bool AlertEnemiesNear(EnemyRuntime* enemies, LONG enemyCount, float centerX,
+    float centerY)
+{
+    bool listenerEntered = false;
+    for (LONG enemyIndex = 0; enemyIndex < enemyCount; ++enemyIndex)
+    {
+        float differenceX = enemies[enemyIndex].x - centerX;
+        float differenceY = enemies[enemyIndex].y - centerY;
+        if (differenceX * differenceX + differenceY * differenceY
+            <= listenerMovementHearingRangeSquared)
+        {
+            bool entered = EnterEnemyAlert(enemies[enemyIndex]);
+            listenerEntered |= entered && enemies[enemyIndex].role == listenerEnemyRole;
+        }
+    }
+    return listenerEntered;
+}
 
 struct SaveCheckpoint
 {
@@ -1470,7 +1527,22 @@ bool MoveEnemyToward(float& enemyX, float& enemyY, float targetX, float targetY,
             && enemyY - enemyHalfHeight < playerY + playerHalfHeight
             && enemyY + enemyHalfHeight > playerY - playerHalfHeight)
         {
-            nextX = enemyX;
+            float currentDistance = enemyX - playerX;
+            float nextDistance = nextX - playerX;
+            if (currentDistance < 0.0f)
+            {
+                currentDistance = -currentDistance;
+            }
+            if (nextDistance < 0.0f)
+            {
+                nextDistance = -nextDistance;
+            }
+            bool alreadyOverlapping = enemyX - enemyHalfWidth < playerX + playerHalfWidth
+                && enemyX + enemyHalfWidth > playerX - playerHalfWidth;
+            if (!alreadyOverlapping || nextDistance <= currentDistance)
+            {
+                nextX = enemyX;
+            }
         }
         enemyX = nextX;
 
@@ -1501,13 +1573,60 @@ bool MoveEnemyToward(float& enemyX, float& enemyY, float targetX, float targetY,
             && nextY - enemyHalfHeight < playerY + playerHalfHeight
             && nextY + enemyHalfHeight > playerY - playerHalfHeight)
         {
-            nextY = enemyY;
+            float currentDistance = enemyY - playerY;
+            float nextDistance = nextY - playerY;
+            if (currentDistance < 0.0f)
+            {
+                currentDistance = -currentDistance;
+            }
+            if (nextDistance < 0.0f)
+            {
+                nextDistance = -nextDistance;
+            }
+            bool alreadyOverlapping = enemyY - enemyHalfHeight < playerY + playerHalfHeight
+                && enemyY + enemyHalfHeight > playerY - playerHalfHeight;
+            if (!alreadyOverlapping || nextDistance <= currentDistance)
+            {
+                nextY = enemyY;
+            }
         }
         enemyY = nextY;
     }
     differenceX = targetX - enemyX;
     differenceY = targetY - enemyY;
     return differenceX * differenceX + differenceY * differenceY < 0.25f;
+}
+
+bool EnemyWallPositionValid(float centerX, float centerY)
+{
+    return centerX >= enemyHalfWidth && centerX <= worldWidth - enemyHalfWidth
+        && centerY >= enemyHalfHeight && centerY <= worldHeight - enemyHalfHeight
+        && !RectangleOverlapsRoomWall(centerX - enemyHalfWidth,
+            centerY - enemyHalfHeight, centerX + enemyHalfWidth,
+            centerY + enemyHalfHeight);
+}
+
+bool BeginPatrolWallTurn(EnemyRuntime& enemy, LONG enemyIndex, float remaining)
+{
+    float facingX = cosf(enemy.facingAngle);
+    float facingY = sinf(enemy.facingAngle);
+    float leftX = -facingY;
+    float leftY = facingX;
+    bool leftValid = EnemyWallPositionValid(enemy.x + leftX * 2.0f,
+        enemy.y + leftY * 2.0f);
+    bool rightValid = EnemyWallPositionValid(enemy.x - leftX * 2.0f,
+        enemy.y - leftY * 2.0f);
+    if (!leftValid && !rightValid)
+    {
+        return false;
+    }
+    bool useLeft = leftValid && (!rightValid
+        || ((RoomRandom(runSeed, currentRoom) + enemyIndex + enemy.patrolRight) & 1) == 0);
+    enemy.patrolTurnX = useLeft ? leftX : -leftX;
+    enemy.patrolTurnY = useLeft ? leftY : -leftY;
+    enemy.patrolTurnRemaining = remaining;
+    enemy.facingAngle = atan2f(enemy.patrolTurnY, enemy.patrolTurnX);
+    return true;
 }
 
 void CloseGameplayMenu()
@@ -3182,10 +3301,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     if (enemy.role == listenerEnemyRole)
                     {
                         heardSuspicion = false;
-                        searchTargetValid = false;
-                        searchPathCount = 0;
-                        searchPathIndex = 0;
                     }
+                    searchTargetValid = false;
+                    searchPathCount = 0;
+                    searchPathIndex = 0;
                     lastSeenPlayerX = playerX;
                     lastSeenPlayerY = playerY;
                     lastSeenPlayerValid = true;
@@ -3197,20 +3316,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     if (detectionProgress >= 1.0f)
                     {
                         detectionProgress = 1.0f;
-                        enemyAlert = true;
-                        heardSuspicion = false;
-                        alertLostElapsed = 0.0f;
-                        searchTargetValid = false;
-                        searchPathCount = 0;
-                        searchPathIndex = 0;
-                        enemyScanning = false;
+                        bool enteredAlert = EnterEnemyAlert(enemy);
+                        if (enteredAlert && enemy.role == listenerEnemyRole)
+                        {
+                            PropagateListenerAlert(enemies, currentEnemyCount);
+                        }
                     }
                 }
                 else if (detectionProgress > 0.0f)
                 {
                     float decayTime = lostSightElapsed + deltaTime - lostSightHoldDuration;
                     lostSightElapsed += deltaTime;
-                    if (decayTime > 0.0f)
+                    bool investigationPending = lastSeenPlayerValid
+                        && (enemy.role == patrollerEnemyRole
+                            || enemy.role == hunterEnemyRole);
+                    if (decayTime > 0.0f && !investigationPending)
                     {
                         if (decayTime > deltaTime)
                         {
@@ -3275,7 +3395,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         enemyScanning = false;
                         enemyFacingAngle = atan2f(playerDifferenceY, playerDifferenceX);
                         MoveEnemyToward(enemyX, enemyY, playerX, playerY,
-                            enemyAlertSpeed, deltaTime, playerX, playerY);
+                            enemy.role == hunterEnemyRole
+                                ? hunterAlertSpeed : enemyAlertSpeed,
+                            deltaTime, playerX, playerY);
                     }
                     else
                     {
@@ -3374,7 +3496,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                 enemyFacingAngle = atan2f(movementTargetY - enemyY,
                                     movementTargetX - enemyX);
                                 if (MoveEnemyToward(enemyX, enemyY,
-                                    movementTargetX, movementTargetY, enemyAlertSpeed,
+                                    movementTargetX, movementTargetY,
+                                    enemy.role == hunterEnemyRole
+                                        ? hunterAlertSpeed : enemyAlertSpeed,
                                     deltaTime, playerX, playerY))
                                 {
                                     if (searchPathIndex < searchPathCount)
@@ -3464,12 +3588,65 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         enemyFacingAngle = TurnToward(enemyFacingAngle,
                             atan2f(lastSeenPlayerY - enemyY, lastSeenPlayerX - enemyX),
                             enemyFacingTurnSpeed * deltaTime);
-                        if (enemy.role != watcherEnemyRole
-                            && enemy.role != spinnerEnemyRole)
+                        if ((enemy.role == patrollerEnemyRole
+                            || enemy.role == hunterEnemyRole)
+                            && lostSightElapsed >= lostSightHoldDuration)
                         {
-                            MoveEnemyToward(enemyX, enemyY,
-                                lastSeenPlayerX, lastSeenPlayerY,
+                            if (!searchTargetValid)
+                            {
+                                searchTargetX = lastSeenPlayerX;
+                                searchTargetY = lastSeenPlayerY;
+                                searchPathCount = FindEnemyPath(enemyX, enemyY,
+                                    NavigationColumn(searchTargetX),
+                                    NavigationRow(searchTargetY),
+                                    navigationPath[enemyIndex]);
+                                searchPathIndex = 0;
+                                searchTargetValid = true;
+                            }
+                            float movementTargetX = searchTargetX;
+                            float movementTargetY = searchTargetY;
+                            if (searchPathIndex < searchPathCount)
+                            {
+                                LONG node = navigationPath[enemyIndex][searchPathIndex];
+                                movementTargetX = enemyHalfWidth
+                                    + (node % navigationColumns) * navigationCellSize;
+                                movementTargetY = enemyHalfHeight
+                                    + (node / navigationColumns) * navigationCellSize;
+                            }
+                            bool reached = MoveEnemyToward(enemyX, enemyY,
+                                movementTargetX, movementTargetY,
                                 enemyPatrolSpeed, deltaTime, playerX, playerY);
+                            bool playerContact = enemyX - enemyHalfWidth
+                                <= playerX + playerHalfWidth
+                                && enemyX + enemyHalfWidth >= playerX - playerHalfWidth
+                                && enemyY - enemyHalfHeight <= playerY + playerHalfHeight
+                                && enemyY + enemyHalfHeight >= playerY - playerHalfHeight;
+                            if (reached)
+                            {
+                                if (searchPathIndex < searchPathCount)
+                                {
+                                    ++searchPathIndex;
+                                }
+                                else
+                                {
+                                    lastSeenPlayerValid = false;
+                                    searchTargetValid = false;
+                                }
+                            }
+                            else if (searchPathIndex >= searchPathCount && playerContact)
+                            {
+                                lastSeenPlayerValid = false;
+                                searchTargetValid = false;
+                            }
+                        }
+                        else if (enemy.role != watcherEnemyRole
+                            && enemy.role != spinnerEnemyRole
+                            && enemy.role != patrollerEnemyRole
+                            && enemy.role != hunterEnemyRole)
+                        {
+                            MoveEnemyToward(enemyX, enemyY, lastSeenPlayerX,
+                                lastSeenPlayerY, enemyPatrolSpeed, deltaTime,
+                                playerX, playerY);
                         }
                     }
                 }
@@ -3485,42 +3662,112 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     }
                     else
                     {
-                        float patrolTargetX = enemyPatrolRight
-                            ? currentPatrolRight[enemyIndex] : currentPatrolLeft[enemyIndex];
-                        float movementTargetX = enemyReturningToPatrol
-                            ? enemyPatrolReturnX : patrolTargetX;
-                        float movementTargetY = currentEnemyStartY[enemyIndex];
-                        if (enemyReturningToPatrol && searchPathIndex < searchPathCount)
+                        if (!enemyReturningToPatrol && enemy.patrolTurnRemaining > 0.0f)
                         {
-                            LONG node = navigationPath[enemyIndex][searchPathIndex];
-                            movementTargetX = enemyHalfWidth
-                                + (node % navigationColumns) * navigationCellSize;
-                            movementTargetY = enemyHalfHeight
-                                + (node / navigationColumns) * navigationCellSize;
+                            float movement = enemyPatrolSpeed * deltaTime;
+                            if (movement > enemy.patrolTurnRemaining)
+                            {
+                                movement = enemy.patrolTurnRemaining;
+                            }
+                            float previousX = enemyX;
+                            float previousY = enemyY;
+                            MoveEnemyToward(enemyX, enemyY,
+                                enemyX + enemy.patrolTurnX * movement,
+                                enemyY + enemy.patrolTurnY * movement,
+                                enemyPatrolSpeed, deltaTime, playerX, playerY);
+                            float movedX = enemyX - previousX;
+                            float movedY = enemyY - previousY;
+                            float moved = sqrtf(movedX * movedX + movedY * movedY);
+                            if (moved > 0.001f)
+                            {
+                                enemy.patrolTurnRemaining -= moved;
+                            }
+                            else if (!EnemyWallPositionValid(
+                                enemyX + enemy.patrolTurnX * 2.0f,
+                                enemyY + enemy.patrolTurnY * 2.0f))
+                            {
+                                BeginPatrolWallTurn(enemy, enemyIndex,
+                                    enemy.patrolTurnRemaining);
+                            }
+                            if (enemy.patrolTurnRemaining <= 0.01f)
+                            {
+                                enemy.patrolTurnRemaining = 0.0f;
+                                enemyPatrolRight = !enemyPatrolRight;
+                                enemyPatrolReturnX = enemyX;
+                                if (enemyPatrolReturnX < currentPatrolLeft[enemyIndex])
+                                {
+                                    enemyPatrolReturnX = currentPatrolLeft[enemyIndex];
+                                }
+                                else if (enemyPatrolReturnX
+                                    > currentPatrolRight[enemyIndex])
+                                {
+                                    enemyPatrolReturnX = currentPatrolRight[enemyIndex];
+                                }
+                                enemyReturningToPatrol = true;
+                                searchPathCount = FindEnemyPath(enemyX, enemyY,
+                                    NavigationColumn(enemyPatrolReturnX),
+                                    NavigationRow(currentEnemyStartY[enemyIndex]),
+                                    navigationPath[enemyIndex]);
+                                searchPathIndex = 0;
+                            }
                         }
-                        enemyFacingAngle = atan2f(movementTargetY - enemyY,
-                            movementTargetX - enemyX);
-                        if (MoveEnemyToward(enemyX, enemyY,
-                            movementTargetX, movementTargetY,
-                            enemyPatrolSpeed, deltaTime, playerX, playerY))
+                        else
                         {
-                            enemyX = movementTargetX;
-                            enemyY = movementTargetY;
+                            float patrolTargetX = enemyPatrolRight
+                                ? currentPatrolRight[enemyIndex]
+                                : currentPatrolLeft[enemyIndex];
+                            float movementTargetX = enemyReturningToPatrol
+                                ? enemyPatrolReturnX : patrolTargetX;
+                            float movementTargetY = currentEnemyStartY[enemyIndex];
                             if (enemyReturningToPatrol && searchPathIndex < searchPathCount)
                             {
-                                ++searchPathIndex;
+                                LONG node = navigationPath[enemyIndex][searchPathIndex];
+                                movementTargetX = enemyHalfWidth
+                                    + (node % navigationColumns) * navigationCellSize;
+                                movementTargetY = enemyHalfHeight
+                                    + (node / navigationColumns) * navigationCellSize;
                             }
-                            else if (enemyReturningToPatrol)
+                            enemyFacingAngle = atan2f(movementTargetY - enemyY,
+                                movementTargetX - enemyX);
+                            float remainingX = movementTargetX - enemyX;
+                            float remainingY = movementTargetY - enemyY;
+                            float remaining = sqrtf(remainingX * remainingX
+                                + remainingY * remainingY);
+                            float previousX = enemyX;
+                            float previousY = enemyY;
+                            if (MoveEnemyToward(enemyX, enemyY,
+                                movementTargetX, movementTargetY,
+                                enemyPatrolSpeed, deltaTime, playerX, playerY))
                             {
-                                enemyReturningToPatrol = false;
-                                if (enemy.role == watcherEnemyRole)
+                                enemyX = movementTargetX;
+                                enemyY = movementTargetY;
+                                if (enemyReturningToPatrol
+                                    && searchPathIndex < searchPathCount)
                                 {
-                                    enemyFacingAngle = enemy.surveillanceFacingAngle;
+                                    ++searchPathIndex;
+                                }
+                                else if (enemyReturningToPatrol)
+                                {
+                                    enemyReturningToPatrol = false;
+                                    if (enemy.role == watcherEnemyRole)
+                                    {
+                                        enemyFacingAngle = enemy.surveillanceFacingAngle;
+                                    }
+                                }
+                                else
+                                {
+                                    enemyPatrolRight = !enemyPatrolRight;
                                 }
                             }
-                            else
+                            else if (!enemyReturningToPatrol
+                                && enemy.role != watcherEnemyRole
+                                && enemy.role != spinnerEnemyRole
+                                && previousX == enemyX && previousY == enemyY
+                                && !EnemyWallPositionValid(
+                                    enemyX + cosf(enemyFacingAngle) * 2.0f,
+                                    enemyY + sinf(enemyFacingAngle) * 2.0f))
                             {
-                                enemyPatrolRight = !enemyPatrolRight;
+                                BeginPatrolWallTurn(enemy, enemyIndex, remaining);
                             }
                         }
                     }
@@ -3734,7 +3981,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         {
                             ++slashHitCount;
                             enemy.hitRemaining = slashVisualDuration;
+                            float hitX = enemy.x;
+                            float hitY = enemy.y;
                             enemy.hp -= profile.slashDamage;
+                            bool listenerEntered = false;
                             if (enemy.hp <= 0)
                             {
                                 enemy.hp = 0;
@@ -3749,6 +3999,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                 enemy.searchPathCount = 0;
                                 enemy.searchPathIndex = 0;
                                 enemy.scanning = false;
+                            }
+                            else
+                            {
+                                bool entered = EnterEnemyAlert(enemy);
+                                listenerEntered = entered
+                                    && enemy.role == listenerEnemyRole;
+                            }
+                            listenerEntered |= AlertEnemiesNear(enemies,
+                                currentEnemyCount, hitX, hitY);
+                            if (listenerEntered)
+                            {
+                                PropagateListenerAlert(enemies, currentEnemyCount);
                             }
                         }
                     }
@@ -4947,6 +5209,140 @@ extern "C" __declspec(dllexport) void CALLBACK RunB01Validation(HWND, HINSTANCE,
 {
     FILE* output = nullptr;
     freopen_s(&output, "B01Validation.txt", "w", stdout);
+    main();
+    if (output)
+    {
+        fclose(output);
+    }
+}
+#endif
+
+#ifdef DEAD_SIGNAL_B02_VALIDATION
+int main()
+{
+    LONG failures = 0;
+    failures += maxEnemyCount != 24 || pressureEnemyIndex != 24;
+    failures += pressureMoveSpeed != 32.0f || hunterAlertSpeed != 62.0f
+        || enemyAlertSpeed != 58.0f || enemyPatrolSpeed != 24.0f;
+    failures += listenerMovementHearingRangeSquared != 80.0f * 80.0f
+        || listenerDashHearingRangeSquared != 120.0f * 120.0f
+        || hunterReacquireRangeSquared != 70.0f * 70.0f
+        || hunterAlertSearchDuration != 15.0f || lostSightHoldDuration != 0.5f;
+    failures += saveVersion != 8 || sizeof(SaveCheckpoint) != 32
+        || metaVersion != 1 || sizeof(MetaProfile) != 16;
+
+    EnemyRuntime transition{};
+    transition.alive = true;
+    transition.role = patrollerEnemyRole;
+    transition.searchTargetValid = true;
+    transition.searchPathCount = 9;
+    transition.searchPathIndex = 4;
+    transition.scanning = true;
+    transition.alertLostElapsed = 3.0f;
+    transition.heardSuspicion = true;
+    transition.patrolTurnRemaining = 12.0f;
+    failures += !EnterEnemyAlert(transition) || !transition.alert
+        || transition.detectionProgress != 1.0f || transition.searchTargetValid
+        || transition.searchPathCount || transition.searchPathIndex
+        || transition.scanning || transition.alertLostElapsed != 0.0f
+        || transition.heardSuspicion || transition.patrolTurnRemaining != 0.0f;
+    failures += EnterEnemyAlert(transition);
+
+    EnemyRuntime propagation[maxEnemyCount]{};
+    LONG expectedPropagation = 0;
+    for (LONG index = 0; index < maxEnemyCount; ++index)
+    {
+        propagation[index].alive = index != 5;
+        propagation[index].role = static_cast<BYTE>(index % enemyRoleCount);
+        BYTE role = propagation[index].role;
+        expectedPropagation += propagation[index].alive
+            && (role == patrollerEnemyRole || role == hunterEnemyRole
+                || role == listenerEnemyRole);
+    }
+    LONG firstPropagation = PropagateListenerAlert(propagation, maxEnemyCount);
+    for (LONG index = 0; index < maxEnemyCount; ++index)
+    {
+        BYTE role = propagation[index].role;
+        bool expected = propagation[index].alive && (role == patrollerEnemyRole
+            || role == hunterEnemyRole || role == listenerEnemyRole);
+        failures += propagation[index].alert != expected;
+    }
+    failures += firstPropagation != expectedPropagation
+        || PropagateListenerAlert(propagation, maxEnemyCount) != 0;
+
+    EnemyRuntime local[5]{};
+    constexpr BYTE localRoles[5]
+        = { watcherEnemyRole, spinnerEnemyRole, patrollerEnemyRole,
+            hunterEnemyRole, listenerEnemyRole };
+    constexpr float localX[5] = { 100.0f, 180.0f, 179.0f, 180.1f, 110.0f };
+    for (LONG index = 0; index < 5; ++index)
+    {
+        local[index].alive = index != 4;
+        local[index].role = localRoles[index];
+        local[index].x = localX[index];
+        local[index].y = 100.0f;
+    }
+    bool localListener = AlertEnemiesNear(local, 5, 100.0f, 100.0f);
+    failures += localListener || !local[0].alert || !local[1].alert
+        || !local[2].alert || local[3].alert || local[4].alert;
+
+    currentWallCount = 0;
+    SetRoomSizeStage(2);
+    float overlapX = 100.0f;
+    float overlapY = 100.0f;
+    for (LONG update = 0; update < 200; ++update)
+    {
+        MoveEnemyToward(overlapX, overlapY, 50.0f, 100.0f,
+            enemyPatrolSpeed, 0.016f, 100.0f, 100.0f);
+    }
+    failures += overlapX > 50.5f;
+
+    currentWallCount = 1;
+    currentWallLeft[0] = 55;
+    currentWallTop[0] = 38;
+    currentWallRight[0] = 63;
+    currentWallBottom[0] = 62;
+    currentRoom = 0;
+    runSeed = 1;
+    EnemyRuntime turn{};
+    turn.alive = true;
+    turn.x = 50.0f;
+    turn.y = 50.0f;
+    turn.patrolRight = true;
+    failures += !BeginPatrolWallTurn(turn, 0, 20.0f)
+        || turn.patrolTurnX < -0.001f || turn.patrolTurnX > 0.001f
+        || (turn.patrolTurnY < 0.999f && turn.patrolTurnY > -0.999f);
+    float turnStartY = turn.y;
+    for (LONG update = 0; update < 100 && turn.patrolTurnRemaining > 0.01f; ++update)
+    {
+        float movement = enemyPatrolSpeed * 0.016f;
+        if (movement > turn.patrolTurnRemaining)
+        {
+            movement = turn.patrolTurnRemaining;
+        }
+        float previousX = turn.x;
+        float previousY = turn.y;
+        MoveEnemyToward(turn.x, turn.y, turn.x + turn.patrolTurnX * movement,
+            turn.y + turn.patrolTurnY * movement, enemyPatrolSpeed, 0.016f,
+            300.0f, 150.0f);
+        float movedX = turn.x - previousX;
+        float movedY = turn.y - previousY;
+        turn.patrolTurnRemaining -= sqrtf(movedX * movedX + movedY * movedY);
+    }
+    failures += turn.patrolTurnRemaining > 0.01f
+        || (turn.y - turnStartY < 19.0f && turnStartY - turn.y < 19.0f);
+
+    printf("b02_failures=%ld capacity=%ld listener_first=%ld local_radius=%d overlap_escape=%d patrol_turn=%d\n",
+        failures, maxEnemyCount, firstPropagation, !local[3].alert,
+        overlapX <= 50.5f, turn.patrolTurnRemaining <= 0.01f);
+    return failures;
+}
+
+extern "C" __declspec(dllexport) void CALLBACK RunB02Validation(HWND, HINSTANCE,
+    LPSTR, int)
+{
+    FILE* output = nullptr;
+    freopen_s(&output, "B02Validation.txt", "w", stdout);
     main();
     if (output)
     {
