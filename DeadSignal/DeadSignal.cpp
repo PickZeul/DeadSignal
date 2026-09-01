@@ -1,7 +1,8 @@
 #include <windows.h>
 #include <timeapi.h>
 #include <math.h>
-#if defined(DEAD_SIGNAL_B01_VALIDATION) || defined(DEAD_SIGNAL_B02_VALIDATION)
+#if defined(DEAD_SIGNAL_B01_VALIDATION) || defined(DEAD_SIGNAL_B02_VALIDATION) \
+    || defined(DEAD_SIGNAL_B03_VALIDATION)
 #include <stdio.h>
 #endif
 
@@ -77,10 +78,13 @@ constexpr float enemyAlertSpeed = 58.0f;
 constexpr float hunterAlertSpeed = 62.0f;
 constexpr LONG enemyVisionRange = 70;
 constexpr float enemyVisionSlope = 0.520567f;
+constexpr float enemyVisionRangeSquared
+    = static_cast<float>(enemyVisionRange * enemyVisionRange);
 constexpr float enemyReacquireRangeSquared = 42.0f * 42.0f;
 constexpr float hunterReacquireRangeSquared = 70.0f * 70.0f;
 constexpr float listenerMovementHearingRangeSquared = 80.0f * 80.0f;
 constexpr float listenerDashHearingRangeSquared = 120.0f * 120.0f;
+constexpr float slashLocalAlertRangeSquared = 40.0f * 40.0f;
 constexpr float spinnerRotationSpeed = 1.04719755f;
 constexpr float enemyFacingTurnSpeed = 2.0943951f;
 constexpr float enemyScanAngle = 0.47996554f;
@@ -88,8 +92,10 @@ constexpr float enemyAlertSearchDuration = 10.0f;
 constexpr float hunterAlertSearchDuration = 15.0f;
 constexpr float enemyScanDuration = 2.0f;
 constexpr float enemyAttackCooldownDuration = 1.0f;
+constexpr float enemyAttackWindupDuration = 0.3f;
 constexpr float enemyAttackContactTolerance = 1.0f;
 constexpr float playerHitFeedbackDuration = 0.10f;
+constexpr float playerInvulnerabilityDuration = 0.5f;
 constexpr float detectionFillDuration = 3.0f;
 constexpr float lostSightHoldDuration = 0.5f;
 constexpr LONG navigationCellSize = 8;
@@ -104,6 +110,7 @@ constexpr LONG slashWidth = 8;
 constexpr float slashVisualDuration = 0.10f;
 constexpr float slashCooldownDuration = 0.5f;
 constexpr LONG executeReach = 4;
+constexpr float executeFacingCosineSquared = 0.007596123f;
 constexpr LONG moveUpgrade = 0;
 constexpr LONG slashUpgrade = 1;
 constexpr LONG dashUpgrade = 2;
@@ -273,6 +280,7 @@ struct EnemyRuntime
     float scanElapsed;
     float scanBaseFacing;
     float attackCooldownRemaining;
+    float attackWindupRemaining;
     float hitRemaining;
     float executeFeedbackRemaining;
     float detectionProgress;
@@ -340,13 +348,89 @@ bool AlertEnemiesNear(EnemyRuntime* enemies, LONG enemyCount, float centerX,
         float differenceX = enemies[enemyIndex].x - centerX;
         float differenceY = enemies[enemyIndex].y - centerY;
         if (differenceX * differenceX + differenceY * differenceY
-            <= listenerMovementHearingRangeSquared)
+            <= slashLocalAlertRangeSquared)
         {
             bool entered = EnterEnemyAlert(enemies[enemyIndex]);
             listenerEntered |= entered && enemies[enemyIndex].role == listenerEnemyRole;
         }
     }
     return listenerEntered;
+}
+
+bool PointInsideVisionSector(float originX, float originY, float facingX,
+    float facingY, float targetX, float targetY)
+{
+    float differenceX = targetX - originX;
+    float differenceY = targetY - originY;
+    float distanceSquared = differenceX * differenceX + differenceY * differenceY;
+    float forward = differenceX * facingX + differenceY * facingY;
+    float lateral = differenceX * -facingY + differenceY * facingX;
+    return forward > 0.0f && distanceSquared <= enemyVisionRangeSquared
+        && lateral * lateral <= forward * forward
+            * enemyVisionSlope * enemyVisionSlope;
+}
+
+bool PointInsideExecuteFacing(float playerX, float playerY, float facingX,
+    float facingY, float targetX, float targetY)
+{
+    float differenceX = targetX - playerX;
+    float differenceY = targetY - playerY;
+    float distanceSquared = differenceX * differenceX + differenceY * differenceY;
+    if (distanceSquared <= 0.0001f)
+    {
+        return true;
+    }
+    float forward = differenceX * facingX + differenceY * facingY;
+    return forward > 0.0f && forward * forward
+        >= distanceSquared * executeFacingCosineSquared;
+}
+
+bool EnemyInAttackRange(float enemyX, float enemyY, float playerX, float playerY)
+{
+    return enemyX - enemyHalfWidth <= playerX + playerHalfWidth
+            + enemyAttackContactTolerance
+        && enemyX + enemyHalfWidth + enemyAttackContactTolerance
+            >= playerX - playerHalfWidth
+        && enemyY - enemyHalfHeight <= playerY + playerHalfHeight
+            + enemyAttackContactTolerance
+        && enemyY + enemyHalfHeight + enemyAttackContactTolerance
+            >= playerY - playerHalfHeight;
+}
+
+void QueuePlayerDamage(LONG damage, LONG& pendingDamage)
+{
+    if (damage > pendingDamage)
+    {
+        pendingDamage = damage;
+    }
+}
+
+void UpdateEnemyAttack(EnemyRuntime& enemy, bool attackEnabled, float playerX,
+    float playerY, float deltaTime, LONG& pendingDamage)
+{
+    if (!enemy.alive || !attackEnabled)
+    {
+        enemy.attackWindupRemaining = 0.0f;
+        return;
+    }
+    if (enemy.attackWindupRemaining > 0.0f)
+    {
+        enemy.attackWindupRemaining -= deltaTime;
+        if (enemy.attackWindupRemaining <= 0.0f)
+        {
+            enemy.attackWindupRemaining = 0.0f;
+            if (EnemyInAttackRange(enemy.x, enemy.y, playerX, playerY))
+            {
+                QueuePlayerDamage(1, pendingDamage);
+            }
+            enemy.attackCooldownRemaining = enemyAttackCooldownDuration;
+        }
+    }
+    else if (enemy.attackCooldownRemaining <= 0.0f
+        && EnemyInAttackRange(enemy.x, enemy.y, playerX, playerY))
+    {
+        enemy.attackWindupRemaining = enemyAttackWindupDuration;
+    }
 }
 
 struct SaveCheckpoint
@@ -2555,10 +2639,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         framebuffer[y * framebufferWidth + framebufferWidth - 1] = 0x00808000;
     }
 
-    for (LONG x = 1; x <= enemyVisionRange; ++x)
+    for (LONG y = -enemyVisionRange; y <= enemyVisionRange; ++y)
     {
-        LONG visionHalfHeight = static_cast<LONG>(x * enemyVisionSlope);
-        for (LONG y = -visionHalfHeight; y <= visionHalfHeight; ++y)
+        for (LONG x = 1; x <= enemyVisionRange; ++x)
         {
             LONG pixelX = enemyInitialCenterX + x;
             LONG pixelY = enemyInitialCenterY + y;
@@ -2572,7 +2655,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 visionBlocked = yAtWall >= wallTop && yAtWall < wallBottom;
             }
 
-            if (!visionBlocked && pixelY >= 0 && pixelY < framebufferHeight)
+            if (!visionBlocked && pixelY >= 0 && pixelY < framebufferHeight
+                && PointInsideVisionSector(static_cast<float>(enemyInitialCenterX),
+                    static_cast<float>(enemyInitialCenterY), 1.0f, 0.0f,
+                    static_cast<float>(pixelX), static_cast<float>(pixelY)))
             {
                 framebuffer[pixelY * framebufferWidth + pixelX] = 0x00182040;
             }
@@ -2684,6 +2770,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     LONG playerHP = playerMaxHP;
     bool playerAlive = true;
     float playerHitRemaining = 0.0f;
+    float playerInvulnerabilityRemaining = 0.0f;
     LONG dashDirectionX = 0;
     LONG dashDirectionY = 0;
     float dashDistanceCurrent = dashDistance;
@@ -2851,6 +2938,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             playerAlive = true;
             currentEnemyRemaining = currentEnemyCount;
             playerHitRemaining = 0.0f;
+            playerInvulnerabilityRemaining = 0.0f;
             dashDirectionX = 0;
             dashDirectionY = 0;
             dashDistanceRemaining = 0.0f;
@@ -2994,6 +3082,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             float deltaTime = static_cast<float>(currentTime.QuadPart - previousUpdate.QuadPart)
                 / static_cast<float>(performanceFrequency.QuadPart);
             previousUpdate = currentTime;
+            LONG pendingPlayerDamage = 0;
+            if (playerInvulnerabilityRemaining > 0.0f)
+            {
+                playerInvulnerabilityRemaining -= deltaTime;
+                if (playerInvulnerabilityRemaining < 0.0f)
+                {
+                    playerInvulnerabilityRemaining = 0.0f;
+                }
+            }
             if (currentTrapCount)
             {
                 trapCycleElapsed += deltaTime;
@@ -3147,28 +3244,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         && playerY - playerHalfHeight < currentTrapBottom[trap]
                         && playerY + playerHalfHeight > currentTrapTop[trap])
                     {
-                        --playerHP;
-                        playerHitRemaining = playerHitFeedbackDuration;
+                        QueuePlayerDamage(1, pendingPlayerDamage);
                         trapDamageCooldownRemaining = trapDamageCooldownDuration;
-                        if (playerHP <= 0)
-                        {
-                            playerHP = 0;
-                            playerAlive = false;
-                            dashActive = false;
-                            dashDistanceRemaining = 0.0f;
-                            slashRequested = false;
-                            dashRequested = false;
-                            executeRequested = false;
-                            for (LONG enemyIndex = 0; enemyIndex < currentEnemyCount;
-                                ++enemyIndex)
-                            {
-                                enemies[enemyIndex].playerInVision = false;
-                            }
-                            runEndState = gameOverEndState;
-                            runEndSelection = 0;
-                            GrantRunCoin(false);
-                            DeleteFileW(saveFileName);
-                        }
                         break;
                     }
                 }
@@ -3218,17 +3295,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             {
                 float facingX = cosf(enemyFacingAngle);
                 float facingY = sinf(enemyFacingAngle);
-                float visionX = playerX - enemyX;
-                float visionY = playerY - enemyY;
-                float visionForward = visionX * facingX + visionY * facingY;
-                float visionLateral = visionX * -facingY + visionY * facingX;
-                if (visionLateral < 0.0f)
-                {
-                    visionLateral = -visionLateral;
-                }
-                playerInVision = visionForward > 0.0f
-                    && visionForward <= enemyVisionRange
-                    && visionLateral <= visionForward * enemyVisionSlope
+                playerInVision = PointInsideVisionSector(enemyX, enemyY,
+                    facingX, facingY, playerX, playerY)
                     && !WallBlocksSegment(enemyX, enemyY, playerX, playerY);
 
                 if (enemy.role == listenerEnemyRole && !playerInVision
@@ -3375,7 +3443,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
             if (enemyAlive && playerAlive)
             {
-                if (enemyAlert)
+                if (enemy.attackWindupRemaining > 0.0f)
+                {
+                    enemyFacingAngle = atan2f(playerY - enemyY, playerX - enemyX);
+                }
+                else if (enemyAlert)
                 {
                     float playerDifferenceX = playerX - enemyX;
                     float playerDifferenceY = playerY - enemyY;
@@ -3780,7 +3852,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 float playerDifferenceX = playerX - pressureEnemy.x;
                 float playerDifferenceY = playerY - pressureEnemy.y;
                 pressureEnemy.facingAngle = atan2f(playerDifferenceY, playerDifferenceX);
-                if (!WallBlocksSegment(pressureEnemy.x, pressureEnemy.y, playerX, playerY))
+                if (pressureEnemy.attackWindupRemaining > 0.0f)
+                {
+                }
+                else if (!WallBlocksSegment(pressureEnemy.x, pressureEnemy.y,
+                    playerX, playerY))
                 {
                     pressureEnemy.searchTargetValid = false;
                     pressureEnemy.searchPathCount = 0;
@@ -3999,6 +4075,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                 enemy.searchPathCount = 0;
                                 enemy.searchPathIndex = 0;
                                 enemy.scanning = false;
+                                enemy.attackWindupRemaining = 0.0f;
                             }
                             else
                             {
@@ -4026,41 +4103,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     LONG executeCenterX = static_cast<LONG>(playerX);
                     LONG executeCenterY = static_cast<LONG>(playerY);
                     LONG currentExecuteReach = CurrentExecuteReach();
-                    LONG executeLeft;
-                    LONG executeRight;
-                    LONG executeTop;
-                    LONG executeBottom;
-                    if (facingX < 0)
-                    {
-                        executeRight = executeCenterX - playerWidth / 2;
-                        executeLeft = executeRight - currentExecuteReach;
-                    }
-                    else if (facingX > 0)
-                    {
-                        executeLeft = executeCenterX + playerWidth / 2;
-                        executeRight = executeLeft + currentExecuteReach;
-                    }
-                    else
-                    {
-                        executeLeft = executeCenterX - playerWidth / 2;
-                        executeRight = executeLeft + playerWidth;
-                    }
-
-                    if (facingY < 0)
-                    {
-                        executeBottom = executeCenterY - playerHeight / 2;
-                        executeTop = executeBottom - currentExecuteReach;
-                    }
-                    else if (facingY > 0)
-                    {
-                        executeTop = executeCenterY + playerHeight / 2;
-                        executeBottom = executeTop + currentExecuteReach;
-                    }
-                    else
-                    {
-                        executeTop = executeCenterY - playerWidth / 2;
-                        executeBottom = executeTop + playerWidth;
-                    }
+                    LONG executeLeft = executeCenterX - playerWidth / 2
+                        - currentExecuteReach;
+                    LONG executeRight = executeCenterX + playerWidth / 2
+                        + currentExecuteReach;
+                    LONG executeTop = executeCenterY - playerHeight / 2
+                        - currentExecuteReach;
+                    LONG executeBottom = executeCenterY + playerHeight / 2
+                        + currentExecuteReach;
+                    float executeFacingScale = facingX && facingY
+                        ? 0.70710678f : 1.0f;
+                    float executeFacingX = facingX * executeFacingScale;
+                    float executeFacingY = facingY * executeFacingScale;
 
                     LONG selectedEnemy = -1;
                     float nearestDistanceSquared = 3.402823466e+38F;
@@ -4080,6 +4134,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             && executeRight > enemyLeft
                             && executeTop < enemyTop + enemyHeight
                             && executeBottom > enemyTop
+                            && PointInsideExecuteFacing(playerX, playerY,
+                                executeFacingX, executeFacingY, enemy.x, enemy.y)
                             && distanceSquared < nearestDistanceSquared)
                         {
                             selectedEnemy = enemyIndex;
@@ -4103,6 +4159,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         enemy.searchPathCount = 0;
                         enemy.searchPathIndex = 0;
                         enemy.scanning = false;
+                        enemy.attackWindupRemaining = 0.0f;
                     }
                 }
                 executeRequested = false;
@@ -4112,54 +4169,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 ++enemyIndex)
             {
                 EnemyRuntime& enemy = enemies[enemyIndex];
-                if (enemy.alive && enemy.alert && enemy.attackCooldownRemaining <= 0.0f
-                    && enemy.x - enemyHalfWidth <= playerX + playerHalfWidth
-                        + enemyAttackContactTolerance
-                    && enemy.x + enemyHalfWidth + enemyAttackContactTolerance
-                        >= playerX - playerHalfWidth
-                    && enemy.y - enemyHalfHeight <= playerY + playerHalfHeight
-                        + enemyAttackContactTolerance
-                    && enemy.y + enemyHalfHeight + enemyAttackContactTolerance
-                        >= playerY - playerHalfHeight)
-                {
-                    --playerHP;
-                    playerHitRemaining = playerHitFeedbackDuration;
-                    enemy.attackCooldownRemaining = enemyAttackCooldownDuration;
-                    if (playerHP <= 0)
-                    {
-                        playerHP = 0;
-                        playerAlive = false;
-                        dashActive = false;
-                        dashDistanceRemaining = 0.0f;
-                        slashRequested = false;
-                        dashRequested = false;
-                        executeRequested = false;
-                        for (LONG otherEnemy = 0; otherEnemy < currentEnemyCount;
-                            ++otherEnemy)
-                        {
-                            enemies[otherEnemy].playerInVision = false;
-                        }
-                        runEndState = gameOverEndState;
-                        runEndSelection = 0;
-                        GrantRunCoin(false);
-                        DeleteFileW(saveFileName);
-                    }
-                }
+                UpdateEnemyAttack(enemy, enemy.alert, playerX, playerY,
+                    deltaTime, pendingPlayerDamage);
             }
-            if (pressureEnemy.alive && playerAlive
-                && pressureEnemy.attackCooldownRemaining <= 0.0f
-                && pressureEnemy.x - enemyHalfWidth <= playerX + playerHalfWidth
-                    + enemyAttackContactTolerance
-                && pressureEnemy.x + enemyHalfWidth + enemyAttackContactTolerance
-                    >= playerX - playerHalfWidth
-                && pressureEnemy.y - enemyHalfHeight <= playerY + playerHalfHeight
-                    + enemyAttackContactTolerance
-                && pressureEnemy.y + enemyHalfHeight + enemyAttackContactTolerance
-                    >= playerY - playerHalfHeight)
+            if (pressureEnemy.alive && playerAlive)
             {
-                --playerHP;
+                UpdateEnemyAttack(pressureEnemy, true, playerX, playerY,
+                    deltaTime, pendingPlayerDamage);
+            }
+
+            if (playerAlive && pendingPlayerDamage > 0
+                && playerInvulnerabilityRemaining <= 0.0f)
+            {
+                playerHP -= pendingPlayerDamage;
                 playerHitRemaining = playerHitFeedbackDuration;
-                pressureEnemy.attackCooldownRemaining = enemyAttackCooldownDuration;
+                playerInvulnerabilityRemaining = playerInvulnerabilityDuration;
                 if (playerHP <= 0)
                 {
                     playerHP = 0;
@@ -4308,6 +4332,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     continue;
                 }
                 float redDistance = enemyVisionRange * enemy.detectionProgress;
+                float redDistanceSquared = redDistance * redDistance;
                 float enemyFacingX = cosf(enemy.facingAngle);
                 float enemyFacingY = sinf(enemy.facingAngle);
                 LONG visionLeft = enemyCenterX - enemyVisionRange - cameraX;
@@ -4339,22 +4364,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         float worldPixelY = static_cast<float>(pixelY + cameraY);
                         float visionX = worldPixelX - enemy.x;
                         float visionY = worldPixelY - enemy.y;
-                        float visionForward
-                            = visionX * enemyFacingX + visionY * enemyFacingY;
-                        float visionLateral
-                            = visionX * -enemyFacingY + visionY * enemyFacingX;
-                        if (visionLateral < 0.0f)
-                        {
-                            visionLateral = -visionLateral;
-                        }
-
-                        if (visionForward > 0.0f && visionForward <= enemyVisionRange
-                            && visionLateral <= visionForward * enemyVisionSlope
+                        float visionDistanceSquared
+                            = visionX * visionX + visionY * visionY;
+                        if (PointInsideVisionSector(enemy.x, enemy.y,
+                            enemyFacingX, enemyFacingY, worldPixelX, worldPixelY)
                             && !WallBlocksSegment(enemy.x, enemy.y,
                                 worldPixelX, worldPixelY))
                         {
                             framebuffer[pixelY * framebufferWidth + pixelX]
-                                = visionForward <= redDistance ? 0x00401818 : 0x00182040;
+                                = visionDistanceSquared <= redDistanceSquared
+                                    ? 0x00401818 : 0x00182040;
                         }
                     }
                 }
@@ -4477,11 +4496,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                 framebuffer[pixelY * framebufferWidth + pixelX]
                                     = enemy.hitRemaining > 0.0f
                                         ? 0x00FFFFFF
+                                        : (enemy.attackWindupRemaining > 0.0f
+                                            ? (((x + y) & 1)
+                                                ? 0x00FFF060 : 0x00FF8020)
                                         : (watcherEye ? 0x00FFD060
                                             : (hunterMark ? 0x00C060FF
                                                 : (listenerMark ? 0x0040E0C0
                                                     : (spinnerMark ? 0x00FF9040
-                                                        : (head ? 0x00FF4040 : 0x00A02020)))));
+                                                        : (head ? 0x00FF4040 : 0x00A02020))))));
                             }
                         }
                     }
@@ -4550,8 +4572,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             && pixelY >= 0 && pixelY < framebufferHeight)
                         {
                             framebuffer[pixelY * framebufferWidth + pixelX]
-                                = pressureMark ? 0x00FFF080
-                                : (head ? 0x00D0A060 : 0x00705030);
+                                = pressureEnemy.attackWindupRemaining > 0.0f
+                                    ? (((x + y) & 1) ? 0x00FFF060 : 0x00FF8020)
+                                    : (pressureMark ? 0x00FFF080
+                                        : (head ? 0x00D0A060 : 0x00705030));
                         }
                     }
                 }
@@ -5274,7 +5298,7 @@ int main()
     constexpr BYTE localRoles[5]
         = { watcherEnemyRole, spinnerEnemyRole, patrollerEnemyRole,
             hunterEnemyRole, listenerEnemyRole };
-    constexpr float localX[5] = { 100.0f, 180.0f, 179.0f, 180.1f, 110.0f };
+    constexpr float localX[5] = { 100.0f, 140.0f, 139.0f, 140.1f, 110.0f };
     for (LONG index = 0; index < 5; ++index)
     {
         local[index].alive = index != 4;
@@ -5343,6 +5367,177 @@ extern "C" __declspec(dllexport) void CALLBACK RunB02Validation(HWND, HINSTANCE,
 {
     FILE* output = nullptr;
     freopen_s(&output, "B02Validation.txt", "w", stdout);
+    main();
+    if (output)
+    {
+        fclose(output);
+    }
+}
+#endif
+
+#ifdef DEAD_SIGNAL_B03_VALIDATION
+int main()
+{
+    LONG failures = 0;
+    failures += slashLocalAlertRangeSquared != 40.0f * 40.0f;
+    failures += listenerMovementHearingRangeSquared != 80.0f * 80.0f
+        || listenerDashHearingRangeSquared != 120.0f * 120.0f;
+    failures += enemyVisionRange != 70 || enemyAttackWindupDuration != 0.3f
+        || playerInvulnerabilityDuration != 0.5f;
+    failures += saveVersion != 8 || sizeof(SaveCheckpoint) != 32
+        || metaVersion != 1 || sizeof(MetaProfile) != 16;
+
+    failures += !PointInsideVisionSector(0.0f, 0.0f, 1.0f, 0.0f,
+        70.0f, 0.0f);
+    failures += PointInsideVisionSector(0.0f, 0.0f, 1.0f, 0.0f,
+        70.0f, 1.0f);
+    float insideAngle = 27.0f * 3.14159265f / 180.0f;
+    float outsideAngle = 28.0f * 3.14159265f / 180.0f;
+    failures += !PointInsideVisionSector(0.0f, 0.0f, 1.0f, 0.0f,
+        cosf(insideAngle) * 69.0f, sinf(insideAngle) * 69.0f);
+    failures += PointInsideVisionSector(0.0f, 0.0f, 1.0f, 0.0f,
+        cosf(outsideAngle) * 69.0f, sinf(outsideAngle) * 69.0f);
+
+    currentWallCount = 1;
+    currentWallLeft[0] = 30;
+    currentWallTop[0] = 85;
+    currentWallRight[0] = 38;
+    currentWallBottom[0] = 115;
+    bool rawSector = PointInsideVisionSector(10.0f, 100.0f, 1.0f, 0.0f,
+        60.0f, 100.0f);
+    bool clippedSector = rawSector
+        && !WallBlocksSegment(10.0f, 100.0f, 60.0f, 100.0f);
+    failures += !rawSector || clippedSector;
+
+    float executeInside = 84.0f * 3.14159265f / 180.0f;
+    float executeOutside = 86.0f * 3.14159265f / 180.0f;
+    failures += !PointInsideExecuteFacing(0.0f, 0.0f, 1.0f, 0.0f,
+        cosf(executeInside) * 8.0f, sinf(executeInside) * 8.0f);
+    failures += PointInsideExecuteFacing(0.0f, 0.0f, 1.0f, 0.0f,
+        cosf(executeOutside) * 8.0f, sinf(executeOutside) * 8.0f);
+    failures += PointInsideExecuteFacing(0.0f, 0.0f, 1.0f, 0.0f,
+        -1.0f, 0.0f);
+
+    LONG pendingDamage = 0;
+    QueuePlayerDamage(1, pendingDamage);
+    QueuePlayerDamage(2, pendingDamage);
+    QueuePlayerDamage(1, pendingDamage);
+    failures += pendingDamage != 2;
+
+    EnemyRuntime local[maxEnemyCount]{};
+    for (LONG index = 0; index < maxEnemyCount; ++index)
+    {
+        local[index].alive = true;
+        local[index].role = static_cast<BYTE>(index % enemyRoleCount);
+        local[index].x = index & 1 ? 140.0f : 139.0f;
+        local[index].y = 100.0f;
+    }
+    local[maxEnemyCount - 2].x = 140.1f;
+    local[maxEnemyCount - 1].alive = false;
+    local[maxEnemyCount - 1].x = 100.0f;
+    AlertEnemiesNear(local, maxEnemyCount, 100.0f, 100.0f);
+    for (LONG index = 0; index < maxEnemyCount; ++index)
+    {
+        bool expected = index != maxEnemyCount - 2
+            && index != maxEnemyCount - 1;
+        failures += local[index].alert != expected;
+    }
+
+    EnemyRuntime attacker{};
+    attacker.alive = true;
+    attacker.alert = true;
+    attacker.x = 100.0f;
+    attacker.y = 100.0f;
+    LONG windupDamage = 0;
+    UpdateEnemyAttack(attacker, true, 108.0f, 100.0f, 0.016f, windupDamage);
+    failures += attacker.attackWindupRemaining != enemyAttackWindupDuration
+        || windupDamage;
+    float stationaryX = attacker.x;
+    float stationaryY = attacker.y;
+    for (LONG update = 0; update < 19; ++update)
+    {
+        UpdateEnemyAttack(attacker, true, 120.0f, 100.0f, 0.016f,
+            windupDamage);
+    }
+    failures += windupDamage || attacker.attackWindupRemaining > 0.0f
+        || attacker.attackCooldownRemaining != enemyAttackCooldownDuration
+        || attacker.x != stationaryX || attacker.y != stationaryY;
+
+    attacker.attackCooldownRemaining = 0.0f;
+    UpdateEnemyAttack(attacker, true, 108.0f, 100.0f, 0.016f, windupDamage);
+    for (LONG update = 0; update < 19; ++update)
+    {
+        UpdateEnemyAttack(attacker, true, 108.0f, 100.0f, 0.016f,
+            windupDamage);
+    }
+    failures += windupDamage != 1;
+    attacker.attackCooldownRemaining = 0.0f;
+    UpdateEnemyAttack(attacker, true, 108.0f, 100.0f, 0.016f, windupDamage);
+    attacker.alive = false;
+    UpdateEnemyAttack(attacker, true, 108.0f, 100.0f, 0.30f, windupDamage);
+    failures += attacker.attackWindupRemaining != 0.0f || windupDamage != 1;
+
+#ifdef DEAD_SIGNAL_B03_SOAK_VALIDATION
+    EnemyRuntime soakEnemies[maxEnemyCount]{};
+    for (LONG index = 0; index < maxEnemyCount; ++index)
+    {
+        soakEnemies[index].alive = true;
+        soakEnemies[index].alert = true;
+        soakEnemies[index].role = static_cast<BYTE>(index % enemyRoleCount);
+        soakEnemies[index].x = 100.0f + static_cast<float>(index % 3);
+        soakEnemies[index].y = 100.0f + static_cast<float>(index % 5);
+    }
+    ULONGLONG soakStart = GetTickCount64();
+    ULONGLONG soakUpdates = 0;
+    LONG soakFailures = 0;
+    while (GetTickCount64() - soakStart < 90000)
+    {
+        LONG soakDamage = 0;
+        for (LONG index = 0; index < maxEnemyCount; ++index)
+        {
+            EnemyRuntime& soakEnemy = soakEnemies[index];
+            if (soakEnemy.attackCooldownRemaining > 0.0f)
+            {
+                soakEnemy.attackCooldownRemaining -= 1.0f / 60.0f;
+            }
+            UpdateEnemyAttack(soakEnemy, soakEnemy.alert, 108.0f, 100.0f,
+                1.0f / 60.0f, soakDamage);
+            float facing = static_cast<float>((soakUpdates + index) % 360)
+                * 3.14159265f / 180.0f;
+            PointInsideVisionSector(soakEnemy.x, soakEnemy.y,
+                cosf(facing), sinf(facing), 108.0f, 100.0f);
+            soakFailures += soakEnemy.attackWindupRemaining < 0.0f
+                || soakEnemy.attackWindupRemaining > enemyAttackWindupDuration;
+        }
+        soakFailures += soakDamage < 0 || soakDamage > 1;
+        if ((soakUpdates & 255) == 0)
+        {
+            for (LONG index = 0; index < maxEnemyCount; ++index)
+            {
+                soakEnemies[index].alert = false;
+            }
+            AlertEnemiesNear(soakEnemies, maxEnemyCount, 100.0f, 100.0f);
+            PropagateListenerAlert(soakEnemies, maxEnemyCount);
+        }
+        ++soakUpdates;
+    }
+    failures += soakFailures;
+    printf("soak_ms=%llu soak_updates=%llu soak_failures=%ld\n",
+        GetTickCount64() - soakStart, soakUpdates, soakFailures);
+#endif
+
+    printf("b03_failures=%ld slash40=%d sector=%d wall_clip=%d execute170=%d highest=%ld windup=%d capacity=%ld\n",
+        failures, local[0].alert, rawSector, !clippedSector,
+        !PointInsideExecuteFacing(0.0f, 0.0f, 1.0f, 0.0f, -1.0f, 0.0f),
+        pendingDamage, windupDamage, maxEnemyCount);
+    return failures;
+}
+
+extern "C" __declspec(dllexport) void CALLBACK RunB03Validation(HWND, HINSTANCE,
+    LPSTR, int)
+{
+    FILE* output = nullptr;
+    freopen_s(&output, "B03Validation.txt", "w", stdout);
     main();
     if (output)
     {
