@@ -40,6 +40,7 @@ constexpr LONG trapRoomType = 3;
 constexpr LONG mixedRoomType = 4;
 constexpr LONG maxRoomWalls = 24;
 constexpr LONG maxRoomTraps = 19;
+constexpr LONG mazeWallThickness = 8;
 constexpr LONG trapWidth = 24;
 constexpr LONG trapHeight = 14;
 constexpr float trapOffDuration = 1.25f;
@@ -621,6 +622,11 @@ void ApplyFieldMedic(LONG& playerHP)
     }
 }
 
+bool RoomClearsToUpgrade(LONG room)
+{
+    return (room & 1) != 0 && room < roomCount - 1;
+}
+
 bool PiercerSlashHitsEnemy(float originX, float originY, LONG directionX,
     LONG directionY, float enemyX, float enemyY)
 {
@@ -764,6 +770,73 @@ void SetRoomSizeStage(LONG stage)
 }
 
 bool WallBlocksSegment(float startX, float startY, float endX, float endY);
+bool RoomLayoutConnected();
+
+bool GenerateMazeLayout(DWORD& state)
+{
+    for (LONG layoutAttempt = 0; layoutAttempt < 32; ++layoutAttempt)
+    {
+        currentWallCount = 0;
+        bool complete = true;
+        for (LONG quadrant = 0; quadrant < 4 && complete; ++quadrant)
+        {
+            LONG quadrantLeft = (quadrant & 1) ? worldWidth / 2 + 16 : 24;
+            LONG quadrantRight = (quadrant & 1) ? worldWidth - 24 : worldWidth / 2 - 16;
+            LONG quadrantTop = (quadrant & 2) ? worldHeight / 2 + 16 : 24;
+            LONG quadrantBottom = (quadrant & 2) ? worldHeight - 24
+                : worldHeight / 2 - 16;
+            LONG zeroWeight = 12 - currentRoom;
+            LONG oneWeight = 48 - currentRoom * 2;
+            LONG threeWeight = 20 + currentRoom * 2;
+            LONG roll = NextRoomRandom(state) & 127;
+            LONG segmentCount = roll < zeroWeight ? 0
+                : (roll < zeroWeight + oneWeight ? 1
+                    : (roll < 128 - threeWeight ? 2 : 3));
+            for (LONG segment = 0; segment < segmentCount; ++segment)
+            {
+                bool placed = false;
+                for (LONG attempt = 0; attempt < 128 && !placed; ++attempt)
+                {
+                    bool horizontal = (NextRoomRandom(state) & 1) != 0;
+                    LONG availableWidth = quadrantRight - quadrantLeft;
+                    LONG availableHeight = quadrantBottom - quadrantTop;
+                    LONG availableLength = horizontal ? availableWidth : availableHeight;
+                    LONG length = availableLength
+                        * (50 + static_cast<LONG>(NextRoomRandom(state) % 21)) / 100;
+                    if (length < mazeWallThickness * 3)
+                    {
+                        length = mazeWallThickness * 3;
+                    }
+                    if (length > availableLength)
+                    {
+                        length = availableLength;
+                    }
+                    LONG width = horizontal ? length : mazeWallThickness;
+                    LONG height = horizontal ? mazeWallThickness : length;
+                    LONG left = quadrantLeft + NextRoomRandom(state)
+                        % (availableWidth - width + 1);
+                    LONG top = quadrantTop + NextRoomRandom(state)
+                        % (availableHeight - height + 1);
+                    if (left >= quadrantLeft && top >= quadrantTop
+                        && left + width <= quadrantRight
+                        && top + height <= quadrantBottom
+                        && RoomWallPlacementValid(left, top, left + width, top + height))
+                    {
+                        AddRoomWall(left, top, left + width, top + height);
+                        placed = true;
+                    }
+                }
+                complete &= placed;
+            }
+        }
+        if (complete && RoomLayoutConnected())
+        {
+            return true;
+        }
+    }
+    currentWallCount = 0;
+    return false;
+}
 
 void SetupCurrentRoom()
 {
@@ -821,19 +894,7 @@ void SetupCurrentRoom()
         currentPlayerStartY = 28.0f;
     }
 
-    if (currentRoomType == openRoomType)
-    {
-        LONG structureCount = roomSizeStage == 1 ? 1 : (roomSizeStage - 1) * 2 - 1;
-        for (LONG structure = 0; structure < structureCount; ++structure)
-        {
-            LONG column = structure & 1 ? 3 : 2;
-            LONG row = structure / 2 + 1;
-            LONG left = worldWidth * column / 5 - 8;
-            LONG top = worldHeight * row / ((structureCount + 1) / 2 + 1) - 12;
-            AddRoomWall(left, top, left + 16, top + 24);
-        }
-    }
-    else if (currentRoomType == pillarRoomType)
+    if (currentRoomType == pillarRoomType)
     {
         constexpr LONG pillarCountsByStage[5] = { 1, 4, 6, 12, 20 };
         LONG requestedWallCount = pillarCountsByStage[roomSizeStage - 1];
@@ -850,48 +911,7 @@ void SetupCurrentRoom()
     }
     else if (currentRoomType == mazeRoomType)
     {
-        bool firstHorizontal = (NextRoomRandom(state) & 1) != 0;
-        for (LONG quadrant = 0; quadrant < 4; ++quadrant)
-        {
-            LONG quadrantLeft = (quadrant & 1) ? worldWidth / 2 + 16 : 24;
-            LONG quadrantRight = (quadrant & 1) ? worldWidth - 24 : worldWidth / 2 - 16;
-            LONG quadrantTop = (quadrant & 2) ? worldHeight / 2 + 16 : 24;
-            LONG quadrantBottom = (quadrant & 2) ? worldHeight - 24 : worldHeight / 2 - 16;
-            LONG segmentCount = 1 + (NextRoomRandom(state) & 1);
-            for (LONG segment = 0; segment < segmentCount; ++segment)
-            {
-                bool horizontal = (NextRoomRandom(state) & 1) != 0;
-                if (segment == 0 && quadrant < 2)
-                {
-                    horizontal = quadrant ? !firstHorizontal : firstHorizontal;
-                }
-                for (LONG attempt = 0; attempt < 64; ++attempt)
-                {
-                    LONG width = horizontal ? 64 + NextRoomRandom(state) % 41 : 16;
-                    LONG height = horizontal ? 16
-                        : 32 + NextRoomRandom(state) % 41;
-                    LONG availableWidth = quadrantRight - quadrantLeft;
-                    LONG availableHeight = quadrantBottom - quadrantTop;
-                    if (width > availableWidth)
-                    {
-                        width = availableWidth;
-                    }
-                    if (height > availableHeight)
-                    {
-                        height = availableHeight;
-                    }
-                    LONG left = quadrantLeft + NextRoomRandom(state)
-                        % (availableWidth - width + 1);
-                    LONG top = quadrantTop + NextRoomRandom(state)
-                        % (availableHeight - height + 1);
-                    if (RoomWallPlacementValid(left, top, left + width, top + height))
-                    {
-                        AddRoomWall(left, top, left + width, top + height);
-                        break;
-                    }
-                }
-            }
-        }
+        GenerateMazeLayout(state);
     }
     else if (currentRoomType == mixedRoomType)
     {
@@ -1224,6 +1244,62 @@ bool NavigationCellValid(LONG column, LONG row)
     float centerY = enemyHalfHeight + row * navigationCellSize;
     return !RectangleOverlapsRoomWall(centerX - enemyHalfWidth,
         centerY - enemyHalfHeight, centerX + enemyHalfWidth, centerY + enemyHalfHeight);
+}
+
+bool RoomLayoutConnected()
+{
+    for (LONG node = 0; node < navigationNodeCount; ++node)
+    {
+        navigationState[node] = 0;
+    }
+    LONG startColumn = static_cast<LONG>((currentPlayerStartX - enemyHalfWidth
+        + navigationCellSize * 0.5f) / navigationCellSize);
+    LONG startRow = static_cast<LONG>((currentPlayerStartY - enemyHalfHeight
+        + navigationCellSize * 0.5f) / navigationCellSize);
+    if (!NavigationCellValid(startColumn, startRow))
+    {
+        return false;
+    }
+    LONG read = 0;
+    LONG written = 0;
+    LONG start = startRow * navigationColumns + startColumn;
+    navigationState[start] = 1;
+    navigationPath[pressureEnemyIndex][written++] = static_cast<unsigned short>(start);
+    constexpr LONG neighborX[4] = { -1, 1, 0, 0 };
+    constexpr LONG neighborY[4] = { 0, 0, -1, 1 };
+    while (read < written)
+    {
+        LONG node = navigationPath[pressureEnemyIndex][read++];
+        LONG column = node % navigationColumns;
+        LONG row = node / navigationColumns;
+        for (LONG neighbor = 0; neighbor < 4; ++neighbor)
+        {
+            LONG nextColumn = column + neighborX[neighbor];
+            LONG nextRow = row + neighborY[neighbor];
+            if (NavigationCellValid(nextColumn, nextRow))
+            {
+                LONG next = nextRow * navigationColumns + nextColumn;
+                if (!navigationState[next])
+                {
+                    navigationState[next] = 1;
+                    navigationPath[pressureEnemyIndex][written++]
+                        = static_cast<unsigned short>(next);
+                }
+            }
+        }
+    }
+    for (LONG row = 0; row < navigationRows; ++row)
+    {
+        for (LONG column = 0; column < navigationColumns; ++column)
+        {
+            if (NavigationCellValid(column, row)
+                && !navigationState[row * navigationColumns + column])
+            {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 LONG NavigationColumn(float x)
@@ -3850,7 +3926,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 && playerY - playerHalfHeight < currentExitBottom
                 && playerY + playerHalfHeight > currentExitTop)
             {
-                if ((currentRoom & 1) == 0)
+                if (currentRoom == roomCount - 1)
+                {
+                    sequenceComplete = true;
+                }
+                else if (!RoomClearsToUpgrade(currentRoom))
                 {
                     roomComplete = true;
                 }
@@ -4465,6 +4545,14 @@ int main()
     unsigned long long unreachableEnemy = 0;
     unsigned long long mazeQuadrantCount = 0;
     unsigned long long mazeOrientationFailure = 0;
+    unsigned long long mazeThicknessFailure = 0;
+    unsigned long long mazeQuadrantBoundsFailure = 0;
+    unsigned long long mazeZeroQuadrants[roomCount]{};
+    unsigned long long mazeQuadrants[roomCount]{};
+    unsigned long long mazeLengthTotal[5][2]{};
+    unsigned long long mazeLengthCount[5][2]{};
+    unsigned long long mazeRoomCount[5]{};
+    LONG mazeOrientationMask = 0;
     unsigned long long densityCountFailure = 0;
     unsigned long long invalidExitSide = 0;
     bool exitSeen[4]{};
@@ -4495,7 +4583,11 @@ int main()
             constexpr LONG trapCounts[5] = { 1, 3, 7, 12, 19 };
             constexpr LONG mixedWallCounts[5] = { 1, 2, 4, 7, 12 };
             constexpr LONG mixedTrapCounts[5] = { 1, 2, 4, 7, 11 };
-            if (currentRoomType == pillarRoomType)
+            if (currentRoomType == openRoomType)
+            {
+                expectedWalls = 0;
+            }
+            else if (currentRoomType == pillarRoomType)
             {
                 expectedWalls = pillarCounts[roomSizeStage - 1];
             }
@@ -4689,23 +4781,41 @@ int main()
 
             if (currentRoomType == mazeRoomType)
             {
+                ++mazeRoomCount[roomSizeStage - 1];
                 LONG quadrantWalls[4]{};
-                LONG orientationMask = 0;
                 for (LONG wall = 0; wall < currentWallCount; ++wall)
                 {
                     LONG centerX = (currentWallLeft[wall] + currentWallRight[wall]) / 2;
                     LONG centerY = (currentWallTop[wall] + currentWallBottom[wall]) / 2;
-                    ++quadrantWalls[(centerX >= worldWidth / 2)
-                        | ((centerY >= worldHeight / 2) << 1)];
-                    orientationMask |= currentWallRight[wall] - currentWallLeft[wall]
-                        > currentWallBottom[wall] - currentWallTop[wall] ? 1 : 2;
+                    LONG quadrant = (centerX >= worldWidth / 2)
+                        | ((centerY >= worldHeight / 2) << 1);
+                    ++quadrantWalls[quadrant];
+                    LONG quadrantLeft = (quadrant & 1) ? worldWidth / 2 + 16 : 24;
+                    LONG quadrantRight = (quadrant & 1) ? worldWidth - 24
+                        : worldWidth / 2 - 16;
+                    LONG quadrantTop = (quadrant & 2) ? worldHeight / 2 + 16 : 24;
+                    LONG quadrantBottom = (quadrant & 2) ? worldHeight - 24
+                        : worldHeight / 2 - 16;
+                    mazeQuadrantBoundsFailure += currentWallLeft[wall] < quadrantLeft
+                        || currentWallTop[wall] < quadrantTop
+                        || currentWallRight[wall] > quadrantRight
+                        || currentWallBottom[wall] > quadrantBottom;
+                    LONG width = currentWallRight[wall] - currentWallLeft[wall];
+                    LONG height = currentWallBottom[wall] - currentWallTop[wall];
+                    LONG orientation = width > height ? 0 : 1;
+                    LONG length = orientation ? height : width;
+                    mazeOrientationMask |= orientation ? 2 : 1;
+                    mazeThicknessFailure += (orientation ? width : height)
+                        != mazeWallThickness || length <= mazeWallThickness;
+                    mazeLengthTotal[roomSizeStage - 1][orientation] += length;
+                    ++mazeLengthCount[roomSizeStage - 1][orientation];
                 }
                 for (LONG quadrant = 0; quadrant < 4; ++quadrant)
                 {
-                    mazeQuadrantCount += quadrantWalls[quadrant] < 1
-                        || quadrantWalls[quadrant] > 2;
+                    mazeQuadrantCount += quadrantWalls[quadrant] > 3;
+                    mazeZeroQuadrants[currentRoom] += quadrantWalls[quadrant] == 0;
+                    ++mazeQuadrants[currentRoom];
                 }
-                mazeOrientationFailure += orientationMask != 3;
             }
 
             DWORD firstHash = CurrentGenerationHash();
@@ -4725,6 +4835,13 @@ int main()
         missingRole += !roleSeen[role];
     }
     LONG upgradeCompatibilityFailure = 0;
+    LONG runFlowFailure = 0;
+    for (LONG room = 0; room < roomCount; ++room)
+    {
+        bool expectedUpgrade = room == 1 || room == 3 || room == 5
+            || room == 7 || room == 9;
+        runFlowFailure += RoomClearsToUpgrade(room) != expectedUpgrade;
+    }
     for (LONG move = 0; move <= 2; ++move)
     {
         for (LONG slash = 0; slash <= 2; ++slash)
@@ -4747,6 +4864,57 @@ int main()
         }
     }
 
+    unsigned long long mazeZeroProbabilityFailure = 0;
+    unsigned long long earlyZero = 0;
+    unsigned long long earlyQuadrants = 0;
+    unsigned long long middleZero = 0;
+    unsigned long long middleQuadrants = 0;
+    unsigned long long lateZero = 0;
+    unsigned long long lateQuadrants = 0;
+    for (LONG room = 0; room < roomCount; ++room)
+    {
+        if (room < 4)
+        {
+            earlyZero += mazeZeroQuadrants[room];
+            earlyQuadrants += mazeQuadrants[room];
+        }
+        else if (room < 8)
+        {
+            middleZero += mazeZeroQuadrants[room];
+            middleQuadrants += mazeQuadrants[room];
+        }
+        else
+        {
+            lateZero += mazeZeroQuadrants[room];
+            lateQuadrants += mazeQuadrants[room];
+        }
+    }
+    mazeZeroProbabilityFailure += !earlyZero || !middleZero || !lateZero
+        || earlyZero * middleQuadrants <= middleZero * earlyQuadrants
+        || middleZero * lateQuadrants <= lateZero * middleQuadrants;
+    unsigned long long mazeLengthGrowthFailure = 0;
+    unsigned long long mazeDensityGrowthFailure = 0;
+    for (LONG stage = 2; stage < 5; ++stage)
+    {
+        unsigned long long previousWallCount = mazeLengthCount[stage - 1][0]
+            + mazeLengthCount[stage - 1][1];
+        unsigned long long currentStageWallCount = mazeLengthCount[stage][0]
+            + mazeLengthCount[stage][1];
+        mazeDensityGrowthFailure += !mazeRoomCount[stage - 1] || !mazeRoomCount[stage]
+            || currentStageWallCount * mazeRoomCount[stage - 1]
+                <= previousWallCount * mazeRoomCount[stage];
+        for (LONG orientation = 0; orientation < 2; ++orientation)
+        {
+            mazeLengthGrowthFailure += !mazeLengthCount[stage - 1][orientation]
+                || !mazeLengthCount[stage][orientation]
+                || mazeLengthTotal[stage][orientation]
+                    * mazeLengthCount[stage - 1][orientation]
+                    <= mazeLengthTotal[stage - 1][orientation]
+                        * mazeLengthCount[stage][orientation];
+        }
+    }
+    mazeOrientationFailure = mazeOrientationMask != 3;
+
     printf("rooms=1200000 wrong_enemy=%llu wrong_size=%llu capacity=%llu invalid_role=%llu determinism=%llu\n",
         wrongEnemyCount, wrongRoomSize, enemyCapacityOverflow, invalidRole,
         deterministicMismatch);
@@ -4756,15 +4924,22 @@ int main()
     printf("wall_trap=%llu exit_blocked=%llu player_exit_unreachable=%llu enemy_unreachable=%llu density=%llu\n",
         wallTrapOverlap, exitBlocked, unreachablePlayerExit, unreachableEnemy,
         densityCountFailure);
-    printf("maze_quadrant=%llu maze_orientation=%llu invalid_exit=%llu missing_exit=%ld duplicate_role_seen=%d missing_role=%ld upgrade_compat=%ld\n",
-        mazeQuadrantCount, mazeOrientationFailure, invalidExitSide, missingExitSide,
-        duplicateRoleSeen, missingRole, upgradeCompatibilityFailure);
+    printf("maze_quadrant=%llu maze_bounds=%llu maze_thickness=%llu maze_orientation=%llu maze_zero_weight=%llu maze_density=%llu maze_length_growth=%llu\n",
+        mazeQuadrantCount, mazeQuadrantBoundsFailure, mazeThicknessFailure,
+        mazeOrientationFailure, mazeZeroProbabilityFailure, mazeDensityGrowthFailure,
+        mazeLengthGrowthFailure);
+    printf("invalid_exit=%llu missing_exit=%ld duplicate_role_seen=%d missing_role=%ld upgrade_compat=%ld run_flow=%ld\n",
+        invalidExitSide, missingExitSide, duplicateRoleSeen, missingRole,
+        upgradeCompatibilityFailure, runFlowFailure);
     return wrongEnemyCount || wrongRoomSize || enemyCapacityOverflow || invalidRole
         || deterministicMismatch || playerOverlap || enemyOverlap || wallOverlap
         || trapOverlap || exitOverlap || pressureInvalidSpawn || wallTrapOverlap
         || exitBlocked || unreachablePlayerExit || unreachableEnemy || densityCountFailure
-        || mazeQuadrantCount || mazeOrientationFailure || invalidExitSide
-        || missingExitSide || !duplicateRoleSeen || missingRole || upgradeCompatibilityFailure;
+        || mazeQuadrantCount || mazeQuadrantBoundsFailure || mazeThicknessFailure
+        || mazeOrientationFailure || mazeZeroProbabilityFailure || mazeDensityGrowthFailure
+        || mazeLengthGrowthFailure
+        || invalidExitSide || missingExitSide || !duplicateRoleSeen || missingRole
+        || upgradeCompatibilityFailure || runFlowFailure;
 }
 
 extern "C" __declspec(dllexport) void CALLBACK RunB01Validation(HWND, HINSTANCE,
