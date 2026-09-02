@@ -141,9 +141,8 @@ constexpr BYTE piercerCharacter = 2;
 constexpr BYTE heavyCharacter = 3;
 constexpr BYTE rapidCharacter = 4;
 constexpr BYTE characterCount = 5;
-constexpr LONG characterUnlockCosts[characterCount]{ 0, 5, 10, 15, 20 };
+constexpr LONG characterUnlockCosts[characterCount]{ 0, 100, 100, 100, 100 };
 constexpr BYTE characterDashCaps[characterCount]{ 3, 4, 2, 1, 2 };
-constexpr LONG runClearCoinBonus = 3;
 constexpr BYTE commonUpgradeCount = 3;
 constexpr BYTE characterGlobalUpgradeCount = 3;
 constexpr BYTE pierceThroughStorageMarker = 0x80;
@@ -152,7 +151,7 @@ constexpr BYTE fieldRecoveryGlobalUpgrade = 1;
 constexpr BYTE coinSenseGlobalUpgrade = 2;
 constexpr BYTE commonUpgradeMaximum[commonUpgradeCount]{ 1, 1, 2 };
 constexpr LONG commonUpgradeCost[commonUpgradeCount][2]
-    { { 10, 0 }, { 10, 0 }, { 5, 10 } };
+    { { 25, 0 }, { 25, 0 }, { 20, 30 } };
 constexpr BYTE characterGlobalMaximum[characterCount][characterGlobalUpgradeCount]
 {
     { 2, 2, 2 },
@@ -161,7 +160,14 @@ constexpr BYTE characterGlobalMaximum[characterCount][characterGlobalUpgradeCoun
     { 2, 2, 2 },
     { 1, 2, 2 }
 };
-constexpr LONG characterGlobalCost[3]{ 5, 10, 15 };
+constexpr LONG characterGlobalCost[characterCount][characterGlobalUpgradeCount][3]
+{
+    { { 25, 35, 0 }, { 25, 35, 0 }, { 35, 45, 0 } },
+    { { 20, 25, 35 }, { 25, 35, 0 }, { 25, 35, 0 } },
+    { { 40, 0, 0 }, { 35, 45, 0 }, { 80, 0, 0 } },
+    { { 30, 40, 0 }, { 35, 45, 0 }, { 20, 30, 0 } },
+    { { 35, 0, 0 }, { 35, 50, 0 }, { 35, 45, 0 } }
+};
 
 struct CharacterProfile
 {
@@ -220,6 +226,9 @@ bool loadGameRequested = false;
 LONG currentRoom = 0;
 DWORD runSeed = 0;
 LONG runKillCount = 0;
+LONG runKillCoin = 0;
+LONG runRoomCoin = 0;
+LONG runCoinSenseBonus = 0;
 LONG runEarnedCoin = 0;
 BYTE alertEventCount = 0;
 bool alertEventActive = false;
@@ -999,7 +1008,7 @@ bool BuyCharacterGlobalUpgrade(BYTE character, BYTE upgrade)
         titleStatus = 5;
         return false;
     }
-    LONG cost = characterGlobalCost[level];
+    LONG cost = characterGlobalCost[character][upgrade][level];
     if (globalCoin < cost)
     {
         titleStatus = 3;
@@ -1105,8 +1114,20 @@ void GrantRunCoin(bool cleared)
     {
         return;
     }
-    LONG reward = runKillCount + (cleared ? runClearCoinBonus : 0);
-    reward += reward * commonGlobalLevel[coinSenseGlobalUpgrade] / 10;
+    runKillCoin = runKillCount / 10;
+    runRoomCoin = currentRoom + (cleared ? 1 : 0);
+    if (runRoomCoin < 0)
+    {
+        runRoomCoin = 0;
+    }
+    else if (runRoomCoin > roomCount)
+    {
+        runRoomCoin = roomCount;
+    }
+    LONG baseCoin = runKillCoin + runRoomCoin;
+    runCoinSenseBonus = baseCoin
+        * commonGlobalLevel[coinSenseGlobalUpgrade] / 10;
+    LONG reward = baseCoin + runCoinSenseBonus;
     runEarnedCoin = reward > 0x7fffffff - globalCoin
         ? 0x7fffffff - globalCoin : reward;
     globalCoin += runEarnedCoin;
@@ -3105,7 +3126,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                                 CharacterGlobalUpgradeName(previewCharacter,
                                     static_cast<BYTE>(item)),
                                 static_cast<UINT>(level), static_cast<UINT>(maximum),
-                                characterGlobalCost[level]);
+                                characterGlobalCost[previewCharacter][item][level]);
                         }
                         text = titleText;
                     }
@@ -3279,18 +3300,19 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             SetBkMode(deviceContext, TRANSPARENT);
             RECT line = clientArea;
             wchar_t resultText[64];
-            line.top = clientHeight * 4 / 180;
-            line.bottom = clientHeight * 23 / 180;
+            line.top = clientHeight / 180;
+            line.bottom = clientHeight * 18 / 180;
             SetTextColor(deviceContext, RGB(220, 220, 220));
             DrawTextW(deviceContext, runEndState == runClearEndState
                 ? L"RUN CLEAR" : L"GAME OVER", -1, &line,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            constexpr const wchar_t* resultLabels[6]
+            constexpr const wchar_t* resultLabels[9]
             {
                 L"CHARACTER  %s", L"ROOM  %ld / 12", L"KILL  %ld",
-                L"ALERT  %u", L"COIN  %ld", L"TOTAL COIN  %ld"
+                L"ALERT  %u", L"KILL COIN  %ld", L"ROOM COIN  %ld",
+                L"COIN SENSE  +%ld", L"EARNED  %ld", L"TOTAL COIN  %ld"
             };
-            for (LONG item = 0; item < 6; ++item)
+            for (LONG item = 0; item < 9; ++item)
             {
                 if (item == 0)
                 {
@@ -3312,21 +3334,33 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 }
                 else if (item == 4)
                 {
+                    wsprintfW(resultText, resultLabels[item], runKillCoin);
+                }
+                else if (item == 5)
+                {
+                    wsprintfW(resultText, resultLabels[item], runRoomCoin);
+                }
+                else if (item == 6)
+                {
+                    wsprintfW(resultText, resultLabels[item], runCoinSenseBonus);
+                }
+                else if (item == 7)
+                {
                     wsprintfW(resultText, resultLabels[item], runEarnedCoin);
                 }
                 else
                 {
                     wsprintfW(resultText, resultLabels[item], globalCoin);
                 }
-                line.top = clientHeight * (27 + item * 17) / 180;
-                line.bottom = clientHeight * (42 + item * 17) / 180;
+                line.top = clientHeight * (20 + item * 12) / 180;
+                line.bottom = clientHeight * (32 + item * 12) / 180;
                 DrawTextW(deviceContext, resultText, -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
             for (LONG item = 0; item < 2; ++item)
             {
-                line.top = clientHeight * (135 + item * 21) / 180;
-                line.bottom = clientHeight * (153 + item * 21) / 180;
+                line.top = clientHeight * (137 + item * 20) / 180;
+                line.bottom = clientHeight * (154 + item * 20) / 180;
                 SetTextColor(deviceContext,
                     item == runEndSelection ? RGB(255, 216, 0) : RGB(160, 160, 160));
                 DrawTextW(deviceContext,
@@ -3614,6 +3648,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     ? dashCooldownDurationCurrent : 0.0f;
                 rerollUsed = checkpoint.reroll;
                 runKillCount = checkpoint.runKills;
+                runKillCoin = 0;
+                runRoomCoin = 0;
+                runCoinSenseBonus = 0;
                 runEarnedCoin = 0;
                 alertEventCount = checkpoint.alertEvents;
                 alertEventActive = false;
@@ -3658,6 +3695,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 dashCooldownRemaining = 0.0f;
                 rerollUsed = 0;
                 runKillCount = 0;
+                runKillCoin = 0;
+                runRoomCoin = 0;
+                runCoinSenseBonus = 0;
                 runEarnedCoin = 0;
                 alertEventCount = 0;
                 alertEventActive = false;
@@ -7316,6 +7356,40 @@ int main()
         || unlockedCharacterMask != 1 || !audioEnabled;
     printf("section_corrupt=%ld\n", failures);
 
+    LONG unlockCostTotal = 0;
+    LONG commonCostTotal = 0;
+    LONG characterCostTotal[characterCount]{};
+    for (BYTE character = 1; character < characterCount; ++character)
+    {
+        unlockCostTotal += characterUnlockCosts[character];
+    }
+    for (BYTE upgrade = 0; upgrade < commonUpgradeCount; ++upgrade)
+    {
+        for (BYTE level = 0; level < commonUpgradeMaximum[upgrade]; ++level)
+        {
+            commonCostTotal += commonUpgradeCost[upgrade][level];
+        }
+    }
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        for (BYTE upgrade = 0; upgrade < characterGlobalUpgradeCount; ++upgrade)
+        {
+            for (BYTE level = 0;
+                level < characterGlobalMaximum[character][upgrade]; ++level)
+            {
+                characterCostTotal[character]
+                    += characterGlobalCost[character][upgrade][level];
+            }
+        }
+        failures += characterCostTotal[character] != 200;
+    }
+    failures += unlockCostTotal != 400 || commonCostTotal != 100
+        || characterCostTotal[0] + characterCostTotal[1]
+            + characterCostTotal[2] + characterCostTotal[3]
+            + characterCostTotal[4] != 1000
+        || unlockCostTotal + commonCostTotal + 1000 != 1500;
+    printf("section_costs=%ld\n", failures);
+
     ResetMetaProfile();
     globalCoin = 100;
     failures += !BuyCommonGlobalUpgrade(runRerollGlobalUpgrade)
@@ -7323,47 +7397,95 @@ int main()
         || !BuyCommonGlobalUpgrade(coinSenseGlobalUpgrade)
         || !BuyCommonGlobalUpgrade(coinSenseGlobalUpgrade)
         || BuyCommonGlobalUpgrade(coinSenseGlobalUpgrade)
-        || globalCoin != 65;
-    failures += !UnlockCharacter(mobilityCharacter)
-        || !BuyCharacterGlobalUpgrade(mobilityCharacter, 0)
+        || globalCoin != 0;
+    globalCoin = characterUnlockCosts[mobilityCharacter];
+    failures += !UnlockCharacter(mobilityCharacter) || globalCoin != 0;
+    globalCoin = characterGlobalCost[mobilityCharacter][0][0];
+    failures += !BuyCharacterGlobalUpgrade(mobilityCharacter, 0)
         || characterGlobalLevel[basicCharacter][0] != 0
         || characterGlobalLevel[mobilityCharacter][0] != 1
-        || globalCoin != 55;
+        || globalCoin != 0;
     characterGlobalLevel[piercerCharacter][2] = 0;
+    globalCoin = characterGlobalCost[piercerCharacter][2][0];
     failures += !BuyCharacterGlobalUpgrade(piercerCharacter, 2)
         || BuyCharacterGlobalUpgrade(piercerCharacter, 2)
         || CharacterSlashHitCap(piercerCharacter) != 2
-        || globalCoin != 50
+        || globalCoin != 0
         || lstrcmpW(CharacterGlobalUpgradeName(piercerCharacter, 2),
             L"PIERCE THROUGH") != 0;
     printf("section_purchase=%ld\n", failures);
 
+    constexpr LONG killTests[9]{ 0, 9, 10, 19, 20, 42, 99, 100, 156 };
+    constexpr LONG expectedKillCoin[9]{ 0, 0, 1, 1, 2, 4, 9, 10, 15 };
+    currentRoom = 0;
+    commonGlobalLevel[coinSenseGlobalUpgrade] = 0;
+    for (LONG test = 0; test < 9; ++test)
+    {
+        globalCoin = 0;
+        runKillCount = killTests[test];
+        runRewardGranted = false;
+        GrantRunCoin(false);
+        failures += runKillCoin != expectedKillCoin[test] || runRoomCoin != 0
+            || runCoinSenseBonus != 0 || runEarnedCoin != expectedKillCoin[test]
+            || globalCoin != expectedKillCoin[test];
+    }
+
+    constexpr LONG scenarioKills[6]{ 6, 20, 42, 72, 110, 156 };
+    constexpr LONG scenarioRooms[6]{ 2, 4, 6, 8, 10, 12 };
+    constexpr LONG scenarioBase[6]{ 2, 6, 10, 15, 21, 27 };
+    for (LONG test = 0; test < 6; ++test)
+    {
+        globalCoin = 0;
+        runKillCount = scenarioKills[test];
+        currentRoom = scenarioRooms[test] == roomCount
+            ? roomCount - 1 : scenarioRooms[test];
+        runRewardGranted = false;
+        GrantRunCoin(scenarioRooms[test] == roomCount);
+        failures += runKillCoin != scenarioKills[test] / 10
+            || runRoomCoin != scenarioRooms[test]
+            || runCoinSenseBonus != 0 || runEarnedCoin != scenarioBase[test];
+    }
+
+    currentRoom = 5;
+    runKillCount = 35;
+    globalCoin = 0;
+    runRewardGranted = false;
+    GrantRunCoin(false);
+    failures += runKillCoin != 3 || runRoomCoin != 5 || runEarnedCoin != 8;
+
+    constexpr LONG clearBySense[3]{ 27, 29, 32 };
+    for (BYTE level = 0; level <= 2; ++level)
+    {
+        commonGlobalLevel[coinSenseGlobalUpgrade] = level;
+        currentRoom = 6;
+        runKillCount = 42;
+        globalCoin = 0;
+        runRewardGranted = false;
+        GrantRunCoin(false);
+        failures += runEarnedCoin != 10 + level;
+
+        currentRoom = 11;
+        runKillCount = 156;
+        globalCoin = 0;
+        runRewardGranted = false;
+        GrantRunCoin(true);
+        failures += runEarnedCoin != clearBySense[level];
+    }
+
     commonGlobalLevel[coinSenseGlobalUpgrade] = 0;
     for (BYTE events = 0; events <= 10; events += events ? 9 : 1)
     {
-        globalCoin = 0;
-        runKillCount = 10;
+        currentRoom = 6;
+        runKillCount = 42;
         alertEventCount = events;
+        globalCoin = 0;
         runRewardGranted = false;
-        runEarnedCoin = 0;
         GrantRunCoin(false);
         GrantRunCoin(false);
         failures += globalCoin != 10 || runEarnedCoin != 10;
     }
-    commonGlobalLevel[coinSenseGlobalUpgrade] = 1;
-    globalCoin = 0;
-    runKillCount = 10;
-    alertEventCount = 10;
-    runRewardGranted = false;
-    GrantRunCoin(false);
-    failures += globalCoin != 11 || runEarnedCoin != 11;
-    commonGlobalLevel[coinSenseGlobalUpgrade] = 2;
-    globalCoin = 0;
-    runKillCount = 10;
-    alertEventCount = 0;
-    runRewardGranted = false;
-    GrantRunCoin(true);
-    failures += globalCoin != 15 || runEarnedCoin != 15;
+
+    currentRoom = 0;
     globalCoin = 0x7ffffffe;
     runKillCount = 10;
     runRewardGranted = false;
@@ -7509,7 +7631,7 @@ int main()
         || selectedCharacter != mobilityCharacter || globalCoin != 0;
     characterUpgradeFocus = true;
     characterUpgradeSelection = 0;
-    globalCoin = characterGlobalCost[0];
+    globalCoin = characterGlobalCost[mobilityCharacter][0][0];
     WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
     WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
     failures += characterGlobalLevel[mobilityCharacter][0] != 1
