@@ -2,7 +2,7 @@
 #include <timeapi.h>
 #include <math.h>
 #if defined(DEAD_SIGNAL_B01_VALIDATION) || defined(DEAD_SIGNAL_B02_VALIDATION) \
-    || defined(DEAD_SIGNAL_B03_VALIDATION) || defined(DEAD_SIGNAL_B09_VALIDATION)
+    || defined(DEAD_SIGNAL_B03_VALIDATION) || defined(DEAD_SIGNAL_B101_VALIDATION)
 #include <stdio.h>
 #endif
 
@@ -20,7 +20,12 @@ constexpr LONG playerCenterX = framebufferWidth / 2;
 constexpr LONG playerCenterY = framebufferHeight / 2;
 constexpr LONG playerLeft = playerCenterX - playerWidth / 2;
 constexpr LONG playerTop = playerCenterY - playerHeight / 2;
-constexpr LONG basicPlayerMaxHP = 10;
+constexpr LONG combatScale = 10;
+constexpr LONG RoundCombatRatio(LONG value, LONG numerator, LONG denominator)
+{
+    return (value * numerator + denominator / 2) / denominator;
+}
+constexpr LONG basicPlayerMaxHP = 10 * combatScale;
 constexpr float playerMoveSpeed = 60.0f;
 constexpr float playerHalfWidth = playerWidth / 2.0f;
 constexpr float playerHalfHeight = playerHeight / 2.0f;
@@ -125,7 +130,11 @@ constexpr BYTE executeReachUpgradeFlag = 2;
 constexpr BYTE fieldMedicUpgradeFlag = 4;
 constexpr float dashDistance = 32.0f;
 constexpr float dashDuration = 0.12f;
-constexpr float dashCooldownDuration = 1.0f;
+constexpr float dashCooldownDuration = 1.5f;
+constexpr LONG playerDamageAmount = combatScale;
+constexpr LONG healAmount = combatScale;
+constexpr LONG enemyMaximumHP = 3 * combatScale;
+constexpr LONG piercerSlashDamage = RoundCombatRatio(combatScale, 3, 2);
 constexpr BYTE basicCharacter = 0;
 constexpr BYTE mobilityCharacter = 1;
 constexpr BYTE piercerCharacter = 2;
@@ -137,6 +146,7 @@ constexpr BYTE characterDashCaps[characterCount]{ 3, 4, 2, 1, 2 };
 constexpr LONG runClearCoinBonus = 3;
 constexpr BYTE commonUpgradeCount = 3;
 constexpr BYTE characterGlobalUpgradeCount = 3;
+constexpr BYTE pierceThroughStorageMarker = 0x80;
 constexpr BYTE runRerollGlobalUpgrade = 0;
 constexpr BYTE fieldRecoveryGlobalUpgrade = 1;
 constexpr BYTE coinSenseGlobalUpgrade = 2;
@@ -147,7 +157,7 @@ constexpr BYTE characterGlobalMaximum[characterCount][characterGlobalUpgradeCoun
 {
     { 2, 2, 2 },
     { 3, 2, 2 },
-    { 1, 2, 2 },
+    { 1, 2, 1 },
     { 2, 2, 2 },
     { 1, 2, 2 }
 };
@@ -167,11 +177,15 @@ struct CharacterProfile
 
 constexpr CharacterProfile characterProfiles[characterCount]
 {
-    { basicPlayerMaxHP, 1.0f, 1.0f, slashReach, slashWidth, 1, 3, 1.0f },
-    { 8, 1.2f, 1.0f, slashReach - 1, slashWidth - 1, 1, 2, 1.1f },
-    { 7, 0.95f, 1.2f, slashReach * 2, 3, 1, 1, 1.0f },
-    { 14, 0.75f, 1.5f, slashReach - 2, slashWidth + 4, 2, 4, 0.9f },
-    { 8, 1.1f, 0.5f, slashReach - 2, slashWidth - 2, 1, 2, 1.0f }
+    { basicPlayerMaxHP, 1.0f, 1.0f, slashReach, slashWidth, 10, 3, 1.0f },
+    { 8 * combatScale, 68.0f / playerMoveSpeed, 1.0f,
+        slashReach - 1, slashWidth - 1, 10, 2, 1.1f },
+    { 7 * combatScale, 0.95f, 1.2f,
+        slashReach * 2, 3, piercerSlashDamage, 1, 1.0f },
+    { 14 * combatScale, 0.75f, 1.5f,
+        slashReach - 2, slashWidth + 4, 20, 4, 0.9f },
+    { 8 * combatScale, 1.1f, 0.5f,
+        slashReach - 2, slashWidth - 2, 10, 2, 1.0f }
 };
 constexpr DWORD toneSampleRate = 8000;
 constexpr DWORD toneFrequency = 440;
@@ -326,6 +340,118 @@ struct EnemyRuntime
     bool alert;
     bool alive;
 };
+
+bool EnemyVisibleInViewport(const EnemyRuntime& enemy, LONG cameraX, LONG cameraY)
+{
+    constexpr LONG visibilityMargin = 2;
+    LONG left = static_cast<LONG>(enemy.x) - enemyWidth / 2 - cameraX;
+    LONG top = static_cast<LONG>(enemy.y) - enemyHeight / 2 - cameraY;
+    return left < framebufferWidth + visibilityMargin
+        && left + enemyWidth > -visibilityMargin
+        && top < framebufferHeight + visibilityMargin
+        && top + enemyHeight > -visibilityMargin;
+}
+
+void PutLocatorPixel(LONG x, LONG y)
+{
+    if (x >= 0 && x < framebufferWidth && y >= 0 && y < framebufferHeight)
+    {
+        framebuffer[y * framebufferWidth + x] = 0x00FFD060;
+    }
+}
+
+bool DrawEnemyLocatorArrow(const EnemyRuntime& enemy, LONG cameraX, LONG cameraY,
+    LONG arrowIndex)
+{
+    if (!enemy.alive || EnemyVisibleInViewport(enemy, cameraX, cameraY))
+    {
+        return false;
+    }
+
+    constexpr float centerX = framebufferWidth * 0.5f;
+    constexpr float centerY = framebufferHeight * 0.5f;
+    constexpr LONG leftInset = 10;
+    constexpr LONG rightInset = framebufferWidth - 11;
+    constexpr LONG topInset = 20;
+    constexpr LONG bottomInset = framebufferHeight - 11;
+    float dx = enemy.x - cameraX - centerX;
+    float dy = enemy.y - cameraY - centerY;
+    float edgeScale = 1000000.0f;
+    if (dx > 0.0f)
+    {
+        edgeScale = (rightInset - centerX) / dx;
+    }
+    else if (dx < 0.0f)
+    {
+        edgeScale = (leftInset - centerX) / dx;
+    }
+    if (dy != 0.0f)
+    {
+        float verticalScale = (dy > 0.0f ? bottomInset - centerY
+            : topInset - centerY) / dy;
+        if (verticalScale < edgeScale)
+        {
+            edgeScale = verticalScale;
+        }
+    }
+
+    LONG directionX = dx < 0.0f ? -1 : 1;
+    LONG directionY = dy < 0.0f ? -1 : 1;
+    float absoluteX = dx < 0.0f ? -dx : dx;
+    float absoluteY = dy < 0.0f ? -dy : dy;
+    if (absoluteX > absoluteY * 2.0f)
+    {
+        directionY = 0;
+    }
+    else if (absoluteY > absoluteX * 2.0f)
+    {
+        directionX = 0;
+    }
+
+    constexpr LONG offsets[5]{ 0, -4, 4, -8, 8 };
+    LONG perpendicularX = -directionY;
+    LONG perpendicularY = directionX;
+    LONG tipX = static_cast<LONG>(centerX + dx * edgeScale + 0.5f)
+        + perpendicularX * offsets[arrowIndex % 5];
+    LONG tipY = static_cast<LONG>(centerY + dy * edgeScale + 0.5f)
+        + perpendicularY * offsets[arrowIndex % 5];
+    if (tipX < leftInset) tipX = leftInset;
+    if (tipX > rightInset) tipX = rightInset;
+    if (tipY < topInset) tipY = topInset;
+    if (tipY > bottomInset) tipY = bottomInset;
+
+    for (LONG pixel = 0; pixel < 5; ++pixel)
+    {
+        PutLocatorPixel(tipX - directionX * pixel,
+            tipY - directionY * pixel);
+    }
+    for (LONG wing = -2; wing <= 2; ++wing)
+    {
+        PutLocatorPixel(tipX - directionX * 2 + perpendicularX * wing,
+            tipY - directionY * 2 + perpendicularY * wing);
+    }
+    return true;
+}
+
+LONG DrawEnemyLocators(EnemyRuntime* enemies, LONG enemyCount,
+    LONG cameraX, LONG cameraY)
+{
+    if (roomSizeStage < 3 || currentEnemyRemaining <= 0
+        || currentEnemyRemaining > 5)
+    {
+        return 0;
+    }
+    LONG arrows = 0;
+    for (LONG enemyIndex = 0; enemyIndex < enemyCount && arrows < 5; ++enemyIndex)
+    {
+        if (enemies[enemyIndex].role != pressureEnemyRole
+            && DrawEnemyLocatorArrow(enemies[enemyIndex], cameraX, cameraY, arrows))
+        {
+            ++arrows;
+        }
+    }
+    return arrows;
+}
 
 bool SetEnemyAlertState(EnemyRuntime& enemy)
 {
@@ -504,7 +630,7 @@ void UpdateEnemyAttack(EnemyRuntime& enemy, bool attackEnabled, float playerX,
             enemy.attackWindupRemaining = 0.0f;
             if (EnemyInAttackRange(enemy.x, enemy.y, playerX, playerY))
             {
-                QueuePlayerDamage(1, pendingDamage);
+                QueuePlayerDamage(playerDamageAmount, pendingDamage);
             }
             enemy.attackCooldownRemaining = enemyAttackCooldownDuration;
         }
@@ -632,13 +758,29 @@ bool ReadMetaProfile()
     {
         valid = profile.commonLevel[upgrade] <= commonUpgradeMaximum[upgrade];
     }
+    bool migratePiercerProgression = false;
     for (BYTE character = 0; valid && character < characterCount; ++character)
     {
         for (BYTE upgrade = 0; valid && upgrade < characterGlobalUpgradeCount;
             ++upgrade)
         {
-            valid = profile.characterLevel[character][upgrade]
-                <= characterGlobalMaximum[character][upgrade];
+            BYTE storedLevel = profile.characterLevel[character][upgrade];
+            if (character == piercerCharacter && upgrade == 2)
+            {
+                if (storedLevel <= 2)
+                {
+                    migratePiercerProgression = true;
+                }
+                else
+                {
+                    valid = storedLevel == pierceThroughStorageMarker
+                        || storedLevel == pierceThroughStorageMarker + 1;
+                }
+            }
+            else
+            {
+                valid = storedLevel <= characterGlobalMaximum[character][upgrade];
+            }
         }
     }
     if (!valid)
@@ -657,9 +799,17 @@ bool ReadMetaProfile()
     {
         for (BYTE upgrade = 0; upgrade < characterGlobalUpgradeCount; ++upgrade)
         {
+            BYTE storedLevel = profile.characterLevel[character][upgrade];
             characterGlobalLevel[character][upgrade]
-                = profile.characterLevel[character][upgrade];
+                = character == piercerCharacter && upgrade == 2
+                    ? (storedLevel & pierceThroughStorageMarker
+                        ? static_cast<BYTE>(storedLevel & 1) : 0)
+                    : storedLevel;
         }
+    }
+    if (migratePiercerProgression)
+    {
+        WriteMetaProfile();
     }
     return true;
 }
@@ -681,7 +831,10 @@ void WriteMetaProfile()
         for (BYTE upgrade = 0; upgrade < characterGlobalUpgradeCount; ++upgrade)
         {
             profile.characterLevel[character][upgrade]
-                = characterGlobalLevel[character][upgrade];
+                = character == piercerCharacter && upgrade == 2
+                    ? static_cast<BYTE>(pierceThroughStorageMarker
+                        | characterGlobalLevel[character][upgrade])
+                    : characterGlobalLevel[character][upgrade];
         }
     }
     HANDLE file = CreateFileW(metaFileName, GENERIC_WRITE, 0, nullptr,
@@ -716,11 +869,11 @@ LONG CharacterMaximumHP(BYTE character)
     LONG maximumHP = characterProfiles[character].maxHP;
     if (character == basicCharacter)
     {
-        maximumHP += characterGlobalLevel[character][1];
+        maximumHP += characterGlobalLevel[character][1] * combatScale;
     }
     else if (character == heavyCharacter)
     {
-        maximumHP += characterGlobalLevel[character][0] * 2;
+        maximumHP += characterGlobalLevel[character][0] * 2 * combatScale;
     }
     return maximumHP;
 }
@@ -732,13 +885,23 @@ float CharacterMoveSpeed(BYTE character)
     {
         level = characterGlobalLevel[character][1];
     }
-    else if (character == piercerCharacter || character == heavyCharacter
-        || character == rapidCharacter)
+    else if (character == heavyCharacter || character == rapidCharacter)
     {
         level = characterGlobalLevel[character][2];
     }
     return playerMoveSpeed * characterProfiles[character].moveScale
         * (1.0f + level * 0.05f);
+}
+
+LONG CharacterSlashHitCap(BYTE character)
+{
+    LONG hitCap = characterProfiles[character].slashHitCap;
+    if (character == piercerCharacter
+        && characterGlobalLevel[character][2] != 0)
+    {
+        ++hitCap;
+    }
+    return hitCap;
 }
 
 float CharacterSlashCooldown(BYTE character)
@@ -799,7 +962,11 @@ void ApplyFieldRecovery(LONG& playerHP, LONG maximumHP)
 {
     if (commonGlobalLevel[fieldRecoveryGlobalUpgrade] && playerHP < maximumHP)
     {
-        ++playerHP;
+        playerHP += healAmount;
+        if (playerHP > maximumHP)
+        {
+            playerHP = maximumHP;
+        }
     }
 }
 
@@ -881,7 +1048,7 @@ const wchar_t* CharacterGlobalUpgradeName(BYTE character, BYTE upgrade)
     {
         { L"DASH CAP", L"VITALITY", L"BALANCED EDGE" },
         { L"DASH CAP", L"LIGHT FRAME", L"LONG STEP" },
-        { L"DASH CAP", L"LONG POINT", L"SAFE DISTANCE" },
+        { L"DASH CAP", L"LONG POINT", L"PIERCE THROUGH" },
         { L"FORTIFY", L"WIDE SWING", L"STEADY BODY" },
         { L"DASH CAP", L"TEMPO", L"LIGHT BODY" }
     };
@@ -961,7 +1128,8 @@ bool ReadCheckpoint(SaveCheckpoint* checkpoint)
         && ReadFile(file, checkpoint, sizeof(*checkpoint), &bytesRead, nullptr)
         && bytesRead == sizeof(*checkpoint);
     CloseHandle(file);
-    return valid && checkpoint->magic == saveMagic && checkpoint->version == saveVersion
+    valid = valid && checkpoint->magic == saveMagic
+        && checkpoint->version == saveVersion
         && checkpoint->seed != 0 && checkpoint->room >= 0 && checkpoint->room < roomCount
         && checkpoint->playerHP > 0
         && checkpoint->runKills >= 0
@@ -970,12 +1138,18 @@ bool ReadCheckpoint(SaveCheckpoint* checkpoint)
         && (checkpoint->functionalFlags & ~7) == 0 && checkpoint->reroll <= 2
         && checkpoint->character < characterCount
         && checkpoint->dashCharges <= 4
-        && checkpoint->playerHP <= CharacterMaximumHP(checkpoint->character)
+        && checkpoint->playerHP
+            <= CharacterMaximumHP(checkpoint->character) / combatScale
         && checkpoint->moveStack + checkpoint->slashStack + checkpoint->dashStack
             + ((checkpoint->functionalFlags & silentDashUpgradeFlag) != 0)
             + ((checkpoint->functionalFlags & executeReachUpgradeFlag) != 0)
             + ((checkpoint->functionalFlags & fieldMedicUpgradeFlag) != 0)
             <= checkpoint->room / 2;
+    if (valid)
+    {
+        checkpoint->playerHP *= combatScale;
+    }
+    return valid;
 }
 
 void WriteCheckpoint(DWORD seed, LONG room, LONG playerHP, LONG runKills)
@@ -986,7 +1160,7 @@ void WriteCheckpoint(DWORD seed, LONG room, LONG playerHP, LONG runKills)
         saveVersion,
         seed,
         room,
-        playerHP,
+        playerHP / combatScale,
         runKills,
         moveUpgradeStack,
         slashUpgradeStack,
@@ -1112,7 +1286,12 @@ void ApplyFieldMedic(LONG& playerHP)
     if ((functionalUpgradeFlags & fieldMedicUpgradeFlag)
         && playerHP < CharacterMaximumHP(selectedCharacter))
     {
-        ++playerHP;
+        playerHP += healAmount;
+        LONG maximumHP = CharacterMaximumHP(selectedCharacter);
+        if (playerHP > maximumHP)
+        {
+            playerHP = maximumHP;
+        }
     }
 }
 
@@ -2833,7 +3012,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 SetTextColor(deviceContext, RGB(220, 220, 220));
                 DrawTextW(deviceContext, CharacterName(previewCharacter), -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                wsprintfW(titleText, L"HP %ld", CharacterMaximumHP(previewCharacter));
+                wsprintfW(titleText, L"HP %ld",
+                    CharacterMaximumHP(previewCharacter) / combatScale);
                 line.top = clientHeight * 93 / 180;
                 line.bottom = clientHeight * 108 / 180;
                 DrawTextW(deviceContext, titleText, -1, &line,
@@ -2849,6 +3029,26 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     static_cast<UINT>(characterDashCaps[previewCharacter]));
                 line.top = clientHeight * 125 / 180;
                 line.bottom = clientHeight * 140 / 180;
+                DrawTextW(deviceContext, titleText, -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                LONG previewDamage = characterProfiles[previewCharacter].slashDamage;
+                if (previewDamage % combatScale)
+                {
+                    wsprintfW(titleText, L"DMG %ld.%ld", previewDamage / combatScale,
+                        previewDamage % combatScale);
+                }
+                else
+                {
+                    wsprintfW(titleText, L"DMG %ld", previewDamage / combatScale);
+                }
+                line.top = clientHeight * 141 / 180;
+                line.bottom = clientHeight * 155 / 180;
+                DrawTextW(deviceContext, titleText, -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                wsprintfW(titleText, L"TARGET %ld",
+                    CharacterSlashHitCap(previewCharacter));
+                line.top = clientHeight * 156 / 180;
+                line.bottom = clientHeight * 170 / 180;
                 DrawTextW(deviceContext, titleText, -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                 LONG previewScale = clientHeight / 90;
@@ -3495,7 +3695,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 enemy.patrolReturnX = enemy.x;
                 enemy.searchRandomState = RoomRandom(runSeed, currentRoom)
                     ^ (0x13579BDFu + 0x9E3779B9u * enemyIndex);
-                enemy.hp = 3;
+                enemy.hp = enemyMaximumHP;
                 enemy.patrolRight = currentPatrolStartsRight[enemyIndex];
                 enemy.alive = true;
             }
@@ -3816,7 +4016,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         && playerY - playerHalfHeight < currentTrapBottom[trap]
                         && playerY + playerHalfHeight > currentTrapTop[trap])
                     {
-                        QueuePlayerDamage(1, pendingPlayerDamage);
+                        QueuePlayerDamage(playerDamageAmount, pendingPlayerDamage);
                         trapDamageCooldownRemaining = trapDamageCooldownDuration;
                         break;
                     }
@@ -4623,7 +4823,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                 && slashTop < enemyTop + enemyHeight
                                 && slashBottom > enemyTop;
                         if (enemy.alive && slashOverlap
-                            && slashHitCount < profile.slashHitCap)
+                            && slashHitCount < CharacterSlashHitCap(selectedCharacter))
                         {
                             ++slashHitCount;
                             enemy.hitRemaining = slashVisualDuration;
@@ -5238,6 +5438,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     }
                 }
             }
+
+            DrawEnemyLocators(enemies, currentEnemyCount, cameraX, cameraY);
 
             if (sequenceComplete)
             {
@@ -6020,10 +6222,10 @@ int main()
         -1.0f, 0.0f);
 
     LONG pendingDamage = 0;
-    QueuePlayerDamage(1, pendingDamage);
-    QueuePlayerDamage(2, pendingDamage);
-    QueuePlayerDamage(1, pendingDamage);
-    failures += pendingDamage != 2;
+    QueuePlayerDamage(10, pendingDamage);
+    QueuePlayerDamage(20, pendingDamage);
+    QueuePlayerDamage(10, pendingDamage);
+    failures += pendingDamage != 20;
 
     EnemyRuntime local[maxEnemyCount]{};
     for (LONG index = 0; index < maxEnemyCount; ++index)
@@ -6071,12 +6273,13 @@ int main()
         UpdateEnemyAttack(attacker, true, 108.0f, 100.0f, 0.016f,
             windupDamage);
     }
-    failures += windupDamage != 1;
+    failures += windupDamage != playerDamageAmount;
     attacker.attackCooldownRemaining = 0.0f;
     UpdateEnemyAttack(attacker, true, 108.0f, 100.0f, 0.016f, windupDamage);
     attacker.alive = false;
     UpdateEnemyAttack(attacker, true, 108.0f, 100.0f, 0.30f, windupDamage);
-    failures += attacker.attackWindupRemaining != 0.0f || windupDamage != 1;
+    failures += attacker.attackWindupRemaining != 0.0f
+        || windupDamage != playerDamageAmount;
 
 #ifdef DEAD_SIGNAL_B03_SOAK_VALIDATION
     EnemyRuntime soakEnemies[maxEnemyCount]{};
@@ -6110,7 +6313,7 @@ int main()
             soakFailures += soakEnemy.attackWindupRemaining < 0.0f
                 || soakEnemy.attackWindupRemaining > enemyAttackWindupDuration;
         }
-        soakFailures += soakDamage < 0 || soakDamage > 1;
+        soakFailures += soakDamage < 0 || soakDamage > playerDamageAmount;
         if ((soakUpdates & 255) == 0)
         {
             for (LONG index = 0; index < maxEnemyCount; ++index)
@@ -6146,7 +6349,7 @@ extern "C" __declspec(dllexport) void CALLBACK RunB03Validation(HWND, HINSTANCE,
 }
 #endif
 
-#ifdef DEAD_SIGNAL_B09_VALIDATION
+#ifdef DEAD_SIGNAL_B101_VALIDATION
 #if 0
 int main()
 {
@@ -6251,7 +6454,7 @@ int main()
     failures += EnterEnemyAlert(relay, 10, 5) != 1
         || alertEventCount != 2 || !alertEventActive;
 
-    constexpr LONG expectedHP[characterCount]{ 10, 8, 7, 14, 8 };
+    constexpr LONG expectedHP[characterCount]{ 100, 80, 70, 140, 80 };
     constexpr float expectedMoveSpeed[characterCount]
         { 60.0f, 72.0f, 57.0f, 45.0f, 66.0f };
     constexpr float expectedSlashCooldown[characterCount]
@@ -6751,13 +6954,13 @@ int main()
         || metaVersion != 2 || sizeof(LegacyMetaProfile) != 16
         || sizeof(MetaProfile) != 32;
 
-    constexpr LONG expectedHP[characterCount]{ 10, 8, 7, 14, 8 };
-    constexpr float expectedMove[characterCount]{ 60.0f, 72.0f, 57.0f, 45.0f, 66.0f };
+    constexpr LONG expectedHP[characterCount]{ 100, 80, 70, 140, 80 };
+    constexpr float expectedMove[characterCount]{ 60.0f, 68.0f, 57.0f, 45.0f, 66.0f };
     constexpr float expectedCooldown[characterCount]
         { 0.5f, 0.5f, 0.6f, 0.75f, 0.25f };
     constexpr LONG expectedReach[characterCount]{ 8, 7, 16, 6, 6 };
     constexpr LONG expectedWidth[characterCount]{ 8, 7, 3, 12, 6 };
-    constexpr LONG expectedDamage[characterCount]{ 1, 1, 1, 2, 1 };
+    constexpr LONG expectedDamage[characterCount]{ 10, 10, 15, 20, 10 };
     constexpr LONG expectedCap[characterCount]{ 3, 2, 1, 4, 2 };
     constexpr float expectedDash[characterCount]{ 32.0f, 35.2f, 32.0f, 28.8f, 32.0f };
     for (BYTE character = 0; character < characterCount; ++character)
@@ -6769,11 +6972,61 @@ int main()
             || CharacterSlashReach(character) != expectedReach[character]
             || CharacterSlashWidth(character) != expectedWidth[character]
             || profile.slashDamage != expectedDamage[character]
-            || profile.slashHitCap != expectedCap[character]
+            || CharacterSlashHitCap(character) != expectedCap[character]
             || fabsf(CharacterDashDistance(character) - expectedDash[character]) > 0.0001f
             || CharacterDashCapacity(character) != 1;
     }
     printf("section_base=%ld\n", failures);
+
+    constexpr LONG expectedKillHits[characterCount]{ 3, 3, 2, 2, 3 };
+    constexpr float expectedKillTime[characterCount]
+        { 1.0f, 1.0f, 0.6f, 0.75f, 0.5f };
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        LONG hp = enemyMaximumHP;
+        LONG hits = 0;
+        while (hp > 0)
+        {
+            hp -= characterProfiles[character].slashDamage;
+            ++hits;
+        }
+        failures += hits != expectedKillHits[character]
+            || fabsf((hits - 1) * CharacterSlashCooldown(character)
+                - expectedKillTime[character]) > 0.0001f;
+    }
+    failures += combatScale != 10 || enemyMaximumHP != 30
+        || playerDamageAmount != 10 || healAmount != 10
+        || RoundCombatRatio(164, 1, 10) != 16
+        || RoundCombatRatio(165, 1, 10) != 17
+        || RoundCombatRatio(166, 1, 10) != 17
+        || dashCooldownDuration != 1.5f;
+    selectedCharacter = basicCharacter;
+    for (BYTE stack = 0; stack < 3; ++stack)
+    {
+        dashUpgradeStack = stack;
+        float dashMove = 0.0f;
+        float dashSlash = 0.0f;
+        float dashRecharge = 0.0f;
+        RecalculateAugmentStats(dashMove, dashSlash, dashRecharge);
+        failures += fabsf(dashRecharge - (1.5f - stack * 0.3f)) > 0.0001f
+            || dashRecharge <= 0.0f;
+    }
+    currentDashMaxCharges = 4;
+    currentDashCharges = 0;
+    float validationRecharge = dashCooldownDuration;
+    UpdateDashRecharge(1.49f, dashCooldownDuration, validationRecharge);
+    failures += currentDashCharges != 0;
+    UpdateDashRecharge(0.02f, dashCooldownDuration, validationRecharge);
+    failures += currentDashCharges != 1
+        || fabsf(validationRecharge - dashCooldownDuration) > 0.0001f;
+    for (LONG charge = 1; charge < 4; ++charge)
+    {
+        UpdateDashRecharge(dashCooldownDuration, dashCooldownDuration,
+            validationRecharge);
+    }
+    failures += currentDashCharges != 4 || validationRecharge != 0.0f;
+    dashUpgradeStack = 0;
+    printf("section_damage_dash=%ld\n", failures);
 
     constexpr LONG cardinalX[4]{ 0, 0, -1, 1 };
     constexpr LONG cardinalY[4]{ -1, 1, 0, 0 };
@@ -6831,7 +7084,7 @@ int main()
     characterGlobalLevel[basicCharacter][1] = 2;
     characterGlobalLevel[basicCharacter][2] = 2;
     failures += CharacterDashCapacity(basicCharacter) != 3
-        || CharacterMaximumHP(basicCharacter) != 12
+        || CharacterMaximumHP(basicCharacter) != 120
         || CharacterSlashReach(basicCharacter) != 9
         || CharacterSlashWidth(basicCharacter) != 9
         || CharacterDashCapacity(rapidCharacter) != 1;
@@ -6839,21 +7092,22 @@ int main()
     characterGlobalLevel[mobilityCharacter][1] = 2;
     characterGlobalLevel[mobilityCharacter][2] = 2;
     failures += CharacterDashCapacity(mobilityCharacter) != 4
-        || fabsf(CharacterMoveSpeed(mobilityCharacter) - 79.2f) > 0.0001f
+        || fabsf(CharacterMoveSpeed(mobilityCharacter) - 74.8f) > 0.0001f
         || fabsf(CharacterDashDistance(mobilityCharacter) - 42.24f) > 0.0001f
-        || CharacterMaximumHP(mobilityCharacter) != 8;
+        || CharacterMaximumHP(mobilityCharacter) != 80;
     characterGlobalLevel[piercerCharacter][0] = 1;
     characterGlobalLevel[piercerCharacter][1] = 2;
-    characterGlobalLevel[piercerCharacter][2] = 2;
+    characterGlobalLevel[piercerCharacter][2] = 1;
     failures += CharacterDashCapacity(piercerCharacter) != 2
         || CharacterSlashReach(piercerCharacter) != 20
         || CharacterSlashWidth(piercerCharacter) != 3
-        || fabsf(CharacterMoveSpeed(piercerCharacter) - 62.7f) > 0.0001f;
+        || CharacterSlashHitCap(piercerCharacter) != 2
+        || fabsf(CharacterMoveSpeed(piercerCharacter) - 57.0f) > 0.0001f;
     characterGlobalLevel[heavyCharacter][0] = 2;
     characterGlobalLevel[heavyCharacter][1] = 2;
     characterGlobalLevel[heavyCharacter][2] = 2;
     failures += CharacterDashCapacity(heavyCharacter) != 1
-        || CharacterMaximumHP(heavyCharacter) != 18
+        || CharacterMaximumHP(heavyCharacter) != 180
         || CharacterSlashReach(heavyCharacter) != 6
         || CharacterSlashWidth(heavyCharacter) != 16
         || fabsf(CharacterMoveSpeed(heavyCharacter) - 49.5f) > 0.0001f;
@@ -6874,12 +7128,32 @@ int main()
     RecalculateAugmentStats(runMove, runSlash, runDash);
     failures += fabsf(runMove - 87.12f) > 0.0002f
         || fabsf(runSlash - 0.12f) > 0.0001f || runSlash <= 0.0f
-        || fabsf(runDash - 0.6f) > 0.0001f;
-    LONG recoveryHP = 7;
+        || fabsf(runDash - 0.9f) > 0.0001f;
+    LONG recoveryHP = 70;
     commonGlobalLevel[fieldRecoveryGlobalUpgrade] = 1;
-    ApplyFieldRecovery(recoveryHP, 9);
-    ApplyFieldRecovery(recoveryHP, 8);
-    failures += recoveryHP != 8;
+    ApplyFieldRecovery(recoveryHP, 90);
+    ApplyFieldRecovery(recoveryHP, 80);
+    failures += recoveryHP != 80;
+    LONG recoveryClampHP = 75;
+    ApplyFieldRecovery(recoveryClampHP, 80);
+    failures += recoveryClampHP != 80;
+    selectedCharacter = basicCharacter;
+    functionalUpgradeFlags = fieldMedicUpgradeFlag;
+    LONG medicHP = 100;
+    ApplyFieldMedic(medicHP);
+    ApplyFieldMedic(medicHP);
+    ApplyFieldMedic(medicHP);
+    failures += medicHP != 120;
+    medicHP = 115;
+    ApplyFieldMedic(medicHP);
+    failures += medicHP != 120;
+    LONG highestDamage = 0;
+    QueuePlayerDamage(10, highestDamage);
+    QueuePlayerDamage(20, highestDamage);
+    QueuePlayerDamage(10, highestDamage);
+    LONG damageTestHP = 30 - highestDamage;
+    failures += highestDamage != 20 || damageTestHP != 10
+        || 70 * 12 / 100 != 7 * 12 / 10;
     commonGlobalLevel[runRerollGlobalUpgrade] = 0;
     failures += CurrentRunRerollCapacity() != 1;
     commonGlobalLevel[runRerollGlobalUpgrade] = 1;
@@ -6889,8 +7163,8 @@ int main()
     characterGlobalLevel[basicCharacter][0] = 2;
     characterGlobalLevel[basicCharacter][1] = 2;
     characterGlobalLevel[basicCharacter][2] = 2;
-    failures += CharacterMoveSpeed(mobilityCharacter) != 72.0f
-        || CharacterMaximumHP(mobilityCharacter) != 8
+    failures += CharacterMoveSpeed(mobilityCharacter) != 68.0f
+        || CharacterMaximumHP(mobilityCharacter) != 80
         || CharacterDashCapacity(mobilityCharacter) != 1;
     characterGlobalLevel[mobilityCharacter][0] = 3;
     characterGlobalLevel[mobilityCharacter][1] = 2;
@@ -6899,7 +7173,7 @@ int main()
         || CharacterSlashCooldown(rapidCharacter) != 0.25f
         || CharacterDashCapacity(rapidCharacter) != 1;
     characterGlobalLevel[piercerCharacter][1] = 2;
-    characterGlobalLevel[piercerCharacter][2] = 2;
+    characterGlobalLevel[piercerCharacter][2] = 1;
     characterGlobalLevel[heavyCharacter][0] = 2;
     characterGlobalLevel[heavyCharacter][1] = 2;
     characterGlobalLevel[heavyCharacter][2] = 2;
@@ -6911,7 +7185,7 @@ int main()
     dashUpgradeStack = 0;
     functionalUpgradeFlags = 0;
     RecalculateAugmentStats(runMove, runSlash, runDash);
-    failures += fabsf(runMove - 87.12f) > 0.0002f
+    failures += fabsf(runMove - 82.28f) > 0.0002f
         || fabsf(runSlash - 0.5f) > 0.0001f
         || fabsf(CharacterDashDistance(mobilityCharacter) - 42.24f) > 0.0001f;
     selectedCharacter = piercerCharacter;
@@ -6960,8 +7234,43 @@ int main()
         || unlockedCharacterMask != 0x1f || audioEnabled
         || commonGlobalLevel[2] != 2
         || characterGlobalLevel[mobilityCharacter][0] != 3
-        || characterGlobalLevel[heavyCharacter][0] != 2;
+        || characterGlobalLevel[heavyCharacter][0] != 2
+        || characterGlobalLevel[piercerCharacter][2] != 1;
     printf("section_meta_v2=%ld\n", failures);
+
+    MetaProfile b09Profile{};
+    b09Profile.magic = metaMagic;
+    b09Profile.version = metaVersion;
+    b09Profile.coin = 44;
+    b09Profile.unlockedMask = 0x1f;
+    b09Profile.audioSetting = 1;
+    b09Profile.characterLevel[piercerCharacter][2] = 2;
+    HANDLE b09File = CreateFileW(metaFileName, GENERIC_WRITE, 0, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    DWORD b09Transferred = 0;
+    if (b09File != INVALID_HANDLE_VALUE)
+    {
+        WriteFile(b09File, &b09Profile, sizeof(b09Profile), &b09Transferred, nullptr);
+        CloseHandle(b09File);
+    }
+    ResetMetaProfile();
+    failures += b09File == INVALID_HANDLE_VALUE
+        || b09Transferred != sizeof(b09Profile) || !ReadMetaProfile()
+        || globalCoin != 44 || characterGlobalLevel[piercerCharacter][2] != 0;
+    MetaProfile rewrittenProfile{};
+    b09File = CreateFileW(metaFileName, GENERIC_READ, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    b09Transferred = 0;
+    if (b09File != INVALID_HANDLE_VALUE)
+    {
+        ReadFile(b09File, &rewrittenProfile, sizeof(rewrittenProfile),
+            &b09Transferred, nullptr);
+        CloseHandle(b09File);
+    }
+    failures += b09Transferred != sizeof(rewrittenProfile)
+        || rewrittenProfile.characterLevel[piercerCharacter][2]
+            != pierceThroughStorageMarker;
+    printf("section_b09_slot_migration=%ld\n", failures);
 
     LegacyMetaProfile legacy
         { metaMagic, 1, 77, 0x0b, 2, 2, 0 };
@@ -7020,6 +7329,13 @@ int main()
         || characterGlobalLevel[basicCharacter][0] != 0
         || characterGlobalLevel[mobilityCharacter][0] != 1
         || globalCoin != 55;
+    characterGlobalLevel[piercerCharacter][2] = 0;
+    failures += !BuyCharacterGlobalUpgrade(piercerCharacter, 2)
+        || BuyCharacterGlobalUpgrade(piercerCharacter, 2)
+        || CharacterSlashHitCap(piercerCharacter) != 2
+        || globalCoin != 50
+        || lstrcmpW(CharacterGlobalUpgradeName(piercerCharacter, 2),
+            L"PIERCE THROUGH") != 0;
     printf("section_purchase=%ld\n", failures);
 
     commonGlobalLevel[coinSenseGlobalUpgrade] = 0;
@@ -7093,14 +7409,44 @@ int main()
         rerollUsed = 2;
         currentDashCharges = CharacterDashCapacity(character);
         alertEventCount = 7;
-        WriteCheckpoint(runSeed, currentRoom, CharacterMaximumHP(character), 11);
+        LONG savedHP = CharacterMaximumHP(character) - combatScale;
+        WriteCheckpoint(runSeed, currentRoom, savedHP, 11);
+        SaveCheckpoint diskCheckpoint{};
+        HANDLE checkpointFile = CreateFileW(saveFileName, GENERIC_READ,
+            FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        DWORD checkpointBytes = 0;
+        if (checkpointFile != INVALID_HANDLE_VALUE)
+        {
+            ReadFile(checkpointFile, &diskCheckpoint, sizeof(diskCheckpoint),
+                &checkpointBytes, nullptr);
+            CloseHandle(checkpointFile);
+        }
         SaveCheckpoint checkpoint{};
-        failures += !ReadCheckpoint(&checkpoint)
+        failures += checkpointBytes != sizeof(diskCheckpoint)
+            || diskCheckpoint.playerHP != savedHP / combatScale
+            || !ReadCheckpoint(&checkpoint)
             || checkpoint.version != 8 || checkpoint.character != character
             || checkpoint.reroll != 2 || checkpoint.alertEvents != 7
-            || checkpoint.playerHP != CharacterMaximumHP(character)
+            || checkpoint.playerHP != savedHP
             || checkpoint.dashCharges != currentDashCharges;
     }
+    SaveCheckpoint existingV8
+    {
+        saveMagic, saveVersion, 1234, 0, 7, 0,
+        0, 0, 0, 0, 0, basicCharacter, 1, 0
+    };
+    HANDLE checkpointFile = CreateFileW(saveFileName, GENERIC_WRITE, 0, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    DWORD checkpointBytes = 0;
+    if (checkpointFile != INVALID_HANDLE_VALUE)
+    {
+        WriteFile(checkpointFile, &existingV8, sizeof(existingV8),
+            &checkpointBytes, nullptr);
+        CloseHandle(checkpointFile);
+    }
+    SaveCheckpoint loadedV8{};
+    failures += checkpointBytes != sizeof(existingV8)
+        || !ReadCheckpoint(&loadedV8) || loadedV8.playerHP != 70;
     printf("section_save=%ld\n", failures);
 
     constexpr BYTE expectedDashByLevel[characterCount][4]
@@ -7176,26 +7522,83 @@ int main()
     newGameRequested = false;
     printf("section_ui=%ld\n", failures);
 
+    EnemyRuntime locatorEnemies[5]{};
+    for (LONG enemyIndex = 0; enemyIndex < 5; ++enemyIndex)
+    {
+        locatorEnemies[enemyIndex].alive = true;
+        locatorEnemies[enemyIndex].role = static_cast<BYTE>(enemyIndex % 5);
+    }
+    locatorEnemies[0].x = 100.0f;
+    locatorEnemies[0].y = 100.0f;
+    locatorEnemies[1].x = 400.0f;
+    locatorEnemies[1].y = 90.0f;
+    locatorEnemies[2].x = -100.0f;
+    locatorEnemies[2].y = 90.0f;
+    locatorEnemies[3].x = 160.0f;
+    locatorEnemies[3].y = 300.0f;
+    locatorEnemies[4].alive = false;
+    roomSizeStage = 2;
+    currentEnemyRemaining = 5;
+    failures += DrawEnemyLocators(locatorEnemies, 5, 0, 0) != 0;
+    roomSizeStage = 3;
+    currentEnemyRemaining = 6;
+    failures += DrawEnemyLocators(locatorEnemies, 5, 0, 0) != 0;
+    currentEnemyRemaining = 5;
+    for (LONG size = 3; size <= 5; ++size)
+    {
+        roomSizeStage = size;
+        failures += DrawEnemyLocators(locatorEnemies, 5, 0, 0) != 3;
+    }
+    failures += !EnemyVisibleInViewport(locatorEnemies[0], 0, 0)
+        || EnemyVisibleInViewport(locatorEnemies[1], 0, 0)
+        || !EnemyVisibleInViewport(locatorEnemies[1], 100, 0);
+    for (LONG enemyIndex = 0; enemyIndex < 5; ++enemyIndex)
+    {
+        locatorEnemies[enemyIndex].alive = true;
+        locatorEnemies[enemyIndex].x = 400.0f + enemyIndex * 20.0f;
+        locatorEnemies[enemyIndex].y = 200.0f + enemyIndex * 10.0f;
+    }
+    failures += DrawEnemyLocators(locatorEnemies, 5, 0, 0) != 5;
+    currentEnemyRemaining = 1;
+    failures += DrawEnemyLocators(locatorEnemies, 1, 0, 0) != 1;
+    locatorEnemies[0].alive = false;
+    currentEnemyRemaining = 0;
+    failures += DrawEnemyLocators(locatorEnemies, 1, 0, 0) != 0;
+    locatorEnemies[0].alive = true;
+    locatorEnemies[0].role = pressureEnemyRole;
+    currentEnemyRemaining = 1;
+    failures += DrawEnemyLocators(locatorEnemies, 1, 0, 0) != 0;
+    printf("section_locator=%ld\n", failures);
+
+    ResetMetaProfile();
     for (BYTE character = 0; character < characterCount; ++character)
     {
         LONG hitTargets = 0;
         LONG appliedDamage = 0;
         for (LONG enemy = 0; enemy < maxEnemyCount; ++enemy)
         {
-            if (hitTargets < characterProfiles[character].slashHitCap)
+            if (hitTargets < CharacterSlashHitCap(character))
             {
                 ++hitTargets;
                 appliedDamage += characterProfiles[character].slashDamage;
             }
         }
         failures += appliedDamage != characterProfiles[character].slashDamage
-            * characterProfiles[character].slashHitCap;
+            * CharacterSlashHitCap(character);
     }
+    characterGlobalLevel[piercerCharacter][2] = 1;
+    failures += CharacterSlashHitCap(piercerCharacter) != 2;
+    printf("section_multitarget=%ld\n", failures);
 
-#ifdef DEAD_SIGNAL_B09_SOAK_VALIDATION
+#ifdef DEAD_SIGNAL_B101_SOAK_VALIDATION
     ULONGLONG soakStart = GetTickCount64();
     ULONGLONG soakUpdates = 0;
     LONG soakFailures = 0;
+    EnemyRuntime soakLocator{};
+    soakLocator.alive = true;
+    soakLocator.role = patrollerEnemyRole;
+    soakLocator.x = 400.0f;
+    soakLocator.y = 90.0f;
     while (GetTickCount64() - soakStart < 90000)
     {
         BYTE character = static_cast<BYTE>(soakUpdates % characterCount);
@@ -7210,9 +7613,15 @@ int main()
         slashUpgradeStack = static_cast<BYTE>((soakUpdates / 3) % 3);
         dashUpgradeStack = static_cast<BYTE>((soakUpdates / 9) % 3);
         RecalculateAugmentStats(runMove, runSlash, runDash);
+        roomSizeStage = 3 + static_cast<LONG>(soakUpdates % 3);
+        currentEnemyRemaining = (soakUpdates & 1) ? 5 : 6;
+        LONG locatorCount = DrawEnemyLocators(&soakLocator, 1, 0, 0);
         soakFailures += runMove <= 0.0f || runSlash <= 0.0f || runDash <= 0.0f
             || CharacterDashCapacity(character) > characterDashCaps[character]
-            || CharacterMaximumHP(character) < expectedHP[character];
+            || CharacterMaximumHP(character) < expectedHP[character]
+            || CharacterSlashHitCap(character) < characterProfiles[character].slashHitCap
+            || CharacterSlashHitCap(character) > characterProfiles[character].slashHitCap + 1
+            || locatorCount != (currentEnemyRemaining == 5 ? 1 : 0);
         ++soakUpdates;
     }
     failures += soakFailures;
@@ -7222,7 +7631,7 @@ int main()
 
     DeleteFileW(metaFileName);
     DeleteFileW(saveFileName);
-    printf("b09_failures=%ld alert=%u earned=%ld save=%lu legacy=%lu meta=%lu\n",
+    printf("b101_failures=%ld alert=%u earned=%ld save=%lu legacy=%lu meta=%lu\n",
         failures, alertEventCount, runEarnedCoin,
         static_cast<unsigned long>(sizeof(SaveCheckpoint)),
         static_cast<unsigned long>(sizeof(LegacyMetaProfile)),
@@ -7230,11 +7639,11 @@ int main()
     return failures;
 }
 
-extern "C" __declspec(dllexport) void CALLBACK RunB09Validation(HWND, HINSTANCE,
+extern "C" __declspec(dllexport) void CALLBACK RunB101Validation(HWND, HINSTANCE,
     LPSTR, int)
 {
     FILE* output = nullptr;
-    freopen_s(&output, "B09Validation.txt", "w", stdout);
+    freopen_s(&output, "B101Validation.txt", "w", stdout);
     main();
     if (output)
     {
