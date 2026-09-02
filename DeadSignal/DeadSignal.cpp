@@ -2,9 +2,10 @@
 #include <timeapi.h>
 #include <math.h>
 #if defined(DEAD_SIGNAL_B01_VALIDATION) || defined(DEAD_SIGNAL_B02_VALIDATION) \
-    || defined(DEAD_SIGNAL_B03_VALIDATION)
+    || defined(DEAD_SIGNAL_B03_VALIDATION) || defined(DEAD_SIGNAL_B04_VALIDATION)
 #include <stdio.h>
 #endif
+
 
 #pragma comment(lib, "winmm.lib")
 
@@ -85,6 +86,7 @@ constexpr float hunterReacquireRangeSquared = 70.0f * 70.0f;
 constexpr float listenerMovementHearingRangeSquared = 80.0f * 80.0f;
 constexpr float listenerDashHearingRangeSquared = 120.0f * 120.0f;
 constexpr float slashLocalAlertRangeSquared = 40.0f * 40.0f;
+constexpr float listenerAlertRangeSquared = 30.0f * 30.0f;
 constexpr float spinnerRotationSpeed = 1.04719755f;
 constexpr float enemyFacingTurnSpeed = 2.0943951f;
 constexpr float enemyScanAngle = 0.47996554f;
@@ -189,6 +191,8 @@ bool loadGameRequested = false;
 LONG currentRoom = 0;
 DWORD runSeed = 0;
 LONG runKillCount = 0;
+BYTE alertEventCount = 0;
+bool alertEventActive = false;
 LONG currentEnemyCount = 2;
 LONG currentEnemyRemaining = 2;
 LONG currentRoomType = openRoomType;
@@ -304,7 +308,7 @@ struct EnemyRuntime
     bool alive;
 };
 
-bool EnterEnemyAlert(EnemyRuntime& enemy)
+bool SetEnemyAlertState(EnemyRuntime& enemy)
 {
     if (!enemy.alive || enemy.alert)
     {
@@ -324,25 +328,66 @@ bool EnterEnemyAlert(EnemyRuntime& enemy)
     return true;
 }
 
-LONG PropagateListenerAlert(EnemyRuntime* enemies, LONG enemyCount)
+void BeginAlertEvent()
 {
-    LONG entered = 0;
-    for (LONG enemyIndex = 0; enemyIndex < enemyCount; ++enemyIndex)
+    if (!alertEventActive)
     {
-        BYTE role = enemies[enemyIndex].role;
-        if (role == patrollerEnemyRole || role == hunterEnemyRole
-            || role == listenerEnemyRole)
+        if (alertEventCount != 0xff)
         {
-            entered += EnterEnemyAlert(enemies[enemyIndex]);
+            ++alertEventCount;
+        }
+        alertEventActive = true;
+    }
+}
+
+LONG EnterEnemyAlert(EnemyRuntime* enemies, LONG enemyCount, LONG firstEnemy)
+{
+    if (firstEnemy < 0 || firstEnemy >= enemyCount
+        || !SetEnemyAlertState(enemies[firstEnemy]))
+    {
+        return 0;
+    }
+
+    BeginAlertEvent();
+    LONG entered = 1;
+    BYTE listenerQueue[maxEnemyCount]{};
+    LONG queueRead = 0;
+    LONG queueCount = 0;
+    if (enemies[firstEnemy].role == listenerEnemyRole)
+    {
+        listenerQueue[queueCount++] = static_cast<BYTE>(firstEnemy);
+    }
+
+    while (queueRead < queueCount)
+    {
+        EnemyRuntime& listener = enemies[listenerQueue[queueRead++]];
+        for (LONG enemyIndex = 0; enemyIndex < enemyCount; ++enemyIndex)
+        {
+            EnemyRuntime& enemy = enemies[enemyIndex];
+            BYTE role = enemy.role;
+            float differenceX = enemy.x - listener.x;
+            float differenceY = enemy.y - listener.y;
+            if ((role == patrollerEnemyRole || role == hunterEnemyRole
+                    || role == listenerEnemyRole)
+                && differenceX * differenceX + differenceY * differenceY
+                    <= listenerAlertRangeSquared
+                && SetEnemyAlertState(enemy))
+            {
+                ++entered;
+                if (role == listenerEnemyRole && queueCount < maxEnemyCount)
+                {
+                    listenerQueue[queueCount++] = static_cast<BYTE>(enemyIndex);
+                }
+            }
         }
     }
     return entered;
 }
 
-bool AlertEnemiesNear(EnemyRuntime* enemies, LONG enemyCount, float centerX,
+LONG AlertEnemiesNear(EnemyRuntime* enemies, LONG enemyCount, float centerX,
     float centerY)
 {
-    bool listenerEntered = false;
+    LONG entered = 0;
     for (LONG enemyIndex = 0; enemyIndex < enemyCount; ++enemyIndex)
     {
         float differenceX = enemies[enemyIndex].x - centerX;
@@ -350,11 +395,28 @@ bool AlertEnemiesNear(EnemyRuntime* enemies, LONG enemyCount, float centerX,
         if (differenceX * differenceX + differenceY * differenceY
             <= slashLocalAlertRangeSquared)
         {
-            bool entered = EnterEnemyAlert(enemies[enemyIndex]);
-            listenerEntered |= entered && enemies[enemyIndex].role == listenerEnemyRole;
+            entered += EnterEnemyAlert(enemies, enemyCount, enemyIndex);
         }
     }
-    return listenerEntered;
+    return entered;
+}
+
+void UpdateAlertEventState(EnemyRuntime* enemies, LONG enemyCount)
+{
+    if (!alertEventActive)
+    {
+        return;
+    }
+    for (LONG enemyIndex = 0; enemyIndex < enemyCount; ++enemyIndex)
+    {
+        EnemyRuntime& enemy = enemies[enemyIndex];
+        if (enemy.alive && (enemy.alert || enemy.detectionProgress > 0.0f
+            || enemy.heardSuspicion))
+        {
+            return;
+        }
+    }
+    alertEventActive = false;
 }
 
 bool PointInsideVisionSector(float originX, float originY, float facingX,
@@ -448,7 +510,7 @@ struct SaveCheckpoint
     BYTE reroll;
     BYTE character;
     BYTE dashCharges;
-    BYTE reserved;
+    BYTE alertEvents;
 };
 
 static_assert(sizeof(SaveCheckpoint) == 32);
@@ -587,6 +649,10 @@ void GrantRunCoin(bool cleared)
         return;
     }
     LONG reward = runKillCount + (cleared ? runClearCoinBonus : 0);
+    if (!alertEventCount)
+    {
+        reward *= 2;
+    }
     globalCoin = reward > 0x7fffffff - globalCoin
         ? 0x7fffffff : globalCoin + reward;
     runRewardGranted = true;
@@ -615,7 +681,7 @@ bool ReadCheckpoint(SaveCheckpoint* checkpoint)
         && checkpoint->dashStack <= 2
         && (checkpoint->functionalFlags & ~7) == 0 && checkpoint->reroll <= 1
         && checkpoint->character < characterCount
-        && checkpoint->dashCharges <= 3 && checkpoint->reserved == 0
+        && checkpoint->dashCharges <= 3
         && checkpoint->playerHP <= characterProfiles[checkpoint->character].maxHP
         && checkpoint->moveStack + checkpoint->slashStack + checkpoint->dashStack
             + ((checkpoint->functionalFlags & silentDashUpgradeFlag) != 0)
@@ -641,7 +707,7 @@ void WriteCheckpoint(DWORD seed, LONG room, LONG playerHP, LONG runKills)
         static_cast<BYTE>(rerollUsed),
         selectedCharacter,
         currentDashCharges,
-        0
+        alertEventCount
     };
     HANDLE file = CreateFileW(saveFileName, GENERIC_WRITE, 0, nullptr,
         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -910,6 +976,12 @@ void SetRoomSizeStage(LONG stage)
     navigationNodeCount = navigationColumns * navigationRows;
 }
 
+LONG ListenerTargetForRoomSize(LONG stage, LONG enemyCount)
+{
+    LONG target = stage <= 2 ? 2 : (stage == 3 ? 3 : 4);
+    return target < enemyCount ? target : enemyCount;
+}
+
 bool WallBlocksSegment(float startX, float startY, float endX, float endY);
 bool RoomLayoutConnected();
 
@@ -989,10 +1061,14 @@ void SetupCurrentRoom()
     SetRoomSizeStage(sizeStage);
 
     DWORD roleState = RoomRandom(runSeed, currentRoom) ^ 0xD1B54A35u;
+    LONG listenerTarget = ListenerTargetForRoomSize(roomSizeStage,
+        currentEnemyCount);
+    constexpr BYTE remainingRoles[4]
+        = { patrollerEnemyRole, watcherEnemyRole, hunterEnemyRole, spinnerEnemyRole };
     for (LONG enemy = 0; enemy < currentEnemyCount; ++enemy)
     {
-        currentEnemyRole[enemy]
-            = static_cast<BYTE>(NextRoomRandom(roleState) % enemyRoleCount);
+        currentEnemyRole[enemy] = enemy < listenerTarget ? listenerEnemyRole
+            : remainingRoles[NextRoomRandom(roleState) % 4];
     }
 
     currentLayoutVariant = NextRoomRandom(state) >> 31;
@@ -2849,6 +2925,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     ? dashCooldownDurationCurrent : 0.0f;
                 rerollUsed = checkpoint.reroll != 0;
                 runKillCount = checkpoint.runKills;
+                alertEventCount = checkpoint.alertEvents;
+                alertEventActive = false;
                 runRewardGranted = false;
                 upgradeOptionA = 0;
                 upgradeOptionB = 1;
@@ -2891,6 +2969,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 dashCooldownRemaining = 0.0f;
                 rerollUsed = false;
                 runKillCount = 0;
+                alertEventCount = 0;
+                alertEventActive = false;
                 runRewardGranted = false;
                 upgradeOptionA = 0;
                 upgradeOptionB = 1;
@@ -2900,6 +2980,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 ++currentRoom;
             }
             SetupCurrentRoom();
+            alertEventActive = false;
             sequenceComplete = false;
             runEndState = 0;
             runEndSelection = 0;
@@ -3384,11 +3465,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     if (detectionProgress >= 1.0f)
                     {
                         detectionProgress = 1.0f;
-                        bool enteredAlert = EnterEnemyAlert(enemy);
-                        if (enteredAlert && enemy.role == listenerEnemyRole)
-                        {
-                            PropagateListenerAlert(enemies, currentEnemyCount);
-                        }
+                        EnterEnemyAlert(enemies, currentEnemyCount, enemyIndex);
                     }
                 }
                 else if (detectionProgress > 0.0f)
@@ -4060,7 +4137,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             float hitX = enemy.x;
                             float hitY = enemy.y;
                             enemy.hp -= profile.slashDamage;
-                            bool listenerEntered = false;
                             if (enemy.hp <= 0)
                             {
                                 enemy.hp = 0;
@@ -4079,16 +4155,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             }
                             else
                             {
-                                bool entered = EnterEnemyAlert(enemy);
-                                listenerEntered = entered
-                                    && enemy.role == listenerEnemyRole;
+                                EnterEnemyAlert(enemies, currentEnemyCount,
+                                    enemyIndex);
                             }
-                            listenerEntered |= AlertEnemiesNear(enemies,
-                                currentEnemyCount, hitX, hitY);
-                            if (listenerEntered)
-                            {
-                                PropagateListenerAlert(enemies, currentEnemyCount);
-                            }
+                            AlertEnemiesNear(enemies, currentEnemyCount, hitX, hitY);
                         }
                     }
                 }
@@ -4164,6 +4234,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
                 executeRequested = false;
             }
+
+            UpdateAlertEventState(enemies, currentEnemyCount);
 
             for (LONG enemyIndex = 0; enemyIndex < currentEnemyCount && playerAlive;
                 ++enemyIndex)
@@ -4638,18 +4710,38 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
             }
 
+            LONG dashIndicatorWidth = currentDashMaxCharges * 4 - 1;
+            LONG dashIndicatorLeft = healthBarLeft
+                + (healthBarWidth - dashIndicatorWidth) / 2;
+            LONG dashIndicatorTop = healthBarTop - 4;
+            if (dashIndicatorLeft < 0)
+            {
+                dashIndicatorLeft = 0;
+            }
+            else if (dashIndicatorLeft + dashIndicatorWidth > framebufferWidth)
+            {
+                dashIndicatorLeft = framebufferWidth - dashIndicatorWidth;
+            }
+            if (dashIndicatorTop < 0)
+            {
+                dashIndicatorTop = drawingTop + playerHeight + 1;
+            }
             for (LONG charge = 0; charge < currentDashMaxCharges; ++charge)
             {
-                for (LONG y = 16; y < 19; ++y)
+                for (LONG y = 0; y < 3; ++y)
                 {
-                    for (LONG x = 8 + charge * 5; x < 11 + charge * 5; ++x)
+                    for (LONG x = 0; x < 3; ++x)
                     {
-                        bool filled = charge < currentDashCharges;
-                        bool outline = x == 8 + charge * 5 || x == 10 + charge * 5
-                            || y == 16 || y == 18;
-                        framebuffer[y * framebufferWidth + x]
-                            = filled ? 0x0080FFFF
-                                : (outline ? 0x00405060 : 0x00101018);
+                        LONG pixelX = dashIndicatorLeft + charge * 4 + x;
+                        LONG pixelY = dashIndicatorTop + y;
+                        if (pixelY >= 0 && pixelY < framebufferHeight)
+                        {
+                            bool filled = charge < currentDashCharges;
+                            bool outline = x == 0 || x == 2 || y == 0 || y == 2;
+                            framebuffer[pixelY * framebufferWidth + pixelX]
+                                = filled ? 0x0080FFFF
+                                    : (outline ? 0x00405060 : 0x00101018);
+                        }
                     }
                 }
             }
@@ -4818,6 +4910,8 @@ int main()
     unsigned long long wrongRoomSize = 0;
     unsigned long long enemyCapacityOverflow = 0;
     unsigned long long invalidRole = 0;
+    unsigned long long listenerCountFailure = 0;
+    unsigned long long listenerSpawnOverlap = 0;
     unsigned long long deterministicMismatch = 0;
     unsigned long long playerOverlap = 0;
     unsigned long long enemyOverlap = 0;
@@ -4890,6 +4984,7 @@ int main()
                 || currentTrapCount != expectedTraps;
 
             bool roomHasDuplicateRole = false;
+            LONG generatedListenerCount = 0;
             for (LONG enemy = 0; enemy < currentEnemyCount; ++enemy)
             {
                 BYTE role = currentEnemyRole[enemy];
@@ -4900,12 +4995,15 @@ int main()
                 else
                 {
                     roleSeen[role] = true;
+                    generatedListenerCount += role == listenerEnemyRole;
                     for (LONG other = 0; other < enemy; ++other)
                     {
                         roomHasDuplicateRole |= role == currentEnemyRole[other];
                     }
                 }
             }
+            listenerCountFailure += generatedListenerCount
+                != ListenerTargetForRoomSize(roomSizeStage, currentEnemyCount);
             duplicateRoleSeen |= roomHasDuplicateRole;
 
             MarkValidationReachable();
@@ -5020,11 +5118,15 @@ int main()
                 unreachableEnemy += !navigationState[node];
                 for (LONG other = enemy + 1; other < currentEnemyCount; ++other)
                 {
-                    enemyOverlap += ValidationOverlap(left, top, right, bottom,
+                    bool overlaps = ValidationOverlap(left, top, right, bottom,
                         currentEnemyStartX[other] - enemyHalfWidth,
                         currentEnemyStartY[other] - enemyHalfHeight,
                         currentEnemyStartX[other] + enemyHalfWidth,
                         currentEnemyStartY[other] + enemyHalfHeight);
+                    enemyOverlap += overlaps;
+                    listenerSpawnOverlap += overlaps
+                        && currentEnemyRole[enemy] == listenerEnemyRole
+                        && currentEnemyRole[other] == listenerEnemyRole;
                 }
             }
 
@@ -5201,12 +5303,12 @@ int main()
     }
     mazeOrientationFailure = mazeOrientationMask != 3;
 
-    printf("rooms=1200000 wrong_enemy=%llu wrong_size=%llu capacity=%llu invalid_role=%llu determinism=%llu\n",
+    printf("rooms=1200000 wrong_enemy=%llu wrong_size=%llu capacity=%llu invalid_role=%llu listener_count=%llu determinism=%llu\n",
         wrongEnemyCount, wrongRoomSize, enemyCapacityOverflow, invalidRole,
-        deterministicMismatch);
-    printf("player_overlap=%llu enemy_overlap=%llu wall_invalid=%llu trap_overlap=%llu exit_overlap=%llu pressure_invalid=%llu\n",
-        playerOverlap, enemyOverlap, wallOverlap, trapOverlap, exitOverlap,
-        pressureInvalidSpawn);
+        listenerCountFailure, deterministicMismatch);
+    printf("player_overlap=%llu enemy_overlap=%llu listener_overlap=%llu wall_invalid=%llu trap_overlap=%llu exit_overlap=%llu pressure_invalid=%llu\n",
+        playerOverlap, enemyOverlap, listenerSpawnOverlap, wallOverlap, trapOverlap,
+        exitOverlap, pressureInvalidSpawn);
     printf("wall_trap=%llu exit_blocked=%llu player_exit_unreachable=%llu enemy_unreachable=%llu density=%llu\n",
         wallTrapOverlap, exitBlocked, unreachablePlayerExit, unreachableEnemy,
         densityCountFailure);
@@ -5218,7 +5320,8 @@ int main()
         invalidExitSide, missingExitSide, duplicateRoleSeen, missingRole,
         upgradeCompatibilityFailure, runFlowFailure);
     return wrongEnemyCount || wrongRoomSize || enemyCapacityOverflow || invalidRole
-        || deterministicMismatch || playerOverlap || enemyOverlap || wallOverlap
+        || listenerCountFailure || deterministicMismatch || playerOverlap
+        || enemyOverlap || listenerSpawnOverlap || wallOverlap
         || trapOverlap || exitOverlap || pressureInvalidSpawn || wallTrapOverlap
         || exitBlocked || unreachablePlayerExit || unreachableEnemy || densityCountFailure
         || mazeQuadrantCount || mazeQuadrantBoundsFailure || mazeThicknessFailure
@@ -5265,12 +5368,12 @@ int main()
     transition.alertLostElapsed = 3.0f;
     transition.heardSuspicion = true;
     transition.patrolTurnRemaining = 12.0f;
-    failures += !EnterEnemyAlert(transition) || !transition.alert
+    failures += !SetEnemyAlertState(transition) || !transition.alert
         || transition.detectionProgress != 1.0f || transition.searchTargetValid
         || transition.searchPathCount || transition.searchPathIndex
         || transition.scanning || transition.alertLostElapsed != 0.0f
         || transition.heardSuspicion || transition.patrolTurnRemaining != 0.0f;
-    failures += EnterEnemyAlert(transition);
+    failures += SetEnemyAlertState(transition);
 
     EnemyRuntime propagation[maxEnemyCount]{};
     LONG expectedPropagation = 0;
@@ -5283,7 +5386,10 @@ int main()
             && (role == patrollerEnemyRole || role == hunterEnemyRole
                 || role == listenerEnemyRole);
     }
-    LONG firstPropagation = PropagateListenerAlert(propagation, maxEnemyCount);
+    alertEventCount = 0;
+    alertEventActive = false;
+    LONG firstPropagation = EnterEnemyAlert(propagation, maxEnemyCount,
+        listenerEnemyRole);
     for (LONG index = 0; index < maxEnemyCount; ++index)
     {
         BYTE role = propagation[index].role;
@@ -5292,7 +5398,7 @@ int main()
         failures += propagation[index].alert != expected;
     }
     failures += firstPropagation != expectedPropagation
-        || PropagateListenerAlert(propagation, maxEnemyCount) != 0;
+        || EnterEnemyAlert(propagation, maxEnemyCount, listenerEnemyRole) != 0;
 
     EnemyRuntime local[5]{};
     constexpr BYTE localRoles[5]
@@ -5306,8 +5412,8 @@ int main()
         local[index].x = localX[index];
         local[index].y = 100.0f;
     }
-    bool localListener = AlertEnemiesNear(local, 5, 100.0f, 100.0f);
-    failures += localListener || !local[0].alert || !local[1].alert
+    LONG localEntered = AlertEnemiesNear(local, 5, 100.0f, 100.0f);
+    failures += localEntered != 3 || !local[0].alert || !local[1].alert
         || !local[2].alert || local[3].alert || local[4].alert;
 
     currentWallCount = 0;
@@ -5428,7 +5534,7 @@ int main()
     for (LONG index = 0; index < maxEnemyCount; ++index)
     {
         local[index].alive = true;
-        local[index].role = static_cast<BYTE>(index % enemyRoleCount);
+        local[index].role = watcherEnemyRole;
         local[index].x = index & 1 ? 140.0f : 139.0f;
         local[index].y = 100.0f;
     }
@@ -5517,7 +5623,6 @@ int main()
                 soakEnemies[index].alert = false;
             }
             AlertEnemiesNear(soakEnemies, maxEnemyCount, 100.0f, 100.0f);
-            PropagateListenerAlert(soakEnemies, maxEnemyCount);
         }
         ++soakUpdates;
     }
@@ -5538,6 +5643,215 @@ extern "C" __declspec(dllexport) void CALLBACK RunB03Validation(HWND, HINSTANCE,
 {
     FILE* output = nullptr;
     freopen_s(&output, "B03Validation.txt", "w", stdout);
+    main();
+    if (output)
+    {
+        fclose(output);
+    }
+}
+#endif
+
+#ifdef DEAD_SIGNAL_B04_VALIDATION
+int main()
+{
+    LONG failures = 0;
+    failures += slashLocalAlertRangeSquared != 40.0f * 40.0f
+        || listenerAlertRangeSquared != 30.0f * 30.0f;
+    failures += ListenerTargetForRoomSize(1, 24) != 2
+        || ListenerTargetForRoomSize(2, 24) != 2
+        || ListenerTargetForRoomSize(3, 24) != 3
+        || ListenerTargetForRoomSize(4, 24) != 4
+        || ListenerTargetForRoomSize(5, 24) != 4
+        || ListenerTargetForRoomSize(2, 1) != 1;
+    failures += saveVersion != 8 || sizeof(SaveCheckpoint) != 32
+        || metaVersion != 1 || sizeof(MetaProfile) != 16;
+
+    EnemyRuntime slashEnemies[9]{};
+    constexpr BYTE slashRoles[9]
+        = { watcherEnemyRole, patrollerEnemyRole, hunterEnemyRole,
+            listenerEnemyRole, watcherEnemyRole, spinnerEnemyRole,
+            watcherEnemyRole, spinnerEnemyRole, patrollerEnemyRole };
+    constexpr float slashX[9]
+        = { 100.0f, 140.0f, 60.0f, 130.0f, 139.0f, 61.0f,
+            140.1f, 59.9f, 100.0f };
+    for (LONG index = 0; index < 9; ++index)
+    {
+        slashEnemies[index].alive = index != 8;
+        slashEnemies[index].role = slashRoles[index];
+        slashEnemies[index].x = slashX[index];
+        slashEnemies[index].y = 100.0f;
+    }
+    alertEventCount = 0;
+    alertEventActive = false;
+    failures += EnterEnemyAlert(slashEnemies, 9, 0) != 1
+        || !slashEnemies[0].alert;
+    AlertEnemiesNear(slashEnemies, 9, 100.0f, 100.0f);
+    for (LONG index = 0; index < 6; ++index)
+    {
+        failures += !slashEnemies[index].alert;
+    }
+    failures += slashEnemies[6].alert || slashEnemies[7].alert
+        || slashEnemies[8].alert || alertEventCount != 1;
+
+    EnemyRuntime relay[10]{};
+    constexpr BYTE relayRoles[10]
+        = { listenerEnemyRole, listenerEnemyRole, listenerEnemyRole,
+            patrollerEnemyRole, hunterEnemyRole, watcherEnemyRole,
+            spinnerEnemyRole, pressureEnemyRole, patrollerEnemyRole,
+            hunterEnemyRole };
+    constexpr float relayX[10]
+        = { 0.0f, 25.0f, 50.0f, 30.0f, -30.0f,
+            10.0f, 15.0f, 20.0f, 80.1f, 5.0f };
+    for (LONG index = 0; index < 10; ++index)
+    {
+        relay[index].alive = index != 9;
+        relay[index].role = relayRoles[index];
+        relay[index].x = relayX[index];
+        relay[index].y = 0.0f;
+    }
+    alertEventCount = 0;
+    alertEventActive = false;
+    LONG relayEntered = EnterEnemyAlert(relay, 10, 0);
+    failures += relayEntered != 5 || !relay[0].alert || !relay[1].alert
+        || !relay[2].alert || !relay[3].alert || !relay[4].alert
+        || relay[5].alert || relay[6].alert || relay[7].alert
+        || relay[8].alert || relay[9].alert;
+    failures += EnterEnemyAlert(relay, 10, 1) != 0 || alertEventCount != 1;
+
+    for (LONG index = 0; index < 10; ++index)
+    {
+        relay[index].alert = false;
+        relay[index].detectionProgress = 0.0f;
+        relay[index].heardSuspicion = false;
+    }
+    relay[3].detectionProgress = 0.5f;
+    UpdateAlertEventState(relay, 10);
+    failures += !alertEventActive;
+    relay[3].detectionProgress = 0.0f;
+    UpdateAlertEventState(relay, 10);
+    failures += alertEventActive;
+    failures += EnterEnemyAlert(relay, 10, 5) != 1
+        || alertEventCount != 2 || !alertEventActive;
+
+    constexpr BYTE expectedDashCapacity[characterCount][3]
+    {
+        { 1, 2, 3 },
+        { 1, 2, 3 },
+        { 1, 2, 2 },
+        { 1, 2, 2 },
+        { 1, 2, 3 }
+    };
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        selectedCharacter = character;
+        for (BYTE growth = 0; growth <= maximumDashGrowthLevel; ++growth)
+        {
+            dashGrowthLevel = growth;
+            failures += CurrentDashCapacity()
+                != expectedDashCapacity[character][growth];
+        }
+    }
+    selectedCharacter = basicCharacter;
+    dashGrowthLevel = maximumDashGrowthLevel;
+    currentDashMaxCharges = CurrentDashCapacity();
+    currentDashCharges = currentDashMaxCharges;
+    float recharge = 0.0f;
+    failures += !ConsumeDashCharge(1.0f, recharge)
+        || !ConsumeDashCharge(1.0f, recharge)
+        || !ConsumeDashCharge(1.0f, recharge)
+        || ConsumeDashCharge(1.0f, recharge) || currentDashCharges != 0;
+    UpdateDashRecharge(1.0f, 1.0f, recharge);
+    failures += currentDashCharges != 1 || recharge != 1.0f;
+    UpdateDashRecharge(1.0f, 1.0f, recharge);
+    failures += currentDashCharges != 2 || recharge != 1.0f;
+    UpdateDashRecharge(1.0f, 1.0f, recharge);
+    failures += currentDashCharges != 3 || recharge != 0.0f;
+
+    runSeed = 12345;
+    currentRoom = 8;
+    moveUpgradeStack = 1;
+    slashUpgradeStack = 1;
+    dashUpgradeStack = 1;
+    functionalUpgradeFlags = silentDashUpgradeFlag;
+    rerollUsed = true;
+    selectedCharacter = basicCharacter;
+    currentDashCharges = 2;
+    alertEventCount = 7;
+    WriteCheckpoint(runSeed, currentRoom, 8, 11);
+    SaveCheckpoint checkpoint{};
+    failures += !ReadCheckpoint(&checkpoint) || checkpoint.alertEvents != 7
+        || checkpoint.dashCharges != 2 || checkpoint.runKills != 11;
+    DeleteFileW(saveFileName);
+
+    globalCoin = 0;
+    runKillCount = 4;
+    alertEventCount = 0;
+    runRewardGranted = false;
+    GrantRunCoin(false);
+    GrantRunCoin(false);
+    failures += globalCoin != 8;
+    globalCoin = 0;
+    alertEventCount = 1;
+    runRewardGranted = false;
+    GrantRunCoin(false);
+    failures += globalCoin != 4;
+    globalCoin = 0;
+    runKillCount = 5;
+    alertEventCount = 0;
+    runRewardGranted = false;
+    GrantRunCoin(true);
+    failures += globalCoin != 16;
+
+#ifdef DEAD_SIGNAL_B04_SOAK_VALIDATION
+    EnemyRuntime soakEnemies[maxEnemyCount]{};
+    ULONGLONG soakStart = GetTickCount64();
+    ULONGLONG soakUpdates = 0;
+    LONG soakFailures = 0;
+    while (GetTickCount64() - soakStart < 90000)
+    {
+        for (LONG index = 0; index < maxEnemyCount; ++index)
+        {
+            EnemyRuntime& enemy = soakEnemies[index];
+            enemy = {};
+            enemy.alive = true;
+            enemy.role = index < 4 ? listenerEnemyRole
+                : static_cast<BYTE>(index % enemyRoleCount);
+            enemy.x = index < 4 ? 10.0f + index * 25.0f
+                : 100.0f + static_cast<float>(index);
+            enemy.y = 100.0f;
+        }
+        alertEventActive = false;
+        LONG entered = EnterEnemyAlert(soakEnemies, maxEnemyCount, 0);
+        soakFailures += entered < 4 || !soakEnemies[3].alert
+            || EnterEnemyAlert(soakEnemies, maxEnemyCount, 1) != 0;
+        for (LONG index = 0; index < maxEnemyCount; ++index)
+        {
+            soakEnemies[index].alert = false;
+            soakEnemies[index].detectionProgress = 0.0f;
+            soakEnemies[index].heardSuspicion = false;
+        }
+        UpdateAlertEventState(soakEnemies, maxEnemyCount);
+        soakFailures += alertEventActive;
+        ++soakUpdates;
+    }
+    failures += soakFailures;
+    printf("soak_ms=%llu soak_updates=%llu soak_failures=%ld\n",
+        GetTickCount64() - soakStart, soakUpdates, soakFailures);
+#endif
+
+    DeleteFileW(metaFileName);
+    printf("b04_failures=%ld slash=%d relay=%ld events=%u dash=%u save=%lu meta=%lu\n",
+        failures, slashEnemies[5].alert, relayEntered, alertEventCount,
+        currentDashCharges, static_cast<unsigned long>(sizeof(SaveCheckpoint)),
+        static_cast<unsigned long>(sizeof(MetaProfile)));
+    return failures;
+}
+
+extern "C" __declspec(dllexport) void CALLBACK RunB04Validation(HWND, HINSTANCE,
+    LPSTR, int)
+{
+    FILE* output = nullptr;
+    freopen_s(&output, "B04Validation.txt", "w", stdout);
     main();
     if (output)
     {
