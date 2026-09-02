@@ -2,7 +2,7 @@
 #include <timeapi.h>
 #include <math.h>
 #if defined(DEAD_SIGNAL_B01_VALIDATION) || defined(DEAD_SIGNAL_B02_VALIDATION) \
-    || defined(DEAD_SIGNAL_B03_VALIDATION) || defined(DEAD_SIGNAL_B04_VALIDATION)
+    || defined(DEAD_SIGNAL_B03_VALIDATION) || defined(DEAD_SIGNAL_B05_VALIDATION)
 #include <stdio.h>
 #endif
 
@@ -85,8 +85,8 @@ constexpr float enemyReacquireRangeSquared = 42.0f * 42.0f;
 constexpr float hunterReacquireRangeSquared = 70.0f * 70.0f;
 constexpr float listenerMovementHearingRangeSquared = 80.0f * 80.0f;
 constexpr float listenerDashHearingRangeSquared = 120.0f * 120.0f;
-constexpr float slashLocalAlertRangeSquared = 40.0f * 40.0f;
-constexpr float listenerAlertRangeSquared = 30.0f * 30.0f;
+constexpr float slashLocalAlertRangeSquared = 65.0f * 65.0f;
+constexpr float listenerAlertRangeSquared = 70.0f * 70.0f;
 constexpr float spinnerRotationSpeed = 1.04719755f;
 constexpr float enemyFacingTurnSpeed = 2.0943951f;
 constexpr float enemyScanAngle = 0.47996554f;
@@ -390,9 +390,11 @@ LONG AlertEnemiesNear(EnemyRuntime* enemies, LONG enemyCount, float centerX,
     LONG entered = 0;
     for (LONG enemyIndex = 0; enemyIndex < enemyCount; ++enemyIndex)
     {
+        BYTE role = enemies[enemyIndex].role;
         float differenceX = enemies[enemyIndex].x - centerX;
         float differenceY = enemies[enemyIndex].y - centerY;
-        if (differenceX * differenceX + differenceY * differenceY
+        if (role < enemyRoleCount
+            && differenceX * differenceX + differenceY * differenceY
             <= slashLocalAlertRangeSquared)
         {
             entered += EnterEnemyAlert(enemies, enemyCount, enemyIndex);
@@ -5413,8 +5415,8 @@ int main()
         local[index].y = 100.0f;
     }
     LONG localEntered = AlertEnemiesNear(local, 5, 100.0f, 100.0f);
-    failures += localEntered != 3 || !local[0].alert || !local[1].alert
-        || !local[2].alert || local[3].alert || local[4].alert;
+    failures += localEntered != 4 || !local[0].alert || !local[1].alert
+        || !local[2].alert || !local[3].alert || local[4].alert;
 
     currentWallCount = 0;
     SetRoomSizeStage(2);
@@ -5485,7 +5487,7 @@ extern "C" __declspec(dllexport) void CALLBACK RunB02Validation(HWND, HINSTANCE,
 int main()
 {
     LONG failures = 0;
-    failures += slashLocalAlertRangeSquared != 40.0f * 40.0f;
+    failures += slashLocalAlertRangeSquared != 65.0f * 65.0f;
     failures += listenerMovementHearingRangeSquared != 80.0f * 80.0f
         || listenerDashHearingRangeSquared != 120.0f * 120.0f;
     failures += enemyVisionRange != 70 || enemyAttackWindupDuration != 0.3f
@@ -5535,10 +5537,10 @@ int main()
     {
         local[index].alive = true;
         local[index].role = watcherEnemyRole;
-        local[index].x = index & 1 ? 140.0f : 139.0f;
+        local[index].x = index & 1 ? 165.0f : 164.0f;
         local[index].y = 100.0f;
     }
-    local[maxEnemyCount - 2].x = 140.1f;
+    local[maxEnemyCount - 2].x = 165.1f;
     local[maxEnemyCount - 1].alive = false;
     local[maxEnemyCount - 1].x = 100.0f;
     AlertEnemiesNear(local, maxEnemyCount, 100.0f, 100.0f);
@@ -5631,7 +5633,7 @@ int main()
         GetTickCount64() - soakStart, soakUpdates, soakFailures);
 #endif
 
-    printf("b03_failures=%ld slash40=%d sector=%d wall_clip=%d execute170=%d highest=%ld windup=%d capacity=%ld\n",
+    printf("b03_failures=%ld slash65=%d sector=%d wall_clip=%d execute170=%d highest=%ld windup=%d capacity=%ld\n",
         failures, local[0].alert, rawSector, !clippedSector,
         !PointInsideExecuteFacing(0.0f, 0.0f, 1.0f, 0.0f, -1.0f, 0.0f),
         pendingDamage, windupDamage, maxEnemyCount);
@@ -5651,12 +5653,12 @@ extern "C" __declspec(dllexport) void CALLBACK RunB03Validation(HWND, HINSTANCE,
 }
 #endif
 
-#ifdef DEAD_SIGNAL_B04_VALIDATION
+#ifdef DEAD_SIGNAL_B05_VALIDATION
 int main()
 {
     LONG failures = 0;
-    failures += slashLocalAlertRangeSquared != 40.0f * 40.0f
-        || listenerAlertRangeSquared != 30.0f * 30.0f;
+    failures += slashLocalAlertRangeSquared != 65.0f * 65.0f
+        || listenerAlertRangeSquared != 70.0f * 70.0f;
     failures += ListenerTargetForRoomSize(1, 24) != 2
         || ListenerTargetForRoomSize(2, 24) != 2
         || ListenerTargetForRoomSize(3, 24) != 3
@@ -5666,32 +5668,37 @@ int main()
     failures += saveVersion != 8 || sizeof(SaveCheckpoint) != 32
         || metaVersion != 1 || sizeof(MetaProfile) != 16;
 
-    EnemyRuntime slashEnemies[9]{};
-    constexpr BYTE slashRoles[9]
+    EnemyRuntime slashEnemies[10]{};
+    constexpr BYTE slashRoles[10]
         = { watcherEnemyRole, patrollerEnemyRole, hunterEnemyRole,
             listenerEnemyRole, watcherEnemyRole, spinnerEnemyRole,
-            watcherEnemyRole, spinnerEnemyRole, patrollerEnemyRole };
-    constexpr float slashX[9]
-        = { 100.0f, 140.0f, 60.0f, 130.0f, 139.0f, 61.0f,
-            140.1f, 59.9f, 100.0f };
-    for (LONG index = 0; index < 9; ++index)
+            watcherEnemyRole, spinnerEnemyRole, pressureEnemyRole,
+            patrollerEnemyRole };
+    constexpr float slashX[10]
+        = { 100.0f, 164.0f, 165.0f, 100.0f, 36.0f, 35.0f,
+            166.0f, 34.0f, 100.0f, 100.0f };
+    constexpr float slashY[10]
+        = { 100.0f, 100.0f, 100.0f, 165.0f, 100.0f, 100.0f,
+            100.0f, 100.0f, 100.0f, 100.0f };
+    for (LONG index = 0; index < 10; ++index)
     {
-        slashEnemies[index].alive = index != 8;
+        slashEnemies[index].alive = index != 9;
         slashEnemies[index].role = slashRoles[index];
         slashEnemies[index].x = slashX[index];
-        slashEnemies[index].y = 100.0f;
+        slashEnemies[index].y = slashY[index];
     }
     alertEventCount = 0;
     alertEventActive = false;
-    failures += EnterEnemyAlert(slashEnemies, 9, 0) != 1
+    failures += EnterEnemyAlert(slashEnemies, 10, 0) != 1
         || !slashEnemies[0].alert;
-    AlertEnemiesNear(slashEnemies, 9, 100.0f, 100.0f);
+    AlertEnemiesNear(slashEnemies, 10, 100.0f, 100.0f);
     for (LONG index = 0; index < 6; ++index)
     {
         failures += !slashEnemies[index].alert;
     }
     failures += slashEnemies[6].alert || slashEnemies[7].alert
-        || slashEnemies[8].alert || alertEventCount != 1;
+        || slashEnemies[8].alert || slashEnemies[9].alert
+        || alertEventCount != 1;
 
     EnemyRuntime relay[10]{};
     constexpr BYTE relayRoles[10]
@@ -5700,14 +5707,17 @@ int main()
             spinnerEnemyRole, pressureEnemyRole, patrollerEnemyRole,
             hunterEnemyRole };
     constexpr float relayX[10]
-        = { 0.0f, 25.0f, 50.0f, 30.0f, -30.0f,
-            10.0f, 15.0f, 20.0f, 80.1f, 5.0f };
+        = { 0.0f, 69.0f, 138.0f, 0.0f, 138.0f,
+            10.0f, 20.0f, 30.0f, 0.0f, 5.0f };
+    constexpr float relayY[10]
+        = { 0.0f, 0.0f, 0.0f, 70.0f, 70.0f,
+            0.0f, 0.0f, 0.0f, 71.0f, 0.0f };
     for (LONG index = 0; index < 10; ++index)
     {
         relay[index].alive = index != 9;
         relay[index].role = relayRoles[index];
         relay[index].x = relayX[index];
-        relay[index].y = 0.0f;
+        relay[index].y = relayY[index];
     }
     alertEventCount = 0;
     alertEventActive = false;
@@ -5717,6 +5727,20 @@ int main()
         || relay[5].alert || relay[6].alert || relay[7].alert
         || relay[8].alert || relay[9].alert;
     failures += EnterEnemyAlert(relay, 10, 1) != 0 || alertEventCount != 1;
+
+    EnemyRuntime listenerBoundary[2]{};
+    listenerBoundary[0].alive = listenerBoundary[1].alive = true;
+    listenerBoundary[0].role = listenerBoundary[1].role = listenerEnemyRole;
+    listenerBoundary[1].x = 71.0f;
+    failures += EnterEnemyAlert(listenerBoundary, 2, 0) != 1
+        || listenerBoundary[1].alert;
+    listenerBoundary[0] = {};
+    listenerBoundary[1] = {};
+    listenerBoundary[0].alive = listenerBoundary[1].alive = true;
+    listenerBoundary[0].role = listenerBoundary[1].role = listenerEnemyRole;
+    listenerBoundary[1].x = 70.0f;
+    failures += EnterEnemyAlert(listenerBoundary, 2, 0) != 2
+        || !listenerBoundary[1].alert;
 
     for (LONG index = 0; index < 10; ++index)
     {
@@ -5802,7 +5826,7 @@ int main()
     GrantRunCoin(true);
     failures += globalCoin != 16;
 
-#ifdef DEAD_SIGNAL_B04_SOAK_VALIDATION
+#ifdef DEAD_SIGNAL_B05_SOAK_VALIDATION
     EnemyRuntime soakEnemies[maxEnemyCount]{};
     ULONGLONG soakStart = GetTickCount64();
     ULONGLONG soakUpdates = 0;
@@ -5816,14 +5840,43 @@ int main()
             enemy.alive = true;
             enemy.role = index < 4 ? listenerEnemyRole
                 : static_cast<BYTE>(index % enemyRoleCount);
-            enemy.x = index < 4 ? 10.0f + index * 25.0f
-                : 100.0f + static_cast<float>(index);
+            enemy.x = index < 4 ? 10.0f + index * 69.0f
+                : 100.0f + static_cast<float>(index * 3);
             enemy.y = 100.0f;
         }
+        soakEnemies[maxEnemyCount - 1].role = pressureEnemyRole;
+        soakEnemies[maxEnemyCount - 1].x = 150.0f;
+        alertEventCount = 0;
         alertEventActive = false;
         LONG entered = EnterEnemyAlert(soakEnemies, maxEnemyCount, 0);
         soakFailures += entered < 4 || !soakEnemies[3].alert
             || EnterEnemyAlert(soakEnemies, maxEnemyCount, 1) != 0;
+        AlertEnemiesNear(soakEnemies, maxEnemyCount, 150.0f, 100.0f);
+        soakFailures += soakEnemies[maxEnemyCount - 1].alert
+            || alertEventCount != 1;
+        LONG soakDamage = 0;
+        EnemyRuntime& attacker = soakEnemies[4];
+        attacker.alert = true;
+        attacker.x = 100.0f;
+        attacker.y = 100.0f;
+        for (LONG update = 0; update < 20; ++update)
+        {
+            UpdateEnemyAttack(attacker, true, 108.0f, 100.0f, 0.016f,
+                soakDamage);
+        }
+        soakFailures += soakDamage != 1
+            || !PointInsideVisionSector(100.0f, 100.0f, 1.0f, 0.0f,
+                170.0f, 100.0f)
+            || PointInsideVisionSector(100.0f, 100.0f, 1.0f, 0.0f,
+                171.0f, 100.0f);
+        selectedCharacter = basicCharacter;
+        dashGrowthLevel = maximumDashGrowthLevel;
+        currentDashMaxCharges = CurrentDashCapacity();
+        currentDashCharges = currentDashMaxCharges;
+        float soakRecharge = 0.0f;
+        soakFailures += !ConsumeDashCharge(1.0f, soakRecharge);
+        UpdateDashRecharge(1.0f, 1.0f, soakRecharge);
+        soakFailures += currentDashCharges != currentDashMaxCharges;
         for (LONG index = 0; index < maxEnemyCount; ++index)
         {
             soakEnemies[index].alert = false;
@@ -5840,18 +5893,18 @@ int main()
 #endif
 
     DeleteFileW(metaFileName);
-    printf("b04_failures=%ld slash=%d relay=%ld events=%u dash=%u save=%lu meta=%lu\n",
+    printf("b05_failures=%ld slash65=%d relay70=%ld events=%u dash=%u save=%lu meta=%lu\n",
         failures, slashEnemies[5].alert, relayEntered, alertEventCount,
         currentDashCharges, static_cast<unsigned long>(sizeof(SaveCheckpoint)),
         static_cast<unsigned long>(sizeof(MetaProfile)));
     return failures;
 }
 
-extern "C" __declspec(dllexport) void CALLBACK RunB04Validation(HWND, HINSTANCE,
+extern "C" __declspec(dllexport) void CALLBACK RunB05Validation(HWND, HINSTANCE,
     LPSTR, int)
 {
     FILE* output = nullptr;
-    freopen_s(&output, "B04Validation.txt", "w", stdout);
+    freopen_s(&output, "B05Validation.txt", "w", stdout);
     main();
     if (output)
     {
