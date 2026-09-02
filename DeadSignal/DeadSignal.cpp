@@ -2,7 +2,7 @@
 #include <timeapi.h>
 #include <math.h>
 #if defined(DEAD_SIGNAL_B01_VALIDATION) || defined(DEAD_SIGNAL_B02_VALIDATION) \
-    || defined(DEAD_SIGNAL_B03_VALIDATION) || defined(DEAD_SIGNAL_B08_VALIDATION)
+    || defined(DEAD_SIGNAL_B03_VALIDATION) || defined(DEAD_SIGNAL_B09_VALIDATION)
 #include <stdio.h>
 #endif
 
@@ -168,10 +168,10 @@ struct CharacterProfile
 constexpr CharacterProfile characterProfiles[characterCount]
 {
     { basicPlayerMaxHP, 1.0f, 1.0f, slashReach, slashWidth, 1, 3, 1.0f },
-    { 9, 1.1f, 0.9f, slashReach - 1, slashWidth, 1, 2, 1.1f },
-    { 8, 1.05f, 1.1f, slashReach + slashReach / 2, slashWidth / 2, 1, 1, 1.0f },
-    { 12, 0.85f, 1.25f, slashReach - 1, slashWidth, 2, 4, 0.9f },
-    { 9, 1.05f, 0.75f, slashReach - 1, slashWidth, 1, 2, 1.0f }
+    { 8, 1.2f, 1.0f, slashReach - 1, slashWidth - 1, 1, 2, 1.1f },
+    { 7, 0.95f, 1.2f, slashReach * 2, 3, 1, 1, 1.0f },
+    { 14, 0.75f, 1.5f, slashReach - 2, slashWidth + 4, 2, 4, 0.9f },
+    { 8, 1.1f, 0.5f, slashReach - 2, slashWidth - 2, 1, 2, 1.0f }
 };
 constexpr DWORD toneSampleRate = 8000;
 constexpr DWORD toneFrequency = 440;
@@ -1131,10 +1131,6 @@ bool PiercerSlashHitsEnemy(float originX, float originY, LONG directionX,
     float differenceY = enemyY - originY;
     float forward = differenceX * forwardX + differenceY * forwardY;
     float lateral = differenceX * -forwardY + differenceY * forwardX;
-    if (lateral < 0.0f)
-    {
-        lateral = -lateral;
-    }
     float absoluteForwardX = forwardX < 0.0f ? -forwardX : forwardX;
     float absoluteForwardY = forwardY < 0.0f ? -forwardY : forwardY;
     float start = absoluteForwardX * playerHalfWidth
@@ -1145,7 +1141,10 @@ bool PiercerSlashHitsEnemy(float originX, float originY, LONG directionX,
         + absoluteForwardX * enemyHalfHeight;
     return forward + enemyForwardRadius > start
         && forward - enemyForwardRadius < start + CharacterSlashReach(piercerCharacter)
-        && lateral <= CharacterSlashWidth(piercerCharacter) * 0.5f + enemyLateralRadius;
+        && lateral >= -CharacterSlashWidth(piercerCharacter) * 0.5f
+            - enemyLateralRadius
+        && lateral < CharacterSlashWidth(piercerCharacter) * 0.5f
+            + enemyLateralRadius;
 }
 
 bool PiercerSlashOutlinePixel(float originX, float originY, LONG directionX,
@@ -1158,19 +1157,16 @@ bool PiercerSlashOutlinePixel(float originX, float originY, LONG directionX,
     float differenceY = pointY - originY;
     float forward = differenceX * forwardX + differenceY * forwardY;
     float lateral = differenceX * -forwardY + differenceY * forwardX;
-    if (lateral < 0.0f)
-    {
-        lateral = -lateral;
-    }
     float absoluteForwardX = forwardX < 0.0f ? -forwardX : forwardX;
     float absoluteForwardY = forwardY < 0.0f ? -forwardY : forwardY;
     float start = absoluteForwardX * playerHalfWidth
         + absoluteForwardY * playerHalfHeight;
     float end = start + CharacterSlashReach(piercerCharacter);
     float halfWidth = CharacterSlashWidth(piercerCharacter) * 0.5f;
-    return forward >= start && forward <= end && lateral <= halfWidth
+    return forward >= start && forward <= end
+        && lateral >= -halfWidth && lateral < halfWidth
         && (forward < start + 1.0f || forward > end - 1.0f
-            || lateral > halfWidth - 1.0f);
+            || lateral < -halfWidth + 1.0f || lateral >= halfWidth - 1.0f);
 }
 
 bool RectangleOverlapsRoomWall(float left, float top, float right, float bottom);
@@ -6150,7 +6146,7 @@ extern "C" __declspec(dllexport) void CALLBACK RunB03Validation(HWND, HINSTANCE,
 }
 #endif
 
-#ifdef DEAD_SIGNAL_B08_VALIDATION
+#ifdef DEAD_SIGNAL_B09_VALIDATION
 #if 0
 int main()
 {
@@ -6755,12 +6751,12 @@ int main()
         || metaVersion != 2 || sizeof(LegacyMetaProfile) != 16
         || sizeof(MetaProfile) != 32;
 
-    constexpr LONG expectedHP[characterCount]{ 10, 9, 8, 12, 9 };
-    constexpr float expectedMove[characterCount]{ 60.0f, 66.0f, 63.0f, 51.0f, 63.0f };
+    constexpr LONG expectedHP[characterCount]{ 10, 8, 7, 14, 8 };
+    constexpr float expectedMove[characterCount]{ 60.0f, 72.0f, 57.0f, 45.0f, 66.0f };
     constexpr float expectedCooldown[characterCount]
-        { 0.5f, 0.45f, 0.55f, 0.625f, 0.375f };
-    constexpr LONG expectedReach[characterCount]{ 8, 7, 12, 7, 7 };
-    constexpr LONG expectedWidth[characterCount]{ 8, 8, 4, 8, 8 };
+        { 0.5f, 0.5f, 0.6f, 0.75f, 0.25f };
+    constexpr LONG expectedReach[characterCount]{ 8, 7, 16, 6, 6 };
+    constexpr LONG expectedWidth[characterCount]{ 8, 7, 3, 12, 6 };
     constexpr LONG expectedDamage[characterCount]{ 1, 1, 1, 2, 1 };
     constexpr LONG expectedCap[characterCount]{ 3, 2, 1, 4, 2 };
     constexpr float expectedDash[characterCount]{ 32.0f, 35.2f, 32.0f, 28.8f, 32.0f };
@@ -6779,6 +6775,58 @@ int main()
     }
     printf("section_base=%ld\n", failures);
 
+    constexpr LONG cardinalX[4]{ 0, 0, -1, 1 };
+    constexpr LONG cardinalY[4]{ -1, 1, 0, 0 };
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        for (LONG direction = 0; direction < 4; ++direction)
+        {
+            LONG geometryX = cardinalX[direction]
+                ? CharacterSlashReach(character) : CharacterSlashWidth(character);
+            LONG geometryY = cardinalY[direction]
+                ? CharacterSlashReach(character) : CharacterSlashWidth(character);
+            failures += geometryX != (cardinalX[direction]
+                    ? expectedReach[character] : expectedWidth[character])
+                || geometryY != (cardinalY[direction]
+                    ? expectedReach[character] : expectedWidth[character]);
+        }
+    }
+    for (LONG direction = 0; direction < 4; ++direction)
+    {
+        LONG outlineLeft = 1000;
+        LONG outlineTop = 1000;
+        LONG outlineRight = -1000;
+        LONG outlineBottom = -1000;
+        for (LONG y = 70; y < 130; ++y)
+        {
+            for (LONG x = 70; x < 130; ++x)
+            {
+                if (PiercerSlashOutlinePixel(100.0f, 100.0f,
+                    cardinalX[direction], cardinalY[direction],
+                    x + 0.5f, y + 0.5f))
+                {
+                    if (x < outlineLeft) outlineLeft = x;
+                    if (x > outlineRight) outlineRight = x;
+                    if (y < outlineTop) outlineTop = y;
+                    if (y > outlineBottom) outlineBottom = y;
+                }
+            }
+        }
+        failures += outlineRight - outlineLeft + 1
+                != (cardinalX[direction] ? 16 : 3)
+            || outlineBottom - outlineTop + 1
+                != (cardinalY[direction] ? 16 : 3);
+    }
+    failures += !PiercerSlashHitsEnemy(100.0f, 100.0f, 1, 0,
+            123.9f, 100.0f)
+        || PiercerSlashHitsEnemy(100.0f, 100.0f, 1, 0,
+            124.0f, 100.0f)
+        || !PiercerSlashHitsEnemy(100.0f, 100.0f, 1, 0,
+            110.0f, 92.5f)
+        || PiercerSlashHitsEnemy(100.0f, 100.0f, 1, 0,
+            110.0f, 107.5f);
+    printf("section_geometry=%ld\n", failures);
+
     characterGlobalLevel[basicCharacter][0] = 2;
     characterGlobalLevel[basicCharacter][1] = 2;
     characterGlobalLevel[basicCharacter][2] = 2;
@@ -6791,30 +6839,30 @@ int main()
     characterGlobalLevel[mobilityCharacter][1] = 2;
     characterGlobalLevel[mobilityCharacter][2] = 2;
     failures += CharacterDashCapacity(mobilityCharacter) != 4
-        || fabsf(CharacterMoveSpeed(mobilityCharacter) - 72.6f) > 0.0001f
+        || fabsf(CharacterMoveSpeed(mobilityCharacter) - 79.2f) > 0.0001f
         || fabsf(CharacterDashDistance(mobilityCharacter) - 42.24f) > 0.0001f
-        || CharacterMaximumHP(mobilityCharacter) != 9;
+        || CharacterMaximumHP(mobilityCharacter) != 8;
     characterGlobalLevel[piercerCharacter][0] = 1;
     characterGlobalLevel[piercerCharacter][1] = 2;
     characterGlobalLevel[piercerCharacter][2] = 2;
     failures += CharacterDashCapacity(piercerCharacter) != 2
-        || CharacterSlashReach(piercerCharacter) != 16
-        || CharacterSlashWidth(piercerCharacter) != 4
-        || fabsf(CharacterMoveSpeed(piercerCharacter) - 69.3f) > 0.0001f;
+        || CharacterSlashReach(piercerCharacter) != 20
+        || CharacterSlashWidth(piercerCharacter) != 3
+        || fabsf(CharacterMoveSpeed(piercerCharacter) - 62.7f) > 0.0001f;
     characterGlobalLevel[heavyCharacter][0] = 2;
     characterGlobalLevel[heavyCharacter][1] = 2;
     characterGlobalLevel[heavyCharacter][2] = 2;
     failures += CharacterDashCapacity(heavyCharacter) != 1
-        || CharacterMaximumHP(heavyCharacter) != 16
-        || CharacterSlashReach(heavyCharacter) != 7
-        || CharacterSlashWidth(heavyCharacter) != 12
-        || fabsf(CharacterMoveSpeed(heavyCharacter) - 56.1f) > 0.0001f;
+        || CharacterMaximumHP(heavyCharacter) != 18
+        || CharacterSlashReach(heavyCharacter) != 6
+        || CharacterSlashWidth(heavyCharacter) != 16
+        || fabsf(CharacterMoveSpeed(heavyCharacter) - 49.5f) > 0.0001f;
     characterGlobalLevel[rapidCharacter][0] = 1;
     characterGlobalLevel[rapidCharacter][1] = 2;
     characterGlobalLevel[rapidCharacter][2] = 2;
     failures += CharacterDashCapacity(rapidCharacter) != 2
-        || fabsf(CharacterSlashCooldown(rapidCharacter) - 0.3f) > 0.0001f
-        || fabsf(CharacterMoveSpeed(rapidCharacter) - 69.3f) > 0.0001f;
+        || fabsf(CharacterSlashCooldown(rapidCharacter) - 0.2f) > 0.0001f
+        || fabsf(CharacterMoveSpeed(rapidCharacter) - 72.6f) > 0.0001f;
 
     selectedCharacter = rapidCharacter;
     moveUpgradeStack = 2;
@@ -6824,8 +6872,8 @@ int main()
     float runSlash = 0.0f;
     float runDash = 0.0f;
     RecalculateAugmentStats(runMove, runSlash, runDash);
-    failures += fabsf(runMove - 83.16f) > 0.0002f
-        || fabsf(runSlash - 0.18f) > 0.0001f || runSlash <= 0.0f
+    failures += fabsf(runMove - 87.12f) > 0.0002f
+        || fabsf(runSlash - 0.12f) > 0.0001f || runSlash <= 0.0f
         || fabsf(runDash - 0.6f) > 0.0001f;
     LONG recoveryHP = 7;
     commonGlobalLevel[fieldRecoveryGlobalUpgrade] = 1;
@@ -6836,6 +6884,59 @@ int main()
     failures += CurrentRunRerollCapacity() != 1;
     commonGlobalLevel[runRerollGlobalUpgrade] = 1;
     failures += CurrentRunRerollCapacity() != 2;
+
+    ResetMetaProfile();
+    characterGlobalLevel[basicCharacter][0] = 2;
+    characterGlobalLevel[basicCharacter][1] = 2;
+    characterGlobalLevel[basicCharacter][2] = 2;
+    failures += CharacterMoveSpeed(mobilityCharacter) != 72.0f
+        || CharacterMaximumHP(mobilityCharacter) != 8
+        || CharacterDashCapacity(mobilityCharacter) != 1;
+    characterGlobalLevel[mobilityCharacter][0] = 3;
+    characterGlobalLevel[mobilityCharacter][1] = 2;
+    characterGlobalLevel[mobilityCharacter][2] = 2;
+    failures += CharacterMoveSpeed(rapidCharacter) != 66.0f
+        || CharacterSlashCooldown(rapidCharacter) != 0.25f
+        || CharacterDashCapacity(rapidCharacter) != 1;
+    characterGlobalLevel[piercerCharacter][1] = 2;
+    characterGlobalLevel[piercerCharacter][2] = 2;
+    characterGlobalLevel[heavyCharacter][0] = 2;
+    characterGlobalLevel[heavyCharacter][1] = 2;
+    characterGlobalLevel[heavyCharacter][2] = 2;
+    characterGlobalLevel[rapidCharacter][1] = 2;
+    characterGlobalLevel[rapidCharacter][2] = 2;
+    selectedCharacter = mobilityCharacter;
+    moveUpgradeStack = 1;
+    slashUpgradeStack = 0;
+    dashUpgradeStack = 0;
+    functionalUpgradeFlags = 0;
+    RecalculateAugmentStats(runMove, runSlash, runDash);
+    failures += fabsf(runMove - 87.12f) > 0.0002f
+        || fabsf(runSlash - 0.5f) > 0.0001f
+        || fabsf(CharacterDashDistance(mobilityCharacter) - 42.24f) > 0.0001f;
+    selectedCharacter = piercerCharacter;
+    moveUpgradeStack = 0;
+    functionalUpgradeFlags = executeReachUpgradeFlag;
+    RecalculateAugmentStats(runMove, runSlash, runDash);
+    failures += CharacterSlashReach(piercerCharacter) != 20
+        || CharacterSlashWidth(piercerCharacter) != 3
+        || CurrentExecuteReach() != 8;
+    selectedCharacter = heavyCharacter;
+    slashUpgradeStack = 1;
+    functionalUpgradeFlags = 0;
+    RecalculateAugmentStats(runMove, runSlash, runDash);
+    failures += CharacterSlashReach(heavyCharacter) != 6
+        || CharacterSlashWidth(heavyCharacter) != 16
+        || fabsf(runSlash - 0.6f) > 0.0001f
+        || CharacterDashCapacity(heavyCharacter) != 1;
+    selectedCharacter = rapidCharacter;
+    slashUpgradeStack = 2;
+    RecalculateAugmentStats(runMove, runSlash, runDash);
+    failures += fabsf(runSlash - 0.12f) > 0.0001f || runSlash <= 0.0f;
+    selectedCharacter = basicCharacter;
+    slashUpgradeStack = 0;
+    failures += CharacterSlashReach(basicCharacter) != 9
+        || CharacterSlashWidth(basicCharacter) != 9;
     printf("section_growth=%ld\n", failures);
 
     ResetMetaProfile();
@@ -7002,6 +7103,40 @@ int main()
     }
     printf("section_save=%ld\n", failures);
 
+    constexpr BYTE expectedDashByLevel[characterCount][4]
+    {
+        { 1, 2, 3, 3 },
+        { 1, 2, 3, 4 },
+        { 1, 2, 2, 2 },
+        { 1, 1, 1, 1 },
+        { 1, 2, 2, 2 }
+    };
+    ResetMetaProfile();
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        for (BYTE level = 0; level <= characterGlobalMaximum[character][0]; ++level)
+        {
+            characterGlobalLevel[character][0] = level;
+            BYTE dashCapacity = CharacterDashCapacity(character);
+            LONG indicatorWidth = dashCapacity * 4 - 1;
+            failures += dashCapacity != expectedDashByLevel[character][level]
+                || indicatorWidth < 3 || indicatorWidth > 15;
+            for (BYTE charges = 0; charges <= dashCapacity; ++charges)
+            {
+                LONG filledSlots = 0;
+                LONG emptySlots = 0;
+                for (BYTE slot = 0; slot < dashCapacity; ++slot)
+                {
+                    slot < charges ? ++filledSlots : ++emptySlots;
+                }
+                failures += filledSlots != charges
+                    || emptySlots != dashCapacity - charges;
+            }
+        }
+        failures += !CharacterName(character)[0];
+    }
+    printf("section_dash_hud=%ld\n", failures);
+
     ResetMetaProfile();
     selectedCharacter = basicCharacter;
     applicationState = titleMainState;
@@ -7057,7 +7192,7 @@ int main()
             * characterProfiles[character].slashHitCap;
     }
 
-#ifdef DEAD_SIGNAL_B08_SOAK_VALIDATION
+#ifdef DEAD_SIGNAL_B09_SOAK_VALIDATION
     ULONGLONG soakStart = GetTickCount64();
     ULONGLONG soakUpdates = 0;
     LONG soakFailures = 0;
@@ -7087,7 +7222,7 @@ int main()
 
     DeleteFileW(metaFileName);
     DeleteFileW(saveFileName);
-    printf("b08_failures=%ld alert=%u earned=%ld save=%lu legacy=%lu meta=%lu\n",
+    printf("b09_failures=%ld alert=%u earned=%ld save=%lu legacy=%lu meta=%lu\n",
         failures, alertEventCount, runEarnedCoin,
         static_cast<unsigned long>(sizeof(SaveCheckpoint)),
         static_cast<unsigned long>(sizeof(LegacyMetaProfile)),
@@ -7095,11 +7230,11 @@ int main()
     return failures;
 }
 
-extern "C" __declspec(dllexport) void CALLBACK RunB08ValidationV2(HWND, HINSTANCE,
+extern "C" __declspec(dllexport) void CALLBACK RunB09Validation(HWND, HINSTANCE,
     LPSTR, int)
 {
     FILE* output = nullptr;
-    freopen_s(&output, "B08Validation.txt", "w", stdout);
+    freopen_s(&output, "B09Validation.txt", "w", stdout);
     main();
     if (output)
     {
