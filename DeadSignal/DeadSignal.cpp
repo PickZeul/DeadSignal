@@ -2,7 +2,7 @@
 #include <timeapi.h>
 #include <math.h>
 #if defined(DEAD_SIGNAL_B01_VALIDATION) || defined(DEAD_SIGNAL_B02_VALIDATION) \
-    || defined(DEAD_SIGNAL_B03_VALIDATION) || defined(DEAD_SIGNAL_B06_VALIDATION)
+    || defined(DEAD_SIGNAL_B03_VALIDATION) || defined(DEAD_SIGNAL_B08_VALIDATION)
 #include <stdio.h>
 #endif
 
@@ -133,10 +133,25 @@ constexpr BYTE heavyCharacter = 3;
 constexpr BYTE rapidCharacter = 4;
 constexpr BYTE characterCount = 5;
 constexpr LONG characterUnlockCosts[characterCount]{ 0, 5, 10, 15, 20 };
-constexpr BYTE characterDashCaps[characterCount]{ 3, 3, 2, 2, 3 };
-constexpr LONG dashGrowthCosts[2]{ 5, 10 };
-constexpr BYTE maximumDashGrowthLevel = 2;
+constexpr BYTE characterDashCaps[characterCount]{ 3, 4, 2, 1, 2 };
 constexpr LONG runClearCoinBonus = 3;
+constexpr BYTE commonUpgradeCount = 3;
+constexpr BYTE characterGlobalUpgradeCount = 3;
+constexpr BYTE runRerollGlobalUpgrade = 0;
+constexpr BYTE fieldRecoveryGlobalUpgrade = 1;
+constexpr BYTE coinSenseGlobalUpgrade = 2;
+constexpr BYTE commonUpgradeMaximum[commonUpgradeCount]{ 1, 1, 2 };
+constexpr LONG commonUpgradeCost[commonUpgradeCount][2]
+    { { 10, 0 }, { 10, 0 }, { 5, 10 } };
+constexpr BYTE characterGlobalMaximum[characterCount][characterGlobalUpgradeCount]
+{
+    { 2, 2, 2 },
+    { 3, 2, 2 },
+    { 1, 2, 2 },
+    { 2, 2, 2 },
+    { 1, 2, 2 }
+};
+constexpr LONG characterGlobalCost[3]{ 5, 10, 15 };
 
 struct CharacterProfile
 {
@@ -166,7 +181,7 @@ constexpr DWORD toneSampleCount = toneSampleRate * toneDurationMilliseconds / 10
 DWORD framebuffer[framebufferWidth * framebufferHeight];
 
 constexpr LONG titleMainState = 0;
-constexpr LONG gameStartMenuState = 1;
+constexpr LONG preparationState = 1;
 constexpr LONG characterSelectState = 2;
 constexpr LONG gameplayState = 3;
 constexpr LONG gameOverEndState = 1;
@@ -175,7 +190,7 @@ constexpr DWORD saveMagic = 0x56535344;
 constexpr DWORD saveVersion = 8;
 constexpr wchar_t saveFileName[] = L"DeadSignal.sav";
 constexpr DWORD metaMagic = 0x4154454D;
-constexpr DWORD metaVersion = 1;
+constexpr DWORD metaVersion = 2;
 constexpr wchar_t metaFileName[] = L"DeadSignal.meta";
 LONG applicationState = titleMainState;
 LONG menuSelection = 0;
@@ -191,6 +206,7 @@ bool loadGameRequested = false;
 LONG currentRoom = 0;
 DWORD runSeed = 0;
 LONG runKillCount = 0;
+LONG runEarnedCoin = 0;
 BYTE alertEventCount = 0;
 bool alertEventActive = false;
 LONG currentEnemyCount = 2;
@@ -234,7 +250,8 @@ LONG upgradeOptionB = 1;
 BYTE selectedCharacter = basicCharacter;
 LONG globalCoin = 0;
 BYTE unlockedCharacterMask = 1 << basicCharacter;
-BYTE dashGrowthLevel = 0;
+BYTE commonGlobalLevel[commonUpgradeCount]{};
+BYTE characterGlobalLevel[characterCount][characterGlobalUpgradeCount]{};
 BYTE currentDashCharges = 1;
 BYTE currentDashMaxCharges = 1;
 bool runRewardGranted = false;
@@ -242,7 +259,9 @@ BYTE moveUpgradeStack = 0;
 BYTE slashUpgradeStack = 0;
 BYTE dashUpgradeStack = 0;
 BYTE functionalUpgradeFlags = 0;
-bool rerollUsed = false;
+BYTE rerollUsed = 0;
+bool characterUpgradeFocus = false;
+LONG characterUpgradeSelection = 0;
 bool upgradeConfirmRequested = false;
 bool gameplayMenuActive = false;
 LONG gameplayMenuSelection = 0;
@@ -517,7 +536,7 @@ struct SaveCheckpoint
 
 static_assert(sizeof(SaveCheckpoint) == 32);
 
-struct MetaProfile
+struct LegacyMetaProfile
 {
     DWORD magic;
     DWORD version;
@@ -528,19 +547,43 @@ struct MetaProfile
     BYTE reserved;
 };
 
-static_assert(sizeof(MetaProfile) == 16);
+static_assert(sizeof(LegacyMetaProfile) == 16);
+
+struct MetaProfile
+{
+    DWORD magic;
+    DWORD version;
+    LONG coin;
+    BYTE unlockedMask;
+    BYTE audioSetting;
+    BYTE commonLevel[commonUpgradeCount];
+    BYTE characterLevel[characterCount][characterGlobalUpgradeCount];
+};
+
+static_assert(sizeof(MetaProfile) == 32);
 
 void ResetMetaProfile()
 {
     globalCoin = 0;
     unlockedCharacterMask = 1 << basicCharacter;
-    dashGrowthLevel = 0;
     audioEnabled = true;
+    for (BYTE upgrade = 0; upgrade < commonUpgradeCount; ++upgrade)
+    {
+        commonGlobalLevel[upgrade] = 0;
+    }
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        for (BYTE upgrade = 0; upgrade < characterGlobalUpgradeCount; ++upgrade)
+        {
+            characterGlobalLevel[character][upgrade] = 0;
+        }
+    }
 }
+
+void WriteMetaProfile();
 
 bool ReadMetaProfile()
 {
-    MetaProfile profile{};
     HANDLE file = CreateFileW(metaFileName, GENERIC_READ, FILE_SHARE_READ, nullptr,
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE)
@@ -548,8 +591,35 @@ bool ReadMetaProfile()
         ResetMetaProfile();
         return false;
     }
+    DWORD size = GetFileSize(file, nullptr);
     DWORD bytesRead = 0;
-    bool valid = GetFileSize(file, nullptr) == sizeof(profile)
+    if (size == sizeof(LegacyMetaProfile))
+    {
+        LegacyMetaProfile legacy{};
+        bool valid = ReadFile(file, &legacy, sizeof(legacy), &bytesRead, nullptr)
+            && bytesRead == sizeof(legacy) && legacy.magic == metaMagic
+            && legacy.version == 1 && legacy.coin >= 0
+            && (legacy.unlockedMask & (1 << basicCharacter)) != 0
+            && (legacy.unlockedMask & ~((1 << characterCount) - 1)) == 0
+            && legacy.dashGrowth <= 2 && legacy.audioSetting <= 2
+            && legacy.reserved == 0;
+        CloseHandle(file);
+        if (!valid)
+        {
+            ResetMetaProfile();
+            return false;
+        }
+        ResetMetaProfile();
+        globalCoin = legacy.coin;
+        unlockedCharacterMask = legacy.unlockedMask;
+        audioEnabled = legacy.audioSetting != 2;
+        characterGlobalLevel[basicCharacter][0] = legacy.dashGrowth;
+        WriteMetaProfile();
+        return true;
+    }
+
+    MetaProfile profile{};
+    bool valid = size == sizeof(profile)
         && ReadFile(file, &profile, sizeof(profile), &bytesRead, nullptr)
         && bytesRead == sizeof(profile);
     CloseHandle(file);
@@ -557,8 +627,20 @@ bool ReadMetaProfile()
         && profile.coin >= 0
         && (profile.unlockedMask & (1 << basicCharacter)) != 0
         && (profile.unlockedMask & ~((1 << characterCount) - 1)) == 0
-        && profile.dashGrowth <= maximumDashGrowthLevel
-        && profile.audioSetting <= 2 && profile.reserved == 0;
+        && profile.audioSetting <= 2;
+    for (BYTE upgrade = 0; valid && upgrade < commonUpgradeCount; ++upgrade)
+    {
+        valid = profile.commonLevel[upgrade] <= commonUpgradeMaximum[upgrade];
+    }
+    for (BYTE character = 0; valid && character < characterCount; ++character)
+    {
+        for (BYTE upgrade = 0; valid && upgrade < characterGlobalUpgradeCount;
+            ++upgrade)
+        {
+            valid = profile.characterLevel[character][upgrade]
+                <= characterGlobalMaximum[character][upgrade];
+        }
+    }
     if (!valid)
     {
         ResetMetaProfile();
@@ -566,23 +648,42 @@ bool ReadMetaProfile()
     }
     globalCoin = profile.coin;
     unlockedCharacterMask = profile.unlockedMask;
-    dashGrowthLevel = profile.dashGrowth;
     audioEnabled = profile.audioSetting != 2;
+    for (BYTE upgrade = 0; upgrade < commonUpgradeCount; ++upgrade)
+    {
+        commonGlobalLevel[upgrade] = profile.commonLevel[upgrade];
+    }
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        for (BYTE upgrade = 0; upgrade < characterGlobalUpgradeCount; ++upgrade)
+        {
+            characterGlobalLevel[character][upgrade]
+                = profile.characterLevel[character][upgrade];
+        }
+    }
     return true;
 }
 
 void WriteMetaProfile()
 {
-    MetaProfile profile
+    MetaProfile profile{};
+    profile.magic = metaMagic;
+    profile.version = metaVersion;
+    profile.coin = globalCoin;
+    profile.unlockedMask = unlockedCharacterMask;
+    profile.audioSetting = static_cast<BYTE>(audioEnabled ? 1 : 2);
+    for (BYTE upgrade = 0; upgrade < commonUpgradeCount; ++upgrade)
     {
-        metaMagic,
-        metaVersion,
-        globalCoin,
-        unlockedCharacterMask,
-        dashGrowthLevel,
-        static_cast<BYTE>(audioEnabled ? 1 : 2),
-        0
-    };
+        profile.commonLevel[upgrade] = commonGlobalLevel[upgrade];
+    }
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        for (BYTE upgrade = 0; upgrade < characterGlobalUpgradeCount; ++upgrade)
+        {
+            profile.characterLevel[character][upgrade]
+                = characterGlobalLevel[character][upgrade];
+        }
+    }
     HANDLE file = CreateFileW(metaFileName, GENERIC_WRITE, 0, nullptr,
         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file != INVALID_HANDLE_VALUE)
@@ -593,11 +694,198 @@ void WriteMetaProfile()
     }
 }
 
+BYTE CharacterDashCapacity(BYTE character)
+{
+    if (character == heavyCharacter)
+    {
+        return 1;
+    }
+    BYTE capacity = static_cast<BYTE>(1
+        + characterGlobalLevel[character][0]);
+    BYTE cap = characterDashCaps[character];
+    return capacity < cap ? capacity : cap;
+}
+
 BYTE CurrentDashCapacity()
 {
-    BYTE capacity = static_cast<BYTE>(1 + dashGrowthLevel);
-    BYTE cap = characterDashCaps[selectedCharacter];
-    return capacity < cap ? capacity : cap;
+    return CharacterDashCapacity(selectedCharacter);
+}
+
+LONG CharacterMaximumHP(BYTE character)
+{
+    LONG maximumHP = characterProfiles[character].maxHP;
+    if (character == basicCharacter)
+    {
+        maximumHP += characterGlobalLevel[character][1];
+    }
+    else if (character == heavyCharacter)
+    {
+        maximumHP += characterGlobalLevel[character][0] * 2;
+    }
+    return maximumHP;
+}
+
+float CharacterMoveSpeed(BYTE character)
+{
+    BYTE level = 0;
+    if (character == mobilityCharacter)
+    {
+        level = characterGlobalLevel[character][1];
+    }
+    else if (character == piercerCharacter || character == heavyCharacter
+        || character == rapidCharacter)
+    {
+        level = characterGlobalLevel[character][2];
+    }
+    return playerMoveSpeed * characterProfiles[character].moveScale
+        * (1.0f + level * 0.05f);
+}
+
+float CharacterSlashCooldown(BYTE character)
+{
+    float cooldown = slashCooldownDuration
+        * characterProfiles[character].slashCooldownScale;
+    if (character == rapidCharacter)
+    {
+        cooldown *= 1.0f - characterGlobalLevel[character][1] * 0.1f;
+    }
+    return cooldown;
+}
+
+LONG CharacterSlashReach(BYTE character)
+{
+    LONG reach = characterProfiles[character].slashReach;
+    if (character == basicCharacter && characterGlobalLevel[character][2])
+    {
+        ++reach;
+    }
+    else if (character == piercerCharacter)
+    {
+        reach += characterGlobalLevel[character][1] * 2;
+    }
+    return reach;
+}
+
+LONG CharacterSlashWidth(BYTE character)
+{
+    LONG width = characterProfiles[character].slashWidth;
+    if (character == basicCharacter && characterGlobalLevel[character][2] >= 2)
+    {
+        ++width;
+    }
+    else if (character == heavyCharacter)
+    {
+        width += characterGlobalLevel[character][1] * 2;
+    }
+    return width;
+}
+
+float CharacterDashDistance(BYTE character)
+{
+    float distance = dashDistance * characterProfiles[character].dashDistanceScale;
+    if (character == mobilityCharacter)
+    {
+        distance *= 1.0f + characterGlobalLevel[character][2] * 0.1f;
+    }
+    return distance;
+}
+
+BYTE CurrentRunRerollCapacity()
+{
+    return static_cast<BYTE>(1 + commonGlobalLevel[runRerollGlobalUpgrade]);
+}
+
+void ApplyFieldRecovery(LONG& playerHP, LONG maximumHP)
+{
+    if (commonGlobalLevel[fieldRecoveryGlobalUpgrade] && playerHP < maximumHP)
+    {
+        ++playerHP;
+    }
+}
+
+bool BuyCommonGlobalUpgrade(BYTE upgrade)
+{
+    BYTE level = commonGlobalLevel[upgrade];
+    if (level >= commonUpgradeMaximum[upgrade])
+    {
+        titleStatus = 5;
+        return false;
+    }
+    LONG cost = commonUpgradeCost[upgrade][level];
+    if (globalCoin < cost)
+    {
+        titleStatus = 3;
+        return false;
+    }
+    globalCoin -= cost;
+    ++commonGlobalLevel[upgrade];
+    titleStatus = 4;
+    WriteMetaProfile();
+    return true;
+}
+
+bool BuyCharacterGlobalUpgrade(BYTE character, BYTE upgrade)
+{
+    BYTE level = characterGlobalLevel[character][upgrade];
+    if (level >= characterGlobalMaximum[character][upgrade])
+    {
+        titleStatus = 5;
+        return false;
+    }
+    LONG cost = characterGlobalCost[level];
+    if (globalCoin < cost)
+    {
+        titleStatus = 3;
+        return false;
+    }
+    globalCoin -= cost;
+    ++characterGlobalLevel[character][upgrade];
+    titleStatus = 4;
+    WriteMetaProfile();
+    return true;
+}
+
+bool UnlockCharacter(BYTE character)
+{
+    BYTE characterBit = static_cast<BYTE>(1 << character);
+    if (unlockedCharacterMask & characterBit)
+    {
+        selectedCharacter = character;
+        titleStatus = 4;
+        return true;
+    }
+    if (globalCoin < characterUnlockCosts[character])
+    {
+        titleStatus = 3;
+        return false;
+    }
+    globalCoin -= characterUnlockCosts[character];
+    unlockedCharacterMask |= characterBit;
+    selectedCharacter = character;
+    titleStatus = 4;
+    WriteMetaProfile();
+    return true;
+}
+
+const wchar_t* CharacterName(BYTE character)
+{
+    return character == basicCharacter ? L"BASIC"
+        : (character == mobilityCharacter ? L"MOBILITY"
+            : (character == piercerCharacter ? L"PIERCER"
+                : (character == heavyCharacter ? L"HEAVY" : L"RAPID")));
+}
+
+const wchar_t* CharacterGlobalUpgradeName(BYTE character, BYTE upgrade)
+{
+    constexpr const wchar_t* names[characterCount][characterGlobalUpgradeCount]
+    {
+        { L"DASH CAP", L"VITALITY", L"BALANCED EDGE" },
+        { L"DASH CAP", L"LIGHT FRAME", L"LONG STEP" },
+        { L"DASH CAP", L"LONG POINT", L"SAFE DISTANCE" },
+        { L"FORTIFY", L"WIDE SWING", L"STEADY BODY" },
+        { L"DASH CAP", L"TEMPO", L"LIGHT BODY" }
+    };
+    return names[character][upgrade];
 }
 
 void ResetDashRecharge(float& rechargeRemaining, float rechargeDuration)
@@ -651,12 +939,10 @@ void GrantRunCoin(bool cleared)
         return;
     }
     LONG reward = runKillCount + (cleared ? runClearCoinBonus : 0);
-    if (!alertEventCount)
-    {
-        reward *= 2;
-    }
-    globalCoin = reward > 0x7fffffff - globalCoin
-        ? 0x7fffffff : globalCoin + reward;
+    reward += reward * commonGlobalLevel[coinSenseGlobalUpgrade] / 10;
+    runEarnedCoin = reward > 0x7fffffff - globalCoin
+        ? 0x7fffffff - globalCoin : reward;
+    globalCoin += runEarnedCoin;
     runRewardGranted = true;
     WriteMetaProfile();
 }
@@ -681,10 +967,10 @@ bool ReadCheckpoint(SaveCheckpoint* checkpoint)
         && checkpoint->runKills >= 0
         && checkpoint->moveStack <= 2 && checkpoint->slashStack <= 2
         && checkpoint->dashStack <= 2
-        && (checkpoint->functionalFlags & ~7) == 0 && checkpoint->reroll <= 1
+        && (checkpoint->functionalFlags & ~7) == 0 && checkpoint->reroll <= 2
         && checkpoint->character < characterCount
-        && checkpoint->dashCharges <= 3
-        && checkpoint->playerHP <= characterProfiles[checkpoint->character].maxHP
+        && checkpoint->dashCharges <= 4
+        && checkpoint->playerHP <= CharacterMaximumHP(checkpoint->character)
         && checkpoint->moveStack + checkpoint->slashStack + checkpoint->dashStack
             + ((checkpoint->functionalFlags & silentDashUpgradeFlag) != 0)
             + ((checkpoint->functionalFlags & executeReachUpgradeFlag) != 0)
@@ -803,10 +1089,9 @@ void GenerateUpgradeOffer(bool reroll)
 void RecalculateAugmentStats(float& moveSpeed, float& slashCooldown,
     float& dashCooldown)
 {
-    const CharacterProfile& profile = characterProfiles[selectedCharacter];
-    moveSpeed = playerMoveSpeed * profile.moveScale
+    moveSpeed = CharacterMoveSpeed(selectedCharacter)
         * (1.0f + moveUpgradeStack * 0.1f);
-    slashCooldown = slashCooldownDuration * profile.slashCooldownScale
+    slashCooldown = CharacterSlashCooldown(selectedCharacter)
         * (1.0f - slashUpgradeStack * 0.2f);
     dashCooldown = dashCooldownDuration * (1.0f - dashUpgradeStack * 0.2f);
 }
@@ -825,7 +1110,7 @@ LONG CurrentExecuteReach()
 void ApplyFieldMedic(LONG& playerHP)
 {
     if ((functionalUpgradeFlags & fieldMedicUpgradeFlag)
-        && playerHP < characterProfiles[selectedCharacter].maxHP)
+        && playerHP < CharacterMaximumHP(selectedCharacter))
     {
         ++playerHP;
     }
@@ -858,10 +1143,9 @@ bool PiercerSlashHitsEnemy(float originX, float originY, LONG directionX,
         + absoluteForwardY * enemyHalfHeight;
     float enemyLateralRadius = absoluteForwardY * enemyHalfWidth
         + absoluteForwardX * enemyHalfHeight;
-    const CharacterProfile& profile = characterProfiles[piercerCharacter];
     return forward + enemyForwardRadius > start
-        && forward - enemyForwardRadius < start + profile.slashReach
-        && lateral <= profile.slashWidth * 0.5f + enemyLateralRadius;
+        && forward - enemyForwardRadius < start + CharacterSlashReach(piercerCharacter)
+        && lateral <= CharacterSlashWidth(piercerCharacter) * 0.5f + enemyLateralRadius;
 }
 
 bool PiercerSlashOutlinePixel(float originX, float originY, LONG directionX,
@@ -882,9 +1166,8 @@ bool PiercerSlashOutlinePixel(float originX, float originY, LONG directionX,
     float absoluteForwardY = forwardY < 0.0f ? -forwardY : forwardY;
     float start = absoluteForwardX * playerHalfWidth
         + absoluteForwardY * playerHalfHeight;
-    const CharacterProfile& profile = characterProfiles[piercerCharacter];
-    float end = start + profile.slashReach;
-    float halfWidth = profile.slashWidth * 0.5f;
+    float end = start + CharacterSlashReach(piercerCharacter);
+    float halfWidth = CharacterSlashWidth(piercerCharacter) * 0.5f;
     return forward >= start && forward <= end && lateral <= halfWidth
         && (forward < start + 1.0f || forward > end - 1.0f
             || lateral > halfWidth - 1.0f);
@@ -1877,12 +2160,12 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         else if (applicationState == characterSelectState && pressed && !escapePressed)
         {
-            applicationState = gameStartMenuState;
-            menuSelection = 0;
+            applicationState = preparationState;
+            menuSelection = 3;
             titleStatus = 0;
             InvalidateRect(window, nullptr, FALSE);
         }
-        else if (applicationState == gameStartMenuState && pressed && !escapePressed)
+        else if (applicationState == preparationState && pressed && !escapePressed)
         {
             applicationState = titleMainState;
             menuSelection = 0;
@@ -2058,7 +2341,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             {
                 if (menuSelection == 0)
                 {
-                    applicationState = gameStartMenuState;
+                    applicationState = preparationState;
                     menuSelection = 0;
                 }
                 else if (menuSelection == 1)
@@ -2081,66 +2364,64 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     DestroyWindow(window);
                 }
             }
-            else if (applicationState == gameStartMenuState && menuSelection == 0)
+            else if (applicationState == preparationState && menuSelection < 3)
+            {
+                BuyCommonGlobalUpgrade(static_cast<BYTE>(menuSelection));
+            }
+            else if (applicationState == preparationState && menuSelection == 3)
             {
                 applicationState = characterSelectState;
-                menuSelection = 0;
+                menuSelection = selectedCharacter;
+                characterUpgradeFocus = false;
+                characterUpgradeSelection = 0;
             }
-            else if (applicationState == gameStartMenuState && menuSelection == 1)
+            else if (applicationState == preparationState && menuSelection == 4)
             {
-                loadGameRequested = true;
+                if (unlockedCharacterMask & (1 << selectedCharacter))
+                {
+                    applicationState = gameplayState;
+                    newGameRequested = true;
+                }
             }
-            else if (applicationState == gameStartMenuState)
+            else if (applicationState == preparationState)
             {
                 applicationState = titleMainState;
                 menuSelection = 0;
             }
-            else if (applicationState == characterSelectState
-                && menuSelection < characterCount)
+            else if (applicationState == characterSelectState)
             {
                 BYTE character = static_cast<BYTE>(menuSelection);
-                BYTE characterBit = static_cast<BYTE>(1 << character);
-                if (unlockedCharacterMask & characterBit)
+                if (!characterUpgradeFocus)
                 {
-                    selectedCharacter = character;
-                    applicationState = gameplayState;
-                    newGameRequested = true;
+                    UnlockCharacter(character);
                 }
-                else if (globalCoin >= characterUnlockCosts[character])
+                else if (characterUpgradeSelection < characterGlobalUpgradeCount)
                 {
-                    globalCoin -= characterUnlockCosts[character];
-                    unlockedCharacterMask |= characterBit;
-                    WriteMetaProfile();
-                    titleStatus = 4;
+                    if (unlockedCharacterMask & (1 << character))
+                    {
+                        selectedCharacter = character;
+                        BuyCharacterGlobalUpgrade(character,
+                            static_cast<BYTE>(characterUpgradeSelection));
+                    }
+                    else
+                    {
+                        titleStatus = 3;
+                    }
                 }
-                else
+                else if (characterUpgradeSelection == 3)
                 {
-                    titleStatus = 3;
-                }
-            }
-            else if (applicationState == characterSelectState
-                && menuSelection == characterCount)
-            {
-                if (dashGrowthLevel >= maximumDashGrowthLevel)
-                {
-                    titleStatus = 5;
-                }
-                else if (globalCoin >= dashGrowthCosts[dashGrowthLevel])
-                {
-                    globalCoin -= dashGrowthCosts[dashGrowthLevel];
-                    ++dashGrowthLevel;
-                    WriteMetaProfile();
-                    titleStatus = 4;
+                    if (unlockedCharacterMask & (1 << character))
+                    {
+                        selectedCharacter = character;
+                        applicationState = gameplayState;
+                        newGameRequested = true;
+                    }
                 }
                 else
                 {
-                    titleStatus = 3;
+                    applicationState = preparationState;
+                    menuSelection = 3;
                 }
-            }
-            else
-            {
-                applicationState = gameStartMenuState;
-                menuSelection = 0;
             }
 
             InvalidateRect(window, nullptr, FALSE);
@@ -2273,6 +2554,38 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 InvalidateRect(window, nullptr, FALSE);
             }
         }
+        else if (applicationState == characterSelectState && newlyPressed)
+        {
+            if (wParam == VK_LEFT)
+            {
+                characterUpgradeFocus = false;
+            }
+            else if (wParam == VK_RIGHT)
+            {
+                characterUpgradeFocus = true;
+            }
+            else if (!characterUpgradeFocus && wParam == VK_UP && menuSelection > 0)
+            {
+                --menuSelection;
+            }
+            else if (!characterUpgradeFocus && wParam == VK_DOWN
+                && menuSelection < characterCount - 1)
+            {
+                ++menuSelection;
+            }
+            else if (characterUpgradeFocus && wParam == VK_UP
+                && characterUpgradeSelection > 0)
+            {
+                --characterUpgradeSelection;
+            }
+            else if (characterUpgradeFocus && wParam == VK_DOWN
+                && characterUpgradeSelection < 4)
+            {
+                ++characterUpgradeSelection;
+            }
+            titleStatus = 0;
+            InvalidateRect(window, nullptr, FALSE);
+        }
         else if (applicationState != gameplayState && newlyPressed
             && (wParam == VK_UP || wParam == VK_DOWN))
         {
@@ -2282,7 +2595,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             }
             else if (wParam == VK_DOWN
                 && menuSelection < (applicationState == titleMainState ? 4
-                    : (applicationState == characterSelectState ? characterCount + 1 : 2)))
+                    : 5))
             {
                 ++menuSelection;
             }
@@ -2385,104 +2698,242 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         {
             SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
             SetBkMode(deviceContext, TRANSPARENT);
-            SetTextColor(deviceContext, RGB(220, 220, 220));
+            int clientWidth = clientArea.right - clientArea.left;
             int clientHeight = clientArea.bottom - clientArea.top;
             RECT line = clientArea;
-            line.top = applicationState == characterSelectState
-                ? clientHeight / 12 : clientHeight / 5;
-            line.bottom = line.top + 30;
-            DrawTextW(deviceContext, applicationState == characterSelectState
-                ? L"\uCE90\uB9AD\uD130 \uC120\uD0DD" : L"DEAD SIGNAL", -1, &line,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-            wchar_t titleText[32];
-            if (applicationState == characterSelectState)
+            wchar_t titleText[64];
+            if (applicationState == titleMainState)
             {
-                line.top = clientHeight / 12 + 27;
-                line.bottom = line.top + 17;
-                wsprintfW(titleText, titleStatus == 3 ? L"Coin: %ld / LOW"
-                    : (titleStatus == 4 ? L"Coin: %ld / OK"
-                        : (titleStatus == 5 ? L"Coin: %ld / MAX" : L"Coin: %ld")),
+                line.top = clientHeight / 5;
+                line.bottom = line.top + 30;
+                SetTextColor(deviceContext, RGB(220, 220, 220));
+                DrawTextW(deviceContext, L"DEAD SIGNAL", -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                for (LONG item = 0; item < 5; ++item)
+                {
+                    const wchar_t* text = item == 0 ? L"\uAC8C\uC784 \uC2DC\uC791"
+                        : (item == 1 ? L"\uC774\uC5B4\uD558\uAE30"
+                            : (item == 2 ? L"\uC124\uC815"
+                                : (item == 3 ? L"\uB3C4\uC6C0\uB9D0" : L"\uC885\uB8CC")));
+                    line.top = clientHeight / 5 + 50 + item * 30;
+                    line.bottom = line.top + 24;
+                    SetTextColor(deviceContext, item == menuSelection
+                        ? RGB(255, 216, 0) : RGB(160, 160, 160));
+                    DrawTextW(deviceContext, text, -1, &line,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                }
+                if (titleStatus)
+                {
+                    line.top = clientHeight / 5 + 190;
+                    line.bottom = line.top + 24;
+                    SetTextColor(deviceContext, RGB(220, 220, 220));
+                    DrawTextW(deviceContext, L"\uC800\uC7A5 \uC5C6\uC74C", -1, &line,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                }
+            }
+            else if (applicationState == preparationState)
+            {
+                line.top = clientHeight * 4 / 180;
+                line.bottom = clientHeight * 22 / 180;
+                SetTextColor(deviceContext, RGB(220, 220, 220));
+                DrawTextW(deviceContext, L"COMMON GLOBAL UPGRADE", -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                line.top = clientHeight * 24 / 180;
+                line.bottom = clientHeight * 40 / 180;
+                wsprintfW(titleText, titleStatus == 3 ? L"COIN %03ld / LOW"
+                    : (titleStatus == 4 ? L"COIN %03ld / OK"
+                        : (titleStatus == 5 ? L"COIN %03ld / MAX" : L"COIN %03ld")),
                     globalCoin);
                 SetTextColor(deviceContext, titleStatus == 3
                     ? RGB(255, 96, 96) : RGB(220, 220, 220));
                 DrawTextW(deviceContext, titleText, -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            }
-            LONG itemCount = applicationState == titleMainState ? 5
-                : (applicationState == characterSelectState ? characterCount + 2 : 3);
-            for (LONG item = 0; item < itemCount; ++item)
-            {
-                const wchar_t* text;
-                if (applicationState == titleMainState)
+                constexpr const wchar_t* commonNames[commonUpgradeCount]
+                    { L"RUN REROLL", L"FIELD RECOVERY", L"COIN SENSE" };
+                for (LONG item = 0; item < 6; ++item)
                 {
-                    text = item == 0 ? L"\uAC8C\uC784 \uC2DC\uC791"
-                        : (item == 1 ? L"\uC774\uC5B4\uD558\uAE30"
-                            : (item == 2 ? L"\uC124\uC815"
-                                : (item == 3 ? L"\uB3C4\uC6C0\uB9D0" : L"\uC885\uB8CC")));
-                }
-                else if (applicationState == gameStartMenuState)
-                {
-                    text = item == 0 ? L"\uC0C8 \uAC8C\uC784"
-                        : (item == 1 ? L"\uBD88\uB7EC\uC624\uAE30" : L"\uB4A4\uB85C");
-                }
-                else
-                {
-                    if (item < characterCount)
+                    const wchar_t* text = item == 3 ? L"[ CHARACTER ]"
+                        : (item == 4 ? L"[ RUN START ]" : L"[ BACK ]");
+                    if (item < commonUpgradeCount)
                     {
-                        const wchar_t* name = item == basicCharacter ? L"\uAE30\uBCF8\uD615"
-                            : (item == mobilityCharacter ? L"\uAE30\uB3D9\uD615"
-                                : (item == piercerCharacter ? L"\uCC0C\uB974\uAE30\uD615"
-                                    : (item == heavyCharacter ? L"\uC911\uB7C9\uD615"
-                                        : L"\uC5F0\uACA9\uD615")));
-                        if (unlockedCharacterMask & (1 << item))
+                        BYTE level = commonGlobalLevel[item];
+                        BYTE maximum = commonUpgradeMaximum[item];
+                        if (level >= maximum)
                         {
-                            wsprintfW(titleText, L"%s [OK]", name);
+                            wsprintfW(titleText, L"%s  Lv%u/%u  MAX", commonNames[item],
+                                static_cast<UINT>(level), static_cast<UINT>(maximum));
                         }
                         else
                         {
-                            wsprintfW(titleText, L"%s [%ld]", name,
-                                characterUnlockCosts[item]);
+                            wsprintfW(titleText, L"%s  Lv%u/%u  COST %ld",
+                                commonNames[item], static_cast<UINT>(level),
+                                static_cast<UINT>(maximum), commonUpgradeCost[item][level]);
                         }
                         text = titleText;
                     }
-                    else if (item == characterCount)
+                    LONG logicalTop = item < 3 ? 46 + item * 22 : 120 + (item - 3) * 20;
+                    line.top = clientHeight * logicalTop / 180;
+                    line.bottom = clientHeight * (logicalTop + 17) / 180;
+                    SetTextColor(deviceContext, item == menuSelection
+                        ? RGB(255, 216, 0) : RGB(160, 160, 160));
+                    DrawTextW(deviceContext, text, -1, &line,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                }
+            }
+            else
+            {
+                LONG quarter = clientWidth / 4;
+                RECT divider{ quarter, 0, quarter + 1, clientHeight };
+                FillRect(deviceContext, &divider,
+                    reinterpret_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
+                divider.left = quarter * 2;
+                divider.right = divider.left + 1;
+                FillRect(deviceContext, &divider,
+                    reinterpret_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
+
+                line.top = clientHeight * 3 / 180;
+                line.bottom = clientHeight * 20 / 180;
+                line.left = 0;
+                line.right = quarter;
+                SetTextColor(deviceContext, RGB(220, 220, 220));
+                DrawTextW(deviceContext, L"CHAR", -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                line.left = quarter;
+                line.right = quarter * 2;
+                DrawTextW(deviceContext, L"PREVIEW", -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                line.left = quarter * 2;
+                line.right = clientWidth;
+                DrawTextW(deviceContext, L"CHARACTER GLOBAL UPGRADE", -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+                line.left = 0;
+                line.right = quarter;
+                for (LONG item = 0; item < characterCount; ++item)
+                {
+                    bool unlocked = (unlockedCharacterMask & (1 << item)) != 0;
+                    if (unlocked)
                     {
-                        if (dashGrowthLevel >= maximumDashGrowthLevel)
-                        {
-                            text = L"\uB300\uC2DC \uAC15\uD654 [MAX]";
-                        }
-                        else
-                        {
-                            wsprintfW(titleText, L"\uB300\uC2DC \uAC15\uD654 [%ld]",
-                                dashGrowthCosts[dashGrowthLevel]);
-                            text = titleText;
-                        }
+                        wsprintfW(titleText, item == selectedCharacter ? L"> %s" : L"%s",
+                            CharacterName(static_cast<BYTE>(item)));
                     }
                     else
                     {
-                        text = L"\uB4A4\uB85C";
+                        wsprintfW(titleText, L"LOCK %ld", characterUnlockCosts[item]);
+                    }
+                    line.top = clientHeight * (35 + item * 23) / 180;
+                    line.bottom = clientHeight * (52 + item * 23) / 180;
+                    SetTextColor(deviceContext, !characterUpgradeFocus && item == menuSelection
+                        ? RGB(255, 216, 0) : RGB(160, 160, 160));
+                    DrawTextW(deviceContext, titleText, -1, &line,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                }
+
+                BYTE previewCharacter = static_cast<BYTE>(menuSelection);
+                line.left = quarter;
+                line.right = quarter * 2;
+                line.top = clientHeight * 30 / 180;
+                line.bottom = clientHeight * 47 / 180;
+                SetTextColor(deviceContext, RGB(220, 220, 220));
+                DrawTextW(deviceContext, CharacterName(previewCharacter), -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                wsprintfW(titleText, L"HP %ld", CharacterMaximumHP(previewCharacter));
+                line.top = clientHeight * 93 / 180;
+                line.bottom = clientHeight * 108 / 180;
+                DrawTextW(deviceContext, titleText, -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                wsprintfW(titleText, L"MOVE %ld",
+                    static_cast<LONG>(CharacterMoveSpeed(previewCharacter) + 0.5f));
+                line.top = clientHeight * 109 / 180;
+                line.bottom = clientHeight * 124 / 180;
+                DrawTextW(deviceContext, titleText, -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                wsprintfW(titleText, L"DASH %u / %u",
+                    static_cast<UINT>(CharacterDashCapacity(previewCharacter)),
+                    static_cast<UINT>(characterDashCaps[previewCharacter]));
+                line.top = clientHeight * 125 / 180;
+                line.bottom = clientHeight * 140 / 180;
+                DrawTextW(deviceContext, titleText, -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                LONG previewScale = clientHeight / 90;
+                if (previewScale < 1)
+                {
+                    previewScale = 1;
+                }
+                LONG previewLeft = quarter + quarter / 2 - 4 * previewScale;
+                LONG previewTop = clientHeight * 51 / 180;
+                for (LONG y = 0; y < playerHeight; ++y)
+                {
+                    for (LONG x = 0; x < playerWidth; ++x)
+                    {
+                        bool head = y < 3 && x >= 2 && x < 6;
+                        bool body = y >= 3 && y < 8 && x >= 1 && x < 7;
+                        bool arm = y >= 4 && y < 7 && (x == 0 || x == 7);
+                        bool leg = y >= 8
+                            && ((x >= 1 && x < 3) || (x >= 5 && x < 7));
+                        if (head || body || arm || leg)
+                        {
+                            RECT pixel
+                            {
+                                previewLeft + x * previewScale,
+                                previewTop + y * previewScale,
+                                previewLeft + (x + 1) * previewScale,
+                                previewTop + (y + 1) * previewScale
+                            };
+                            FillRect(deviceContext, &pixel,
+                                reinterpret_cast<HBRUSH>(GetStockObject(
+                                    head ? WHITE_BRUSH : LTGRAY_BRUSH)));
+                        }
                     }
                 }
 
-                line.top = applicationState == characterSelectState
-                    ? clientHeight / 12 + 44 + item * 18
-                    : clientHeight / 5 + 50 + item * 30;
-                line.bottom = line.top
-                    + (applicationState == characterSelectState ? 16 : 24);
-                SetTextColor(deviceContext,
-                    item == menuSelection ? RGB(255, 216, 0) : RGB(160, 160, 160));
-                DrawTextW(deviceContext, text, -1, &line,
+                line.left = quarter * 2 + 4;
+                line.right = clientWidth - 4;
+                for (LONG item = 0; item < 5; ++item)
+                {
+                    const wchar_t* text = item == 3 ? L"[ RUN START ]" : L"[ BACK ]";
+                    if (item < characterGlobalUpgradeCount)
+                    {
+                        BYTE level = characterGlobalLevel[previewCharacter][item];
+                        BYTE maximum = characterGlobalMaximum[previewCharacter][item];
+                        if (level >= maximum)
+                        {
+                            wsprintfW(titleText, L"%s %u/%u MAX",
+                                CharacterGlobalUpgradeName(previewCharacter,
+                                    static_cast<BYTE>(item)),
+                                static_cast<UINT>(level), static_cast<UINT>(maximum));
+                        }
+                        else
+                        {
+                            wsprintfW(titleText, L"%s %u/%u C%ld",
+                                CharacterGlobalUpgradeName(previewCharacter,
+                                    static_cast<BYTE>(item)),
+                                static_cast<UINT>(level), static_cast<UINT>(maximum),
+                                characterGlobalCost[level]);
+                        }
+                        text = titleText;
+                    }
+                    LONG logicalTop = item < 3 ? 43 + item * 25 : 128 + (item - 3) * 22;
+                    line.top = clientHeight * logicalTop / 180;
+                    line.bottom = clientHeight * (logicalTop + 18) / 180;
+                    SetTextColor(deviceContext, characterUpgradeFocus
+                        && item == characterUpgradeSelection
+                        ? RGB(255, 216, 0) : RGB(160, 160, 160));
+                    DrawTextW(deviceContext, text, -1, &line,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                }
+                line.left = quarter;
+                line.right = clientWidth;
+                line.top = clientHeight * 21 / 180;
+                line.bottom = clientHeight * 36 / 180;
+                wsprintfW(titleText, titleStatus == 3 ? L"COIN %03ld / LOW"
+                    : (titleStatus == 4 ? L"COIN %03ld / OK"
+                        : (titleStatus == 5 ? L"COIN %03ld / MAX" : L"COIN %03ld")),
+                    globalCoin);
+                SetTextColor(deviceContext, titleStatus == 3
+                    ? RGB(255, 96, 96) : RGB(220, 220, 220));
+                DrawTextW(deviceContext, titleText, -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            }
-
-            if (titleStatus && applicationState != characterSelectState)
-            {
-                line.top = clientHeight / 5 + 190;
-                line.bottom = line.top + 24;
-                SetTextColor(deviceContext, RGB(220, 220, 220));
-                DrawTextW(deviceContext, L"\uC800\uC7A5 \uC5C6\uC74C",
-                    -1, &line, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
 
             EndPaint(window, &paint);
@@ -2598,7 +3049,11 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             for (LONG item = 0; item < 3; ++item)
             {
                 LONG upgrade = item ? upgradeOptionB : upgradeOptionA;
-                const wchar_t* text = rerollUsed ? L"REROLL (USED)" : L"REROLL";
+                bool rerollExhausted = rerollUsed >= CurrentRunRerollCapacity();
+                const wchar_t* text = hudText;
+                wsprintfW(hudText, L"REROLL %u/%u",
+                    static_cast<UINT>(rerollUsed),
+                    static_cast<UINT>(CurrentRunRerollCapacity()));
                 if (item != 2)
                 {
                     const wchar_t* name = upgrade == moveUpgrade ? L"MOVE+"
@@ -2616,8 +3071,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 line.top = clientHeight / 5 + 50 + item * 30;
                 line.bottom = line.top + 24;
                 SetTextColor(deviceContext, item == upgradeSelection
-                    ? (item == 2 && rerollUsed ? RGB(96, 96, 96) : RGB(255, 216, 0))
-                    : (item == 2 && rerollUsed ? RGB(64, 64, 64) : RGB(160, 160, 160)));
+                    ? (item == 2 && rerollExhausted ? RGB(96, 96, 96) : RGB(255, 216, 0))
+                    : (item == 2 && rerollExhausted ? RGB(64, 64, 64) : RGB(160, 160, 160)));
                 DrawTextW(deviceContext, text, -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
@@ -2627,18 +3082,55 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
             SetBkMode(deviceContext, TRANSPARENT);
             RECT line = clientArea;
-            if (runEndState == gameOverEndState)
+            wchar_t resultText[64];
+            line.top = clientHeight * 4 / 180;
+            line.bottom = clientHeight * 23 / 180;
+            SetTextColor(deviceContext, RGB(220, 220, 220));
+            DrawTextW(deviceContext, runEndState == runClearEndState
+                ? L"RUN CLEAR" : L"GAME OVER", -1, &line,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            constexpr const wchar_t* resultLabels[6]
             {
-                line.top = clientHeight / 2 - 50;
-                line.bottom = line.top + 30;
-                SetTextColor(deviceContext, RGB(220, 220, 220));
-                DrawTextW(deviceContext, L"GAME OVER", -1, &line,
+                L"CHARACTER  %s", L"ROOM  %ld / 12", L"KILL  %ld",
+                L"ALERT  %u", L"COIN  %ld", L"TOTAL COIN  %ld"
+            };
+            for (LONG item = 0; item < 6; ++item)
+            {
+                if (item == 0)
+                {
+                    wsprintfW(resultText, resultLabels[item],
+                        CharacterName(selectedCharacter));
+                }
+                else if (item == 1)
+                {
+                    wsprintfW(resultText, resultLabels[item], currentRoom + 1);
+                }
+                else if (item == 2)
+                {
+                    wsprintfW(resultText, resultLabels[item], runKillCount);
+                }
+                else if (item == 3)
+                {
+                    wsprintfW(resultText, resultLabels[item],
+                        static_cast<UINT>(alertEventCount));
+                }
+                else if (item == 4)
+                {
+                    wsprintfW(resultText, resultLabels[item], runEarnedCoin);
+                }
+                else
+                {
+                    wsprintfW(resultText, resultLabels[item], globalCoin);
+                }
+                line.top = clientHeight * (27 + item * 17) / 180;
+                line.bottom = clientHeight * (42 + item * 17) / 180;
+                DrawTextW(deviceContext, resultText, -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
             for (LONG item = 0; item < 2; ++item)
             {
-                line.top = clientHeight / 2 + 20 + item * 30;
-                line.bottom = line.top + 24;
+                line.top = clientHeight * (135 + item * 21) / 180;
+                line.bottom = clientHeight * (153 + item * 21) / 180;
                 SetTextColor(deviceContext,
                     item == runEndSelection ? RGB(255, 216, 0) : RGB(160, 160, 160));
                 DrawTextW(deviceContext,
@@ -2910,7 +3402,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 runSeed = checkpoint.seed;
                 currentRoom = checkpoint.room;
                 selectedCharacter = checkpoint.character;
-                playerMaxHP = characterProfiles[selectedCharacter].maxHP;
+                playerMaxHP = CharacterMaximumHP(selectedCharacter);
                 playerHP = checkpoint.playerHP;
                 moveUpgradeStack = checkpoint.moveStack;
                 slashUpgradeStack = checkpoint.slashStack;
@@ -2918,15 +3410,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 functionalUpgradeFlags = checkpoint.functionalFlags;
                 RecalculateAugmentStats(playerMoveSpeedCurrent,
                     slashCooldownDurationCurrent, dashCooldownDurationCurrent);
-                dashDistanceCurrent = dashDistance
-                    * characterProfiles[selectedCharacter].dashDistanceScale;
+                dashDistanceCurrent = CharacterDashDistance(selectedCharacter);
                 currentDashMaxCharges = CurrentDashCapacity();
                 currentDashCharges = checkpoint.dashCharges < currentDashMaxCharges
                     ? checkpoint.dashCharges : currentDashMaxCharges;
                 dashCooldownRemaining = currentDashCharges < currentDashMaxCharges
                     ? dashCooldownDurationCurrent : 0.0f;
-                rerollUsed = checkpoint.reroll != 0;
+                rerollUsed = checkpoint.reroll;
                 runKillCount = checkpoint.runKills;
+                runEarnedCoin = 0;
                 alertEventCount = checkpoint.alertEvents;
                 alertEventActive = false;
                 runRewardGranted = false;
@@ -2956,7 +3448,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     runSeed = 0xA341316Cu;
                 }
                 currentRoom = 0;
-                playerMaxHP = characterProfiles[selectedCharacter].maxHP;
+                playerMaxHP = CharacterMaximumHP(selectedCharacter);
                 playerHP = playerMaxHP;
                 moveUpgradeStack = 0;
                 slashUpgradeStack = 0;
@@ -2964,13 +3456,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 functionalUpgradeFlags = 0;
                 RecalculateAugmentStats(playerMoveSpeedCurrent,
                     slashCooldownDurationCurrent, dashCooldownDurationCurrent);
-                dashDistanceCurrent = dashDistance
-                    * characterProfiles[selectedCharacter].dashDistanceScale;
+                dashDistanceCurrent = CharacterDashDistance(selectedCharacter);
                 currentDashMaxCharges = CurrentDashCapacity();
                 currentDashCharges = currentDashMaxCharges;
                 dashCooldownRemaining = 0.0f;
-                rerollUsed = false;
+                rerollUsed = 0;
                 runKillCount = 0;
+                runEarnedCoin = 0;
                 alertEventCount = 0;
                 alertEventActive = false;
                 runRewardGranted = false;
@@ -3106,10 +3598,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             {
                 if (upgradeSelection == 2)
                 {
-                    if (!rerollUsed)
+                    if (rerollUsed < CurrentRunRerollCapacity())
                     {
                         GenerateUpgradeOffer(true);
-                        rerollUsed = true;
+                        ++rerollUsed;
                         upgradeSelection = 0;
                         InvalidateRect(window, nullptr, FALSE);
                     }
@@ -3135,6 +3627,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     }
                     RecalculateAugmentStats(playerMoveSpeedCurrent,
                         slashCooldownDurationCurrent, dashCooldownDurationCurrent);
+                    ApplyFieldRecovery(playerHP, playerMaxHP);
                     if (dashCooldownRemaining > dashCooldownDurationCurrent)
                     {
                         dashCooldownRemaining = dashCooldownDurationCurrent;
@@ -4068,13 +4561,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     LONG slashCenterX = static_cast<LONG>(playerX);
                     LONG slashCenterY = static_cast<LONG>(playerY);
                     const CharacterProfile& profile = characterProfiles[selectedCharacter];
+                    LONG currentSlashReach = CharacterSlashReach(selectedCharacter);
+                    LONG currentSlashWidth = CharacterSlashWidth(selectedCharacter);
                     slashOriginX = playerX;
                     slashOriginY = playerY;
                     slashDirectionX = facingX;
                     slashDirectionY = facingY;
                     if (selectedCharacter == piercerCharacter)
                     {
-                        LONG extent = profile.slashReach + playerHeight;
+                        LONG extent = currentSlashReach + playerHeight;
                         slashLeft = slashCenterX - extent;
                         slashRight = slashCenterX + extent + 1;
                         slashTop = slashCenterY - extent;
@@ -4085,33 +4580,33 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         if (facingX < 0)
                         {
                             slashRight = slashCenterX - playerWidth / 2;
-                            slashLeft = slashRight - profile.slashReach;
+                            slashLeft = slashRight - currentSlashReach;
                         }
                         else if (facingX > 0)
                         {
                             slashLeft = slashCenterX + playerWidth / 2;
-                            slashRight = slashLeft + profile.slashReach;
+                            slashRight = slashLeft + currentSlashReach;
                         }
                         else
                         {
-                            slashLeft = slashCenterX - profile.slashWidth / 2;
-                            slashRight = slashLeft + profile.slashWidth;
+                            slashLeft = slashCenterX - currentSlashWidth / 2;
+                            slashRight = slashLeft + currentSlashWidth;
                         }
 
                         if (facingY < 0)
                         {
                             slashBottom = slashCenterY - playerHeight / 2;
-                            slashTop = slashBottom - profile.slashReach;
+                            slashTop = slashBottom - currentSlashReach;
                         }
                         else if (facingY > 0)
                         {
                             slashTop = slashCenterY + playerHeight / 2;
-                            slashBottom = slashTop + profile.slashReach;
+                            slashBottom = slashTop + currentSlashReach;
                         }
                         else
                         {
-                            slashTop = slashCenterY - profile.slashWidth / 2;
-                            slashBottom = slashTop + profile.slashWidth;
+                            slashTop = slashCenterY - currentSlashWidth / 2;
+                            slashBottom = slashTop + currentSlashWidth;
                         }
                     }
 
@@ -5358,7 +5853,8 @@ int main()
         || hunterReacquireRangeSquared != 70.0f * 70.0f
         || hunterAlertSearchDuration != 15.0f || lostSightHoldDuration != 0.5f;
     failures += saveVersion != 8 || sizeof(SaveCheckpoint) != 32
-        || metaVersion != 1 || sizeof(MetaProfile) != 16;
+        || metaVersion != 2 || sizeof(LegacyMetaProfile) != 16
+        || sizeof(MetaProfile) != 32;
 
     EnemyRuntime transition{};
     transition.alive = true;
@@ -5493,7 +5989,8 @@ int main()
     failures += enemyVisionRange != 70 || enemyAttackWindupDuration != 0.3f
         || playerInvulnerabilityDuration != 0.5f;
     failures += saveVersion != 8 || sizeof(SaveCheckpoint) != 32
-        || metaVersion != 1 || sizeof(MetaProfile) != 16;
+        || metaVersion != 2 || sizeof(LegacyMetaProfile) != 16
+        || sizeof(MetaProfile) != 32;
 
     failures += !PointInsideVisionSector(0.0f, 0.0f, 1.0f, 0.0f,
         70.0f, 0.0f);
@@ -5653,7 +6150,8 @@ extern "C" __declspec(dllexport) void CALLBACK RunB03Validation(HWND, HINSTANCE,
 }
 #endif
 
-#ifdef DEAD_SIGNAL_B06_VALIDATION
+#ifdef DEAD_SIGNAL_B08_VALIDATION
+#if 0
 int main()
 {
     LONG failures = 0;
@@ -5757,18 +6255,19 @@ int main()
     failures += EnterEnemyAlert(relay, 10, 5) != 1
         || alertEventCount != 2 || !alertEventActive;
 
-    constexpr LONG expectedHP[characterCount]{ 10, 9, 8, 12, 9 };
+    constexpr LONG expectedHP[characterCount]{ 10, 8, 7, 14, 8 };
     constexpr float expectedMoveSpeed[characterCount]
-        { 60.0f, 66.0f, 63.0f, 51.0f, 63.0f };
+        { 60.0f, 72.0f, 57.0f, 45.0f, 66.0f };
     constexpr float expectedSlashCooldown[characterCount]
-        { 0.5f, 0.45f, 0.55f, 0.625f, 0.375f };
-    constexpr LONG expectedSlashReach[characterCount]{ 8, 7, 12, 7, 7 };
-    constexpr LONG expectedSlashWidth[characterCount]{ 8, 8, 4, 8, 8 };
+        { 0.5f, 0.5f, 0.6f, 0.75f, 0.25f };
+    constexpr LONG expectedSlashReach[characterCount]{ 8, 7, 16, 6, 6 };
+    constexpr LONG expectedSlashWidth[characterCount]{ 8, 7, 3, 12, 6 };
     constexpr LONG expectedSlashDamage[characterCount]{ 1, 1, 1, 2, 1 };
     constexpr LONG expectedSlashHitCap[characterCount]{ 3, 2, 1, 4, 2 };
     constexpr float expectedDashDistance[characterCount]
         { 32.0f, 35.2f, 32.0f, 28.8f, 32.0f };
     constexpr BYTE expectedCharacterDashCap[characterCount]{ 3, 3, 2, 2, 3 };
+    constexpr LONG b07MaxHP[characterCount]{ 10, 9, 8, 12, 9 };
 
     for (BYTE character = 0; character < characterCount; ++character)
     {
@@ -5814,12 +6313,13 @@ int main()
     const CharacterProfile& heavyProfile = characterProfiles[heavyCharacter];
     const CharacterProfile& rapidProfile = characterProfiles[rapidCharacter];
     failures += !(mobilityProfile.moveScale > basicProfile.moveScale
-            && mobilityProfile.slashCooldownScale < basicProfile.slashCooldownScale
+            && mobilityProfile.slashCooldownScale == basicProfile.slashCooldownScale
             && mobilityProfile.dashDistanceScale > basicProfile.dashDistanceScale
             && mobilityProfile.maxHP < basicProfile.maxHP
             && mobilityProfile.slashReach < basicProfile.slashReach
+            && mobilityProfile.slashWidth < basicProfile.slashWidth
             && mobilityProfile.slashHitCap < basicProfile.slashHitCap);
-    failures += !(piercerProfile.moveScale > basicProfile.moveScale
+    failures += !(piercerProfile.moveScale < basicProfile.moveScale
             && piercerProfile.slashReach > basicProfile.slashReach
             && piercerProfile.maxHP < basicProfile.maxHP
             && piercerProfile.slashCooldownScale > basicProfile.slashCooldownScale
@@ -5830,12 +6330,78 @@ int main()
             && heavyProfile.slashHitCap > basicProfile.slashHitCap
             && heavyProfile.moveScale < basicProfile.moveScale
             && heavyProfile.slashCooldownScale > basicProfile.slashCooldownScale
+            && heavyProfile.slashReach < basicProfile.slashReach
+            && heavyProfile.slashWidth > basicProfile.slashWidth
             && heavyProfile.dashDistanceScale < basicProfile.dashDistanceScale);
     failures += !(rapidProfile.moveScale > basicProfile.moveScale
             && rapidProfile.slashCooldownScale < basicProfile.slashCooldownScale
             && rapidProfile.maxHP < basicProfile.maxHP
             && rapidProfile.slashReach < basicProfile.slashReach
+            && rapidProfile.slashWidth < basicProfile.slashWidth
             && rapidProfile.slashHitCap < basicProfile.slashHitCap);
+
+    constexpr LONG cardinalX[4]{ 0, 0, -1, 1 };
+    constexpr LONG cardinalY[4]{ -1, 1, 0, 0 };
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        const CharacterProfile& profile = characterProfiles[character];
+        for (LONG direction = 0; direction < 4; ++direction)
+        {
+            if (character == piercerCharacter)
+            {
+                LONG outlineLeft = 1000;
+                LONG outlineTop = 1000;
+                LONG outlineRight = -1000;
+                LONG outlineBottom = -1000;
+                for (LONG y = 70; y < 130; ++y)
+                {
+                    for (LONG x = 70; x < 130; ++x)
+                    {
+                        if (PiercerSlashOutlinePixel(100.0f, 100.0f,
+                            cardinalX[direction], cardinalY[direction],
+                            x + 0.5f, y + 0.5f))
+                        {
+                            if (x < outlineLeft)
+                            {
+                                outlineLeft = x;
+                            }
+                            if (x > outlineRight)
+                            {
+                                outlineRight = x;
+                            }
+                            if (y < outlineTop)
+                            {
+                                outlineTop = y;
+                            }
+                            if (y > outlineBottom)
+                            {
+                                outlineBottom = y;
+                            }
+                        }
+                    }
+                }
+                LONG expectedX = cardinalX[direction]
+                    ? profile.slashReach : profile.slashWidth;
+                LONG expectedY = cardinalY[direction]
+                    ? profile.slashReach : profile.slashWidth;
+                failures += outlineRight - outlineLeft + 1 != expectedX
+                    || outlineBottom - outlineTop + 1 != expectedY;
+            }
+            else
+            {
+                LONG shapeWidth = cardinalX[direction]
+                    ? profile.slashReach : profile.slashWidth;
+                LONG shapeHeight = cardinalY[direction]
+                    ? profile.slashReach : profile.slashWidth;
+                failures += shapeWidth != (cardinalX[direction]
+                        ? expectedSlashReach[character]
+                        : expectedSlashWidth[character])
+                    || shapeHeight != (cardinalY[direction]
+                        ? expectedSlashReach[character]
+                        : expectedSlashWidth[character]);
+            }
+        }
+    }
 
     for (BYTE character = 0; character < characterCount; ++character)
     {
@@ -5889,15 +6455,19 @@ int main()
     }
 
     failures += !PiercerSlashHitsEnemy(100.0f, 100.0f, 1, 0,
-            119.0f, 100.0f)
+            123.0f, 100.0f)
         || PiercerSlashHitsEnemy(100.0f, 100.0f, 1, 0,
-            110.0f, 109.0f)
+            124.0f, 100.0f)
+        || PiercerSlashHitsEnemy(100.0f, 100.0f, 1, 0,
+            110.0f, 108.0f)
         || !PiercerSlashHitsEnemy(100.0f, 100.0f, 1, 1,
             110.0f, 110.0f)
         || !PiercerSlashOutlinePixel(100.0f, 100.0f, 1, 0,
-            104.5f, 100.0f)
+            104.5f, 99.5f)
         || PiercerSlashOutlinePixel(100.0f, 100.0f, 1, 0,
-            116.5f, 100.0f);
+            120.5f, 100.5f)
+        || PiercerSlashOutlinePixel(100.0f, 100.0f, 1, 0,
+            110.5f, 98.5f);
 
     moveUpgradeStack = 1;
     slashUpgradeStack = 0;
@@ -5909,36 +6479,43 @@ int main()
     float combinationDash = 0.0f;
     RecalculateAugmentStats(combinationMove, combinationSlash,
         combinationDash);
-    failures += fabsf(combinationMove - 72.6f) > 0.0001f
-        || fabsf(combinationSlash - 0.45f) > 0.0001f;
-    selectedCharacter = heavyCharacter;
-    moveUpgradeStack = 0;
-    slashUpgradeStack = 1;
-    RecalculateAugmentStats(combinationMove, combinationSlash,
-        combinationDash);
-    failures += fabsf(combinationMove - 51.0f) > 0.0001f
+    failures += fabsf(combinationMove - 79.2f) > 0.0001f
         || fabsf(combinationSlash - 0.5f) > 0.0001f;
     selectedCharacter = piercerCharacter;
-    slashUpgradeStack = 0;
+    moveUpgradeStack = 1;
     functionalUpgradeFlags = executeReachUpgradeFlag;
     RecalculateAugmentStats(combinationMove, combinationSlash,
         combinationDash);
-    failures += fabsf(combinationMove - 63.0f) > 0.0001f
+    failures += fabsf(combinationMove - 62.7f) > 0.0001f
+        || fabsf(combinationSlash - 0.6f) > 0.0001f
         || CurrentExecuteReach() != 8
-        || characterProfiles[selectedCharacter].slashReach != 12;
+        || characterProfiles[selectedCharacter].slashReach != 16;
+    selectedCharacter = heavyCharacter;
+    moveUpgradeStack = 0;
+    slashUpgradeStack = 1;
+    functionalUpgradeFlags = 0;
+    RecalculateAugmentStats(combinationMove, combinationSlash,
+        combinationDash);
+    failures += fabsf(combinationMove - 45.0f) > 0.0001f
+        || fabsf(combinationSlash - 0.6f) > 0.0001f;
     selectedCharacter = rapidCharacter;
     slashUpgradeStack = 1;
     dashUpgradeStack = 1;
     functionalUpgradeFlags = silentDashUpgradeFlag;
     RecalculateAugmentStats(combinationMove, combinationSlash,
         combinationDash);
-    failures += fabsf(combinationSlash - 0.3f) > 0.0001f
+    failures += fabsf(combinationSlash - 0.2f) > 0.0001f
         || fabsf(combinationDash - 0.8f) > 0.0001f
         || PlayerMovementIsAudible(true, true)
         || !PlayerMovementIsAudible(true, false);
+    slashUpgradeStack = 2;
+    RecalculateAugmentStats(combinationMove, combinationSlash,
+        combinationDash);
+    failures += fabsf(combinationSlash - 0.15f) > 0.0001f
+        || combinationSlash <= 0.0f;
     selectedCharacter = heavyCharacter;
     functionalUpgradeFlags = fieldMedicUpgradeFlag;
-    LONG medicHP = 11;
+    LONG medicHP = 13;
     ApplyFieldMedic(medicHP);
     ApplyFieldMedic(medicHP);
     failures += medicHP != heavyProfile.maxHP;
@@ -6002,6 +6579,16 @@ int main()
             || checkpoint.dashCharges != currentDashMaxCharges
             || checkpoint.runKills != 11;
 
+        WriteCheckpoint(runSeed, currentRoom, b07MaxHP[character], 11);
+        checkpoint = {};
+        failures += !ReadCheckpoint(&checkpoint);
+        LONG compatibleHP = checkpoint.playerHP
+            < characterProfiles[character].maxHP ? checkpoint.playerHP
+            : characterProfiles[character].maxHP;
+        failures += compatibleHP != (b07MaxHP[character]
+                < expectedHP[character] ? b07MaxHP[character]
+                : expectedHP[character]);
+
         selectedCharacter = checkpoint.character;
         moveUpgradeStack = checkpoint.moveStack;
         slashUpgradeStack = checkpoint.slashStack;
@@ -6050,7 +6637,7 @@ int main()
     GrantRunCoin(true);
     failures += globalCoin != 16;
 
-#ifdef DEAD_SIGNAL_B06_SOAK_VALIDATION
+#ifdef DEAD_SIGNAL_B08_SOAK_VALIDATION
     EnemyRuntime soakEnemies[maxEnemyCount]{};
     ULONGLONG soakStart = GetTickCount64();
     ULONGLONG soakUpdates = 0;
@@ -6132,18 +6719,387 @@ int main()
 #endif
 
     DeleteFileW(metaFileName);
-    printf("b06_failures=%ld slash70=%d relay80=%ld events=%u dash=%u save=%lu meta=%lu\n",
+    printf("b08_failures=%ld slash70=%d relay80=%ld events=%u dash=%u save=%lu meta=%lu\n",
         failures, slashEnemies[5].alert, relayEntered, alertEventCount,
         currentDashCharges, static_cast<unsigned long>(sizeof(SaveCheckpoint)),
         static_cast<unsigned long>(sizeof(MetaProfile)));
     return failures;
 }
 
-extern "C" __declspec(dllexport) void CALLBACK RunB06Validation(HWND, HINSTANCE,
+extern "C" __declspec(dllexport) void CALLBACK RunB08Validation(HWND, HINSTANCE,
     LPSTR, int)
 {
     FILE* output = nullptr;
-    freopen_s(&output, "B06Validation.txt", "w", stdout);
+    freopen_s(&output, "B08Validation.txt", "w", stdout);
+    main();
+    if (output)
+    {
+        fclose(output);
+    }
+}
+#endif
+
+int main()
+{
+    LONG failures = 0;
+    DeleteFileW(metaFileName);
+    DeleteFileW(saveFileName);
+    ResetMetaProfile();
+
+    failures += slashLocalAlertRangeSquared != 70.0f * 70.0f
+        || listenerAlertRangeSquared != 80.0f * 80.0f
+        || enemyVisionRange != 70 || enemyAttackWindupDuration != 0.3f
+        || playerInvulnerabilityDuration != 0.5f
+        || hunterAlertSpeed != 62.0f || pressureMoveSpeed != 32.0f;
+    failures += saveVersion != 8 || sizeof(SaveCheckpoint) != 32
+        || metaVersion != 2 || sizeof(LegacyMetaProfile) != 16
+        || sizeof(MetaProfile) != 32;
+
+    constexpr LONG expectedHP[characterCount]{ 10, 9, 8, 12, 9 };
+    constexpr float expectedMove[characterCount]{ 60.0f, 66.0f, 63.0f, 51.0f, 63.0f };
+    constexpr float expectedCooldown[characterCount]
+        { 0.5f, 0.45f, 0.55f, 0.625f, 0.375f };
+    constexpr LONG expectedReach[characterCount]{ 8, 7, 12, 7, 7 };
+    constexpr LONG expectedWidth[characterCount]{ 8, 8, 4, 8, 8 };
+    constexpr LONG expectedDamage[characterCount]{ 1, 1, 1, 2, 1 };
+    constexpr LONG expectedCap[characterCount]{ 3, 2, 1, 4, 2 };
+    constexpr float expectedDash[characterCount]{ 32.0f, 35.2f, 32.0f, 28.8f, 32.0f };
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        const CharacterProfile& profile = characterProfiles[character];
+        failures += profile.maxHP != expectedHP[character]
+            || fabsf(CharacterMoveSpeed(character) - expectedMove[character]) > 0.0001f
+            || fabsf(CharacterSlashCooldown(character) - expectedCooldown[character]) > 0.0001f
+            || CharacterSlashReach(character) != expectedReach[character]
+            || CharacterSlashWidth(character) != expectedWidth[character]
+            || profile.slashDamage != expectedDamage[character]
+            || profile.slashHitCap != expectedCap[character]
+            || fabsf(CharacterDashDistance(character) - expectedDash[character]) > 0.0001f
+            || CharacterDashCapacity(character) != 1;
+    }
+    printf("section_base=%ld\n", failures);
+
+    characterGlobalLevel[basicCharacter][0] = 2;
+    characterGlobalLevel[basicCharacter][1] = 2;
+    characterGlobalLevel[basicCharacter][2] = 2;
+    failures += CharacterDashCapacity(basicCharacter) != 3
+        || CharacterMaximumHP(basicCharacter) != 12
+        || CharacterSlashReach(basicCharacter) != 9
+        || CharacterSlashWidth(basicCharacter) != 9
+        || CharacterDashCapacity(rapidCharacter) != 1;
+    characterGlobalLevel[mobilityCharacter][0] = 3;
+    characterGlobalLevel[mobilityCharacter][1] = 2;
+    characterGlobalLevel[mobilityCharacter][2] = 2;
+    failures += CharacterDashCapacity(mobilityCharacter) != 4
+        || fabsf(CharacterMoveSpeed(mobilityCharacter) - 72.6f) > 0.0001f
+        || fabsf(CharacterDashDistance(mobilityCharacter) - 42.24f) > 0.0001f
+        || CharacterMaximumHP(mobilityCharacter) != 9;
+    characterGlobalLevel[piercerCharacter][0] = 1;
+    characterGlobalLevel[piercerCharacter][1] = 2;
+    characterGlobalLevel[piercerCharacter][2] = 2;
+    failures += CharacterDashCapacity(piercerCharacter) != 2
+        || CharacterSlashReach(piercerCharacter) != 16
+        || CharacterSlashWidth(piercerCharacter) != 4
+        || fabsf(CharacterMoveSpeed(piercerCharacter) - 69.3f) > 0.0001f;
+    characterGlobalLevel[heavyCharacter][0] = 2;
+    characterGlobalLevel[heavyCharacter][1] = 2;
+    characterGlobalLevel[heavyCharacter][2] = 2;
+    failures += CharacterDashCapacity(heavyCharacter) != 1
+        || CharacterMaximumHP(heavyCharacter) != 16
+        || CharacterSlashReach(heavyCharacter) != 7
+        || CharacterSlashWidth(heavyCharacter) != 12
+        || fabsf(CharacterMoveSpeed(heavyCharacter) - 56.1f) > 0.0001f;
+    characterGlobalLevel[rapidCharacter][0] = 1;
+    characterGlobalLevel[rapidCharacter][1] = 2;
+    characterGlobalLevel[rapidCharacter][2] = 2;
+    failures += CharacterDashCapacity(rapidCharacter) != 2
+        || fabsf(CharacterSlashCooldown(rapidCharacter) - 0.3f) > 0.0001f
+        || fabsf(CharacterMoveSpeed(rapidCharacter) - 69.3f) > 0.0001f;
+
+    selectedCharacter = rapidCharacter;
+    moveUpgradeStack = 2;
+    slashUpgradeStack = 2;
+    dashUpgradeStack = 2;
+    float runMove = 0.0f;
+    float runSlash = 0.0f;
+    float runDash = 0.0f;
+    RecalculateAugmentStats(runMove, runSlash, runDash);
+    failures += fabsf(runMove - 83.16f) > 0.0002f
+        || fabsf(runSlash - 0.18f) > 0.0001f || runSlash <= 0.0f
+        || fabsf(runDash - 0.6f) > 0.0001f;
+    LONG recoveryHP = 7;
+    commonGlobalLevel[fieldRecoveryGlobalUpgrade] = 1;
+    ApplyFieldRecovery(recoveryHP, 9);
+    ApplyFieldRecovery(recoveryHP, 8);
+    failures += recoveryHP != 8;
+    commonGlobalLevel[runRerollGlobalUpgrade] = 0;
+    failures += CurrentRunRerollCapacity() != 1;
+    commonGlobalLevel[runRerollGlobalUpgrade] = 1;
+    failures += CurrentRunRerollCapacity() != 2;
+    printf("section_growth=%ld\n", failures);
+
+    ResetMetaProfile();
+    globalCoin = 123;
+    unlockedCharacterMask = 0x1f;
+    audioEnabled = false;
+    commonGlobalLevel[0] = 1;
+    commonGlobalLevel[1] = 1;
+    commonGlobalLevel[2] = 2;
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        for (BYTE upgrade = 0; upgrade < characterGlobalUpgradeCount; ++upgrade)
+        {
+            characterGlobalLevel[character][upgrade]
+                = characterGlobalMaximum[character][upgrade];
+        }
+    }
+    WriteMetaProfile();
+    ResetMetaProfile();
+    failures += !ReadMetaProfile() || globalCoin != 123
+        || unlockedCharacterMask != 0x1f || audioEnabled
+        || commonGlobalLevel[2] != 2
+        || characterGlobalLevel[mobilityCharacter][0] != 3
+        || characterGlobalLevel[heavyCharacter][0] != 2;
+    printf("section_meta_v2=%ld\n", failures);
+
+    LegacyMetaProfile legacy
+        { metaMagic, 1, 77, 0x0b, 2, 2, 0 };
+    HANDLE file = CreateFileW(metaFileName, GENERIC_WRITE, 0, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    DWORD transferred = 0;
+    failures += file == INVALID_HANDLE_VALUE;
+    if (file != INVALID_HANDLE_VALUE)
+    {
+        failures += !WriteFile(file, &legacy, sizeof(legacy), &transferred, nullptr)
+            || transferred != sizeof(legacy);
+        CloseHandle(file);
+    }
+    ResetMetaProfile();
+    bool migrated = ReadMetaProfile();
+    file = CreateFileW(metaFileName, GENERIC_READ, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    DWORD migratedSize = file == INVALID_HANDLE_VALUE ? 0 : GetFileSize(file, nullptr);
+    if (file != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(file);
+    }
+    failures += !migrated || globalCoin != 77
+        || unlockedCharacterMask != 0x0b || audioEnabled
+        || characterGlobalLevel[basicCharacter][0] != 2
+        || characterGlobalLevel[mobilityCharacter][0] != 0
+        || migratedSize != 32;
+    printf("section_migration=%ld\n", failures);
+
+    MetaProfile corrupt{};
+    corrupt.magic = metaMagic;
+    corrupt.version = metaVersion;
+    corrupt.coin = -1;
+    file = CreateFileW(metaFileName, GENERIC_WRITE, 0, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    transferred = 0;
+    if (file != INVALID_HANDLE_VALUE)
+    {
+        WriteFile(file, &corrupt, sizeof(corrupt), &transferred, nullptr);
+        CloseHandle(file);
+    }
+    failures += ReadMetaProfile() || globalCoin != 0
+        || unlockedCharacterMask != 1 || !audioEnabled;
+    printf("section_corrupt=%ld\n", failures);
+
+    ResetMetaProfile();
+    globalCoin = 100;
+    failures += !BuyCommonGlobalUpgrade(runRerollGlobalUpgrade)
+        || !BuyCommonGlobalUpgrade(fieldRecoveryGlobalUpgrade)
+        || !BuyCommonGlobalUpgrade(coinSenseGlobalUpgrade)
+        || !BuyCommonGlobalUpgrade(coinSenseGlobalUpgrade)
+        || BuyCommonGlobalUpgrade(coinSenseGlobalUpgrade)
+        || globalCoin != 65;
+    failures += !UnlockCharacter(mobilityCharacter)
+        || !BuyCharacterGlobalUpgrade(mobilityCharacter, 0)
+        || characterGlobalLevel[basicCharacter][0] != 0
+        || characterGlobalLevel[mobilityCharacter][0] != 1
+        || globalCoin != 55;
+    printf("section_purchase=%ld\n", failures);
+
+    commonGlobalLevel[coinSenseGlobalUpgrade] = 0;
+    for (BYTE events = 0; events <= 10; events += events ? 9 : 1)
+    {
+        globalCoin = 0;
+        runKillCount = 10;
+        alertEventCount = events;
+        runRewardGranted = false;
+        runEarnedCoin = 0;
+        GrantRunCoin(false);
+        GrantRunCoin(false);
+        failures += globalCoin != 10 || runEarnedCoin != 10;
+    }
+    commonGlobalLevel[coinSenseGlobalUpgrade] = 1;
+    globalCoin = 0;
+    runKillCount = 10;
+    alertEventCount = 10;
+    runRewardGranted = false;
+    GrantRunCoin(false);
+    failures += globalCoin != 11 || runEarnedCoin != 11;
+    commonGlobalLevel[coinSenseGlobalUpgrade] = 2;
+    globalCoin = 0;
+    runKillCount = 10;
+    alertEventCount = 0;
+    runRewardGranted = false;
+    GrantRunCoin(true);
+    failures += globalCoin != 15 || runEarnedCoin != 15;
+    globalCoin = 0x7ffffffe;
+    runKillCount = 10;
+    runRewardGranted = false;
+    GrantRunCoin(false);
+    failures += globalCoin != 0x7fffffff || runEarnedCoin != 1;
+    printf("section_coin=%ld\n", failures);
+
+    EnemyRuntime alertEnemies[3]{};
+    for (LONG index = 0; index < 3; ++index)
+    {
+        alertEnemies[index].alive = true;
+        alertEnemies[index].role = index < 2 ? listenerEnemyRole : patrollerEnemyRole;
+        alertEnemies[index].x = index * 80.0f;
+    }
+    alertEventCount = 0;
+    alertEventActive = false;
+    failures += EnterEnemyAlert(alertEnemies, 3, 0) != 3
+        || alertEventCount != 1 || EnterEnemyAlert(alertEnemies, 3, 1) != 0;
+    for (LONG index = 0; index < 3; ++index)
+    {
+        alertEnemies[index].alert = false;
+        alertEnemies[index].detectionProgress = 0.0f;
+        alertEnemies[index].heardSuspicion = false;
+    }
+    UpdateAlertEventState(alertEnemies, 3);
+    failures += alertEventActive || EnterEnemyAlert(alertEnemies, 3, 2) != 1
+        || alertEventCount != 2;
+    printf("section_alert=%ld\n", failures);
+
+    ResetMetaProfile();
+    unlockedCharacterMask = 0x1f;
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        selectedCharacter = character;
+        characterGlobalLevel[character][0]
+            = characterGlobalMaximum[character][0];
+        runSeed = 1000 + character;
+        currentRoom = 10;
+        moveUpgradeStack = 1;
+        slashUpgradeStack = 1;
+        dashUpgradeStack = 1;
+        functionalUpgradeFlags = executeReachUpgradeFlag | fieldMedicUpgradeFlag;
+        rerollUsed = 2;
+        currentDashCharges = CharacterDashCapacity(character);
+        alertEventCount = 7;
+        WriteCheckpoint(runSeed, currentRoom, CharacterMaximumHP(character), 11);
+        SaveCheckpoint checkpoint{};
+        failures += !ReadCheckpoint(&checkpoint)
+            || checkpoint.version != 8 || checkpoint.character != character
+            || checkpoint.reroll != 2 || checkpoint.alertEvents != 7
+            || checkpoint.playerHP != CharacterMaximumHP(character)
+            || checkpoint.dashCharges != currentDashCharges;
+    }
+    printf("section_save=%ld\n", failures);
+
+    ResetMetaProfile();
+    selectedCharacter = basicCharacter;
+    applicationState = titleMainState;
+    menuSelection = 0;
+    zPressed = false;
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    failures += applicationState != preparationState || menuSelection != 0;
+    menuSelection = 3;
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    failures += applicationState != characterSelectState
+        || menuSelection != basicCharacter || characterUpgradeFocus;
+    menuSelection = mobilityCharacter;
+    globalCoin = 0;
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    failures += titleStatus != 3
+        || (unlockedCharacterMask & (1 << mobilityCharacter));
+    globalCoin = characterUnlockCosts[mobilityCharacter];
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    failures += !(unlockedCharacterMask & (1 << mobilityCharacter))
+        || selectedCharacter != mobilityCharacter || globalCoin != 0;
+    characterUpgradeFocus = true;
+    characterUpgradeSelection = 0;
+    globalCoin = characterGlobalCost[0];
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    failures += characterGlobalLevel[mobilityCharacter][0] != 1
+        || globalCoin != 0;
+    characterUpgradeSelection = 3;
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    failures += applicationState != gameplayState || !newGameRequested
+        || selectedCharacter != mobilityCharacter;
+    newGameRequested = false;
+    printf("section_ui=%ld\n", failures);
+
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        LONG hitTargets = 0;
+        LONG appliedDamage = 0;
+        for (LONG enemy = 0; enemy < maxEnemyCount; ++enemy)
+        {
+            if (hitTargets < characterProfiles[character].slashHitCap)
+            {
+                ++hitTargets;
+                appliedDamage += characterProfiles[character].slashDamage;
+            }
+        }
+        failures += appliedDamage != characterProfiles[character].slashDamage
+            * characterProfiles[character].slashHitCap;
+    }
+
+#ifdef DEAD_SIGNAL_B08_SOAK_VALIDATION
+    ULONGLONG soakStart = GetTickCount64();
+    ULONGLONG soakUpdates = 0;
+    LONG soakFailures = 0;
+    while (GetTickCount64() - soakStart < 90000)
+    {
+        BYTE character = static_cast<BYTE>(soakUpdates % characterCount);
+        selectedCharacter = character;
+        for (BYTE upgrade = 0; upgrade < characterGlobalUpgradeCount; ++upgrade)
+        {
+            characterGlobalLevel[character][upgrade]
+                = static_cast<BYTE>(soakUpdates
+                    % (characterGlobalMaximum[character][upgrade] + 1));
+        }
+        moveUpgradeStack = static_cast<BYTE>(soakUpdates % 3);
+        slashUpgradeStack = static_cast<BYTE>((soakUpdates / 3) % 3);
+        dashUpgradeStack = static_cast<BYTE>((soakUpdates / 9) % 3);
+        RecalculateAugmentStats(runMove, runSlash, runDash);
+        soakFailures += runMove <= 0.0f || runSlash <= 0.0f || runDash <= 0.0f
+            || CharacterDashCapacity(character) > characterDashCaps[character]
+            || CharacterMaximumHP(character) < expectedHP[character];
+        ++soakUpdates;
+    }
+    failures += soakFailures;
+    printf("soak_ms=%llu soak_updates=%llu soak_failures=%ld\n",
+        GetTickCount64() - soakStart, soakUpdates, soakFailures);
+#endif
+
+    DeleteFileW(metaFileName);
+    DeleteFileW(saveFileName);
+    printf("b08_failures=%ld alert=%u earned=%ld save=%lu legacy=%lu meta=%lu\n",
+        failures, alertEventCount, runEarnedCoin,
+        static_cast<unsigned long>(sizeof(SaveCheckpoint)),
+        static_cast<unsigned long>(sizeof(LegacyMetaProfile)),
+        static_cast<unsigned long>(sizeof(MetaProfile)));
+    return failures;
+}
+
+extern "C" __declspec(dllexport) void CALLBACK RunB08ValidationV2(HWND, HINSTANCE,
+    LPSTR, int)
+{
+    FILE* output = nullptr;
+    freopen_s(&output, "B08Validation.txt", "w", stdout);
     main();
     if (output)
     {
