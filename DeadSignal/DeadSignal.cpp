@@ -2334,51 +2334,66 @@ bool TrapIsActive(LONG trap, float cycleElapsed)
 
 DWORD FloorVisualColor(LONG worldX, LONG worldY, DWORD visualSeed)
 {
-    LONG localX = worldX & 15;
-    LONG localY = worldY & 7;
-    DWORD tileX = static_cast<DWORD>(worldX >> 4);
-    DWORD tileY = static_cast<DWORD>(worldY >> 3);
+    LONG localX = worldX & 31;
+    LONG localY = worldY & 31;
+    DWORD tileX = static_cast<DWORD>(worldX >> 5);
+    DWORD tileY = static_cast<DWORD>(worldY >> 5);
     DWORD tileHash = visualSeed ^ tileX * 0x9E3779B9u ^ tileY * 0x85EBCA6Bu;
     DWORD color = tileHash & 1 ? 0x000D1015 : 0x000B0E13;
-    if (localX == 0 || localY == 0)
+    if ((localX == 0 && (tileHash & 3) == 0)
+        || (localY == 0 && ((tileHash >> 2) & 3) == 0))
     {
-        color = 0x0012161C;
+        color = 0x0011151A;
     }
-    else if ((localX == 2 || localX == 13) && (localY == 2 || localY == 5))
+    BYTE motif = static_cast<BYTE>((tileHash >> 3) & 15);
+    if (motif == 0 && localX >= 8 && localX <= 23
+        && localY >= 11 && localY <= 18
+        && (localX == 8 || localX == 23 || localY == 11 || localY == 18))
     {
-        color = 0x001A1F25;
+        color = 0x00181D22;
     }
-    else if ((tileHash & 3) == 1 && localY == 4 && localX >= 6 && localX <= 9)
+    else if (motif == 0 && (localX == 11 || localX == 20)
+        && (localY == 14 || localY == 15))
     {
-        color = 0x0016191D;
+        color = 0x0021262B;
     }
-    else if ((tileHash & 3) == 2 && localX == 7 && localY >= 3 && localY <= 5)
+    else if (motif == 1 && localY == 9 && localX >= 10 && localX <= 18)
     {
-        color = 0x00090B10;
+        color = (localX == 13 || localX == 17) ? 0x00090B0F : 0x00161A1E;
     }
-    else if ((tileHash & 15) == 3 && localX == 11 && localY == 3)
+    else if (motif == 2 && localX >= 7 && localX <= 24
+        && (localY == 21 || (localY == 22 && (localX & 3) == 1)))
+    {
+        color = localY == 21 ? 0x000A1216 : 0x00172326;
+    }
+    else if (motif == 3 && (localX == 13 || localX == 18) && localY == 15)
+    {
+        color = 0x0021262B;
+    }
+    else if (motif == 4 && localX >= 20 && localX <= 22
+        && localY >= 7 && localY <= 8 && ((localX + localY) & 1))
     {
         color = 0x00201618;
     }
 
     if (currentRoomType == openRoomType
-        && (worldY & 31) == static_cast<LONG>((visualSeed >> 5) & 31)
-        && ((worldX + static_cast<LONG>(visualSeed >> 13)) & 63) < 22)
+        && (worldY & 63) == static_cast<LONG>((visualSeed >> 5) & 63)
+        && ((worldX + static_cast<LONG>(visualSeed >> 13)) & 127) < 30)
     {
-        color = (worldX & 3) ? 0x000A1216 : 0x00142529;
+        color = (worldX & 7) ? 0x000A1216 : 0x00142529;
     }
     else if (currentRoomType == mazeRoomType && (tileHash & 31) == 5
-        && localY == 6 && localX >= 4 && localX <= 11)
+        && localY == 25 && localX >= 8 && localX <= 23)
     {
         color = 0x00171120;
     }
-    else if (currentRoomType == trapRoomType && (tileHash & 15) == 7
-        && localY == 3 && localX >= 5 && localX <= 10 && (localX & 1))
+    else if (currentRoomType == trapRoomType && (tileHash & 31) == 7
+        && localY == 6 && localX >= 10 && localX <= 21 && (localX & 1))
     {
         color = 0x00221714;
     }
     else if (currentRoomType == pillarRoomType && (tileHash & 31) == 9
-        && (localX == 5 || localX == 10) && localY == 4)
+        && (localX == 12 || localX == 19) && localY == 23)
     {
         color = 0x001D2227;
     }
@@ -2398,29 +2413,50 @@ DWORD WallVisualColor(LONG wall, LONG worldX, LONG worldY, DWORD visualSeed)
         || currentRoomType == mixedRoomType;
     if (pillar)
     {
-        DWORD color = 0x00171B20;
-        if (localY < 2 || localY >= height - 2)
+        LONG bandY = detailHash & 1 ? 8 : 12;
+        bool topClamp = localY < 3 && localX >= 4 && localX < width - 4;
+        bool topBrace = localY == 3 && localX >= 2 && localX < width - 2;
+        bool shaft = localY >= 3 && localY < height - 5
+            && localX >= 5 && localX < width - 5;
+        bool band = localY >= bandY && localY < bandY + 2
+            && localX >= 3 && localX < width - 3;
+        bool base = localY >= height - 5 && localY < height - 2
+            && localX >= 2 && localX < width - 2;
+        bool foot = localY >= height - 2 && localX >= 1 && localX < width - 1;
+        if (!topClamp && !topBrace && !shaft && !band && !base && !foot)
         {
-            color = localY ? 0x00101418 : 0x00434A52;
+            return 0;
         }
-        else if (localX >= 3 && localX < width - 3)
+        DWORD color = 0x002A3036;
+        if (topClamp)
         {
-            color = 0x002A3036;
-            LONG bandY = detailHash & 1 ? 6 : 15;
-            if (localY == bandY || localY == bandY + 1)
-            {
-                color = localY == bandY ? 0x00464D54 : 0x0013171C;
-            }
+            color = localY == 0 ? 0x00464D54 : 0x00242A30;
         }
-        if ((localX == 1 || localX == width - 2)
-            && (localY == 2 || localY == height - 3))
+        else if (topBrace || band)
+        {
+            color = localY == 3 || localY == bandY ? 0x0040474E : 0x0012161B;
+        }
+        else if (base)
+        {
+            color = localY == height - 5 ? 0x003A4148 : 0x0021272D;
+        }
+        else if (foot)
+        {
+            color = localY == height - 2 ? 0x00464D54 : 0x000E1115;
+        }
+        else if (localX == 5)
+        {
+            color = 0x00353C43;
+        }
+        LONG indicatorX = detailHash & 2 ? 5 : width - 6;
+        if (shaft && localX == indicatorX && localY == bandY + 4)
+        {
+            color = 0x008B211C;
+        }
+        if (base && (localX == 3 || localX == width - 4)
+            && localY == height - 4)
         {
             color = 0x00545A5E;
-        }
-        LONG indicatorX = detailHash & 2 ? 3 : width - 4;
-        if (localX == indicatorX && (localY == 9 || localY == 10))
-        {
-            color = localY == 9 ? 0x00BE261C : 0x005A1314;
         }
         return color;
     }
@@ -3460,6 +3496,56 @@ void ConfirmGameplayMenu(HWND window)
     InvalidateRect(window, nullptr, FALSE);
 }
 
+void FillUiRectangle(HDC deviceContext, const RECT& rectangle, COLORREF color)
+{
+    SetDCBrushColor(deviceContext, color);
+    FillRect(deviceContext, &rectangle,
+        reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+}
+
+void DrawTerminalPanel(HDC deviceContext, const RECT& rectangle, bool focused)
+{
+    FillUiRectangle(deviceContext, rectangle,
+        focused ? RGB(38, 22, 24) : RGB(10, 14, 18));
+    SetDCBrushColor(deviceContext,
+        focused ? RGB(176, 54, 46) : RGB(55, 64, 71));
+    FrameRect(deviceContext, &rectangle,
+        reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    LONG markWidth = (rectangle.right - rectangle.left) / 12;
+    if (markWidth < 4)
+    {
+        markWidth = 4;
+    }
+    RECT signal
+    {
+        rectangle.left + 1, rectangle.top + 1,
+        rectangle.left + 1 + markWidth, rectangle.top + 3
+    };
+    FillUiRectangle(deviceContext, signal,
+        focused ? RGB(224, 112, 35) : RGB(82, 30, 30));
+}
+
+void DrawTerminalBackdrop(HDC deviceContext, const RECT& clientArea)
+{
+    FillUiRectangle(deviceContext, clientArea, RGB(3, 6, 9));
+    LONG width = clientArea.right - clientArea.left;
+    LONG height = clientArea.bottom - clientArea.top;
+    RECT frame
+    {
+        width * 6 / 320, height * 5 / 180,
+        width * 314 / 320, height * 175 / 180
+    };
+    SetDCBrushColor(deviceContext, RGB(39, 47, 54));
+    FrameRect(deviceContext, &frame,
+        reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    RECT signal
+    {
+        frame.left + 1, frame.top + 1,
+        frame.left + width * 22 / 320, frame.top + height * 2 / 180 + 1
+    };
+    FillUiRectangle(deviceContext, signal, RGB(90, 28, 29));
+}
+
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == VK_ESCAPE)
@@ -3943,6 +4029,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
         if (helpActive)
         {
+            DrawTerminalBackdrop(deviceContext, clientArea);
             SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
             SetBkMode(deviceContext, TRANSPARENT);
             SetTextColor(deviceContext, RGB(220, 220, 220));
@@ -3960,24 +4047,44 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 L"\uC5F4\uB9B0 \uCD9C\uAD6C\uB85C \uC774\uB3D9\uD574 \uB2E4\uC74C \uBC29\uC73C\uB85C \uC9C4\uD589\uD55C\uB2E4.",
                 L"OPEN \uBB34\uC801 \uC555\uBC15\uD615\uC740 \uCC98\uCE58 \uB300\uC0C1\uC774 \uC544\uB2C8\uB2E4."
             };
+            constexpr LONG helpTop[11]
+                { 10, 31, 43, 54, 65, 76, 87, 105, 117, 129, 141 };
+            int clientWidth = clientArea.right - clientArea.left;
             int clientHeight = clientArea.bottom - clientArea.top;
-            LONG top = (clientHeight - framebufferHeight) / 2;
-            if (top < 0)
+            RECT panel
             {
-                top = 0;
-            }
+                clientWidth * 30 / 320, clientHeight * 7 / 180,
+                clientWidth * 290 / 320, clientHeight * 173 / 180
+            };
+            DrawTerminalPanel(deviceContext, panel, false);
+            RECT section
+            {
+                clientWidth * 42 / 320, clientHeight * 29 / 180,
+                clientWidth * 278 / 320, clientHeight * 99 / 180
+            };
+            DrawTerminalPanel(deviceContext, section, false);
+            section.top = clientHeight * 103 / 180;
+            section.bottom = clientHeight * 153 / 180;
+            DrawTerminalPanel(deviceContext, section, false);
             RECT line = clientArea;
             for (LONG item = 0; item < 11; ++item)
             {
-                line.top = top + (item ? 18 + (item - 1) * 14 : 2);
-                line.bottom = line.top + 14;
+                line.left = clientWidth * 44 / 320;
+                line.right = clientWidth * 276 / 320;
+                line.top = clientHeight * helpTop[item] / 180;
+                line.bottom = clientHeight * (helpTop[item] + 11) / 180;
+                SetTextColor(deviceContext, item == 0 ? RGB(232, 232, 228)
+                    : (item == 1 || item == 7 ? RGB(224, 112, 35)
+                        : (item == 10 ? RGB(190, 120, 92) : RGB(185, 190, 190))));
                 DrawTextW(deviceContext, helpLines[item], -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
-            line.top = top + 164;
-            line.bottom = line.top + 16;
+            line.left = clientWidth * 94 / 320;
+            line.right = clientWidth * 226 / 320;
+            line.top = clientHeight * 156 / 180;
+            line.bottom = clientHeight * 170 / 180;
             SetTextColor(deviceContext, RGB(255, 216, 0));
-            DrawTextW(deviceContext, L"\uB4A4\uB85C", -1, &line,
+            DrawTextW(deviceContext, L"Z / ESC : \uB4A4\uB85C", -1, &line,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             EndPaint(window, &paint);
             return 0;
@@ -3985,36 +4092,60 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
         if (settingsActive)
         {
+            DrawTerminalBackdrop(deviceContext, clientArea);
             SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
             SetBkMode(deviceContext, TRANSPARENT);
             RECT line = clientArea;
+            int clientWidth = clientArea.right - clientArea.left;
             int clientHeight = clientArea.bottom - clientArea.top;
-            line.top = clientHeight / 5;
-            line.bottom = line.top + 30;
+            RECT panel
+            {
+                clientWidth * 78 / 320, clientHeight * 31 / 180,
+                clientWidth * 242 / 320, clientHeight * 149 / 180
+            };
+            DrawTerminalPanel(deviceContext, panel, false);
+            line.top = clientHeight * 37 / 180;
+            line.bottom = clientHeight * 57 / 180;
             SetTextColor(deviceContext, RGB(220, 220, 220));
             DrawTextW(deviceContext, L"\uC124\uC815", -1, &line,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             wchar_t settingText[32];
             for (LONG item = 0; item < 2; ++item)
             {
+                RECT option
+                {
+                    clientWidth * 96 / 320, clientHeight * (68 + item * 31) / 180,
+                    clientWidth * 224 / 320, clientHeight * (91 + item * 31) / 180
+                };
+                DrawTerminalPanel(deviceContext, option, item == settingsSelection);
                 const wchar_t* text = item == 0
                     ? (audioEnabled ? L"\uC624\uB514\uC624: ON" : L"\uC624\uB514\uC624: OFF")
                     : L"\uB4A4\uB85C";
                 wsprintfW(settingText, item == settingsSelection
                     ? L"> %s" : L"  %s", text);
-                line.top = clientHeight / 5 + 50 + item * 30;
-                line.bottom = line.top + 24;
+                line.left = option.left;
+                line.right = option.right;
+                line.top = option.top;
+                line.bottom = option.bottom;
                 SetTextColor(deviceContext, item == settingsSelection
                     ? RGB(255, 216, 0) : RGB(160, 160, 160));
                 DrawTextW(deviceContext, settingText, -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
+            line.left = panel.left;
+            line.right = panel.right;
+            line.top = clientHeight * 133 / 180;
+            line.bottom = clientHeight * 145 / 180;
+            SetTextColor(deviceContext, RGB(105, 125, 132));
+            DrawTextW(deviceContext, L"Z : SELECT   ESC : BACK", -1, &line,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             EndPaint(window, &paint);
             return 0;
         }
 
         if (applicationState != gameplayState)
         {
+            DrawTerminalBackdrop(deviceContext, clientArea);
             SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
             SetBkMode(deviceContext, TRANSPARENT);
             int clientWidth = clientArea.right - clientArea.left;
@@ -4023,29 +4154,55 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             wchar_t titleText[64];
             if (applicationState == titleMainState)
             {
-                line.top = clientHeight / 5;
-                line.bottom = line.top + 30;
-                SetTextColor(deviceContext, RGB(220, 220, 220));
+                RECT panel
+                {
+                    clientWidth * 82 / 320, clientHeight * 10 / 180,
+                    clientWidth * 238 / 320, clientHeight * 170 / 180
+                };
+                DrawTerminalPanel(deviceContext, panel, false);
+                line.left = panel.left;
+                line.right = panel.right;
+                line.top = clientHeight * 17 / 180;
+                line.bottom = clientHeight * 39 / 180;
+                SetTextColor(deviceContext, RGB(235, 235, 230));
                 DrawTextW(deviceContext, L"DEAD SIGNAL", -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                RECT divider
+                {
+                    clientWidth * 103 / 320, clientHeight * 40 / 180,
+                    clientWidth * 217 / 320, clientHeight * 41 / 180
+                };
+                FillUiRectangle(deviceContext, divider, RGB(100, 31, 31));
                 for (LONG item = 0; item < 5; ++item)
                 {
+                    bool focused = item == menuSelection;
+                    RECT option
+                    {
+                        clientWidth * 101 / 320,
+                        clientHeight * (49 + item * 21) / 180,
+                        clientWidth * 219 / 320,
+                        clientHeight * (66 + item * 21) / 180
+                    };
+                    DrawTerminalPanel(deviceContext, option, focused);
                     const wchar_t* text = item == 0 ? L"\uAC8C\uC784 \uC2DC\uC791"
                         : (item == 1 ? L"\uC774\uC5B4\uD558\uAE30"
                             : (item == 2 ? L"\uC124\uC815"
                                 : (item == 3 ? L"\uB3C4\uC6C0\uB9D0" : L"\uC885\uB8CC")));
-                    line.top = clientHeight / 5 + 50 + item * 30;
-                    line.bottom = line.top + 24;
-                    SetTextColor(deviceContext, item == menuSelection
+                    line.left = option.left;
+                    line.right = option.right;
+                    line.top = option.top;
+                    line.bottom = option.bottom;
+                    SetTextColor(deviceContext, focused
                         ? RGB(255, 216, 0) : RGB(160, 160, 160));
-                    DrawTextW(deviceContext, text, -1, &line,
+                    wsprintfW(titleText, focused ? L"> %s" : L"  %s", text);
+                    DrawTextW(deviceContext, titleText, -1, &line,
                         DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                 }
                 if (titleStatus)
                 {
-                    line.top = clientHeight / 5 + 190;
-                    line.bottom = line.top + 24;
-                    SetTextColor(deviceContext, RGB(220, 220, 220));
+                    line.top = clientHeight * 154 / 180;
+                    line.bottom = clientHeight * 168 / 180;
+                    SetTextColor(deviceContext, RGB(220, 110, 95));
                     DrawTextW(deviceContext, L"\uC800\uC7A5 \uC5C6\uC74C", -1, &line,
                         DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                 }
@@ -4063,6 +4220,12 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 SetTextColor(deviceContext, RGB(220, 220, 220));
                 DrawTextW(deviceContext, titleText, -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                RECT headerDivider
+                {
+                    clientWidth * 91 / 320, clientHeight * 29 / 180,
+                    clientWidth * 229 / 320, clientHeight * 30 / 180
+                };
+                FillUiRectangle(deviceContext, headerDivider, RGB(91, 29, 30));
                 constexpr const wchar_t* commonNames[commonUpgradeCount]
                     { L"RUN REROLL", L"FIELD RECOVERY", L"COIN SENSE" };
                 for (LONG item = 0; item < 6; ++item)
@@ -4080,12 +4243,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                             clientWidth * 298 / 320,
                             clientHeight * (logicalTop + 24) / 180
                         };
-                        FillRect(deviceContext, &card,
-                            reinterpret_cast<HBRUSH>(GetStockObject(
-                                focused ? DKGRAY_BRUSH : BLACK_BRUSH)));
-                        FrameRect(deviceContext, &card,
-                            reinterpret_cast<HBRUSH>(GetStockObject(
-                                focused ? WHITE_BRUSH : GRAY_BRUSH)));
+                        DrawTerminalPanel(deviceContext, card, focused);
                         if (focused)
                         {
                             RECT focusMarker
@@ -4161,12 +4319,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                             clientWidth * 250 / 320,
                             clientHeight * (logicalTop + 18) / 180
                         };
-                        FillRect(deviceContext, &card,
-                            reinterpret_cast<HBRUSH>(GetStockObject(
-                                focused ? DKGRAY_BRUSH : BLACK_BRUSH)));
-                        FrameRect(deviceContext, &card,
-                            reinterpret_cast<HBRUSH>(GetStockObject(
-                                focused ? WHITE_BRUSH : LTGRAY_BRUSH)));
+                        DrawTerminalPanel(deviceContext, card, focused);
                         if (focused)
                         {
                             RECT focusMarker
@@ -4194,12 +4347,10 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             {
                 LONG quarter = clientWidth / 4;
                 RECT divider{ quarter, 0, quarter + 1, clientHeight };
-                FillRect(deviceContext, &divider,
-                    reinterpret_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
+                FillUiRectangle(deviceContext, divider, RGB(47, 56, 63));
                 divider.left = quarter * 2;
                 divider.right = divider.left + 1;
-                FillRect(deviceContext, &divider,
-                    reinterpret_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
+                FillUiRectangle(deviceContext, divider, RGB(47, 56, 63));
 
                 line.top = clientHeight * 3 / 180;
                 line.bottom = clientHeight * 20 / 180;
@@ -4231,13 +4382,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                         clientWidth * 77 / 320,
                         clientHeight * (slotTop + 26) / 180
                     };
-                    FillRect(deviceContext, &card,
-                        reinterpret_cast<HBRUSH>(GetStockObject(
-                            selected || focused ? DKGRAY_BRUSH : BLACK_BRUSH)));
-                    FrameRect(deviceContext, &card,
-                        reinterpret_cast<HBRUSH>(GetStockObject(
-                            focused ? WHITE_BRUSH
-                                : (selected ? LTGRAY_BRUSH : GRAY_BRUSH))));
+                    DrawTerminalPanel(deviceContext, card, selected || focused);
                     if (selected)
                     {
                         RECT selectedMarker
@@ -4278,10 +4423,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     clientWidth * 83 / 320, clientHeight * 21 / 180,
                     clientWidth * 157 / 320, clientHeight * 174 / 180
                 };
-                FillRect(deviceContext, &previewCard,
-                    reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
-                FrameRect(deviceContext, &previewCard,
-                    reinterpret_cast<HBRUSH>(GetStockObject(LTGRAY_BRUSH)));
+                DrawTerminalPanel(deviceContext, previewCard, false);
                 line.left = previewCard.left + clientWidth * 2 / 320;
                 line.right = previewCard.right - clientWidth * 2 / 320;
                 line.top = clientHeight * 22 / 180;
@@ -4409,12 +4551,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                         clientWidth * 316 / 320,
                         clientHeight * (logicalTop + 28) / 180
                     };
-                    FillRect(deviceContext, &card,
-                        reinterpret_cast<HBRUSH>(GetStockObject(
-                            !previewUnlocked || focused ? DKGRAY_BRUSH : BLACK_BRUSH)));
-                    FrameRect(deviceContext, &card,
-                        reinterpret_cast<HBRUSH>(GetStockObject(
-                            focused ? WHITE_BRUSH : GRAY_BRUSH)));
+                    DrawTerminalPanel(deviceContext, card, focused);
                     if (focused)
                     {
                         RECT focusMarker
@@ -4501,12 +4638,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                         clientWidth * 316 / 320,
                         clientHeight * logicalBottom / 180
                     };
-                    FillRect(deviceContext, &card,
-                        reinterpret_cast<HBRUSH>(GetStockObject(
-                            focused ? DKGRAY_BRUSH : BLACK_BRUSH)));
-                    FrameRect(deviceContext, &card,
-                        reinterpret_cast<HBRUSH>(GetStockObject(
-                            focused ? WHITE_BRUSH : LTGRAY_BRUSH)));
+                    DrawTerminalPanel(deviceContext, card, focused);
                     if (focused)
                     {
                         RECT focusMarker
@@ -4639,24 +4771,38 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 clientWidth * 40 / 320, clientHeight * 18 / 180,
                 clientWidth * 280 / 320, clientHeight * 166 / 180
             };
-            FillRect(deviceContext, &panel,
-                reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
-            FrameRect(deviceContext, &panel,
-                reinterpret_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
+            DrawTerminalPanel(deviceContext, panel, false);
             RECT line = clientArea;
             line.top = clientHeight * 20 / 180;
             line.bottom = clientHeight * 42 / 180;
             SetTextColor(deviceContext, RGB(220, 220, 220));
             DrawTextW(deviceContext, L"MENU", -1, &line,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            RECT divider
+            {
+                clientWidth * 86 / 320, clientHeight * 42 / 180,
+                clientWidth * 234 / 320, clientHeight * 43 / 180
+            };
+            FillUiRectangle(deviceContext, divider, RGB(91, 29, 30));
             for (LONG item = 0; item < 4; ++item)
             {
+                RECT option
+                {
+                    clientWidth * 66 / 320,
+                    clientHeight * (50 + item * 28) / 180,
+                    clientWidth * 254 / 320,
+                    clientHeight * (72 + item * 28) / 180
+                };
+                DrawTerminalPanel(deviceContext, option,
+                    item == gameplayMenuSelection);
                 const wchar_t* text = item == 0 ? L"\uAC8C\uC784\uC73C\uB85C \uB3CC\uC544\uAC00\uAE30"
                     : (item == 1 ? L"\uC124\uC815"
                         : (item == 2 ? L"\uB3C4\uC6C0\uB9D0"
                             : L"\uC800\uC7A5 \uD6C4 \uD0C0\uC774\uD2C0\uB85C \uAC00\uAE30"));
-                line.top = clientHeight * (50 + item * 28) / 180;
-                line.bottom = clientHeight * (72 + item * 28) / 180;
+                line.left = option.left;
+                line.right = option.right;
+                line.top = option.top;
+                line.bottom = option.bottom;
                 SetTextColor(deviceContext, item == gameplayMenuSelection
                     ? RGB(255, 216, 0) : RGB(160, 160, 160));
                 wsprintfW(hudText, item == gameplayMenuSelection
@@ -4669,16 +4815,37 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         {
             SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
             SetBkMode(deviceContext, TRANSPARENT);
+            RECT panel
+            {
+                clientWidth * 48 / 320, clientHeight * 26 / 180,
+                clientWidth * 272 / 320, clientHeight * 153 / 180
+            };
+            DrawTerminalPanel(deviceContext, panel, false);
             RECT line = clientArea;
-            line.top = clientHeight / 5;
-            line.bottom = line.top + 30;
+            line.top = clientHeight * 31 / 180;
+            line.bottom = clientHeight * 53 / 180;
             SetTextColor(deviceContext, RGB(220, 220, 220));
             DrawTextW(deviceContext, L"UPGRADE", -1, &line,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            RECT divider
+            {
+                clientWidth * 86 / 320, clientHeight * 53 / 180,
+                clientWidth * 234 / 320, clientHeight * 54 / 180
+            };
+            FillUiRectangle(deviceContext, divider, RGB(91, 29, 30));
             for (LONG item = 0; item < 3; ++item)
             {
                 LONG upgrade = item ? upgradeOptionB : upgradeOptionA;
                 bool rerollExhausted = rerollUsed >= CurrentRunRerollCapacity();
+                bool focused = item == upgradeSelection;
+                RECT option
+                {
+                    clientWidth * 67 / 320,
+                    clientHeight * (63 + item * 27) / 180,
+                    clientWidth * 253 / 320,
+                    clientHeight * (85 + item * 27) / 180
+                };
+                DrawTerminalPanel(deviceContext, option, focused);
                 const wchar_t* text = hudText;
                 wsprintfW(hudText, L"REROLL %u/%u",
                     static_cast<UINT>(rerollUsed),
@@ -4697,9 +4864,11 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                         static_cast<UINT>(upgrade <= dashUpgrade ? 2 : 1));
                     text = hudText;
                 }
-                line.top = clientHeight / 5 + 50 + item * 30;
-                line.bottom = line.top + 24;
-                SetTextColor(deviceContext, item == upgradeSelection
+                line.left = option.left;
+                line.right = option.right;
+                line.top = option.top;
+                line.bottom = option.bottom;
+                SetTextColor(deviceContext, focused
                     ? (item == 2 && rerollExhausted ? RGB(96, 96, 96) : RGB(255, 216, 0))
                     : (item == 2 && rerollExhausted ? RGB(64, 64, 64) : RGB(160, 160, 160)));
                 DrawTextW(deviceContext, text, -1, &line,
@@ -4708,15 +4877,33 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         else if (runEndState)
         {
-            FillRect(deviceContext, &clientArea,
-                reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+            DrawTerminalBackdrop(deviceContext, clientArea);
             SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
             SetBkMode(deviceContext, TRANSPARENT);
             RECT line = clientArea;
             wchar_t resultText[64];
+            RECT panel
+            {
+                clientWidth * 58 / 320, clientHeight * 4 / 180,
+                clientWidth * 262 / 320, clientHeight * 178 / 180
+            };
+            DrawTerminalPanel(deviceContext, panel, false);
+            RECT missionPanel
+            {
+                clientWidth * 74 / 320, clientHeight * 19 / 180,
+                clientWidth * 246 / 320, clientHeight * 66 / 180
+            };
+            DrawTerminalPanel(deviceContext, missionPanel, false);
+            RECT coinPanel
+            {
+                clientWidth * 74 / 320, clientHeight * 69 / 180,
+                clientWidth * 246 / 320, clientHeight * 137 / 180
+            };
+            DrawTerminalPanel(deviceContext, coinPanel, false);
             line.top = clientHeight / 180;
             line.bottom = clientHeight * 18 / 180;
-            SetTextColor(deviceContext, RGB(220, 220, 220));
+            SetTextColor(deviceContext, runEndState == runClearEndState
+                ? RGB(96, 220, 176) : RGB(232, 78, 62));
             DrawTextW(deviceContext, runEndState == runClearEndState
                 ? L"RUN CLEAR" : L"GAME OVER", -1, &line,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -4769,8 +4956,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 }
                 line.top = clientHeight * resultTop[item] / 180;
                 line.bottom = clientHeight * (resultTop[item] + 12) / 180;
-                SetTextColor(deviceContext, item == 7
-                    ? RGB(255, 216, 0) : RGB(220, 220, 220));
+                SetTextColor(deviceContext, item == 7 ? RGB(255, 216, 0)
+                    : (item == 8 ? RGB(96, 220, 176) : RGB(210, 214, 212)));
                 DrawTextW(deviceContext, resultText, -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
@@ -4787,8 +4974,18 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 reinterpret_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
             for (LONG item = 0; item < 2; ++item)
             {
-                line.top = clientHeight * (140 + item * 19) / 180;
-                line.bottom = clientHeight * (157 + item * 19) / 180;
+                RECT option
+                {
+                    clientWidth * 94 / 320,
+                    clientHeight * (140 + item * 19) / 180,
+                    clientWidth * 226 / 320,
+                    clientHeight * (157 + item * 19) / 180
+                };
+                DrawTerminalPanel(deviceContext, option, item == runEndSelection);
+                line.left = option.left;
+                line.right = option.right;
+                line.top = option.top;
+                line.bottom = option.bottom;
                 SetTextColor(deviceContext,
                     item == runEndSelection ? RGB(255, 216, 0) : RGB(160, 160, 160));
                 const wchar_t* action = item == 0
@@ -6684,8 +6881,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         if (screenX >= 0 && screenX < framebufferWidth
                             && screenY >= 0 && screenY < framebufferHeight)
                         {
-                            framebuffer[screenY * framebufferWidth + screenX]
-                                = WallVisualColor(wall, x, y, roomVisualSeed);
+                            DWORD color = WallVisualColor(wall, x, y, roomVisualSeed);
+                            if (color)
+                            {
+                                framebuffer[screenY * framebufferWidth + screenX] = color;
+                            }
                         }
                     }
                 }
