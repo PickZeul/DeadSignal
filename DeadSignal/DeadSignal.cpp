@@ -417,7 +417,7 @@ bool DrawEnemyLocatorArrow(const EnemyRuntime& enemy, LONG cameraX, LONG cameraY
         directionX = 0;
     }
 
-    constexpr LONG offsets[5]{ 0, -4, 4, -8, 8 };
+    constexpr LONG offsets[5]{ 0, -6, 6, -12, 12 };
     LONG perpendicularX = -directionY;
     LONG perpendicularY = directionX;
     LONG tipX = static_cast<LONG>(centerX + dx * edgeScale + 0.5f)
@@ -434,10 +434,12 @@ bool DrawEnemyLocatorArrow(const EnemyRuntime& enemy, LONG cameraX, LONG cameraY
         PutLocatorPixel(tipX - directionX * pixel,
             tipY - directionY * pixel);
     }
-    for (LONG wing = -2; wing <= 2; ++wing)
+    for (LONG wing = 1; wing <= 3; ++wing)
     {
-        PutLocatorPixel(tipX - directionX * 2 + perpendicularX * wing,
-            tipY - directionY * 2 + perpendicularY * wing);
+        PutLocatorPixel(tipX - directionX * wing + perpendicularX * wing,
+            tipY - directionY * wing + perpendicularY * wing);
+        PutLocatorPixel(tipX - directionX * wing - perpendicularX * wing,
+            tipY - directionY * wing - perpendicularY * wing);
     }
     return true;
 }
@@ -1062,6 +1064,13 @@ const wchar_t* CharacterGlobalUpgradeName(BYTE character, BYTE upgrade)
         { L"DASH CAP", L"TEMPO", L"LIGHT BODY" }
     };
     return names[character][upgrade];
+}
+
+const wchar_t* CharacterRoleName(BYTE character)
+{
+    constexpr const wchar_t* roles[characterCount]
+        { L"BALANCED", L"MOBILE", L"REACH", L"HEAVY", L"RAPID" };
+    return roles[character];
 }
 
 void ResetDashRecharge(float& rechargeRemaining, float rechargeDuration)
@@ -2420,8 +2429,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         {
             for (LONG item = 0; item < 4; ++item)
             {
-                LONG top = clientHeight / 5 + 50 + item * 30;
-                if (mouseY >= top && mouseY < top + 24)
+                LONG top = clientHeight * (50 + item * 28) / 180;
+                LONG bottom = clientHeight * (72 + item * 28) / 180;
+                if (mouseY >= top && mouseY < bottom)
                 {
                     gameplayMenuSelection = item;
                     ConfirmGameplayMenu(window);
@@ -2595,7 +2605,6 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 {
                     if (unlockedCharacterMask & (1 << character))
                     {
-                        selectedCharacter = character;
                         BuyCharacterGlobalUpgrade(character,
                             static_cast<BYTE>(characterUpgradeSelection));
                     }
@@ -2606,9 +2615,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 }
                 else if (characterUpgradeSelection == 3)
                 {
-                    if (unlockedCharacterMask & (1 << character))
+                    if (unlockedCharacterMask & (1 << selectedCharacter))
                     {
-                        selectedCharacter = character;
                         applicationState = gameplayState;
                         newGameRequested = true;
                     }
@@ -2874,16 +2882,19 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             SetTextColor(deviceContext, RGB(220, 220, 220));
             DrawTextW(deviceContext, L"\uC124\uC815", -1, &line,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            wchar_t settingText[32];
             for (LONG item = 0; item < 2; ++item)
             {
                 const wchar_t* text = item == 0
                     ? (audioEnabled ? L"\uC624\uB514\uC624: ON" : L"\uC624\uB514\uC624: OFF")
                     : L"\uB4A4\uB85C";
+                wsprintfW(settingText, item == settingsSelection
+                    ? L"> %s" : L"  %s", text);
                 line.top = clientHeight / 5 + 50 + item * 30;
                 line.bottom = line.top + 24;
                 SetTextColor(deviceContext, item == settingsSelection
                     ? RGB(255, 216, 0) : RGB(160, 160, 160));
-                DrawTextW(deviceContext, text, -1, &line,
+                DrawTextW(deviceContext, settingText, -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
             EndPaint(window, &paint);
@@ -2929,51 +2940,142 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             }
             else if (applicationState == preparationState)
             {
-                line.top = clientHeight * 4 / 180;
-                line.bottom = clientHeight * 22 / 180;
+                line.top = clientHeight * 2 / 180;
+                line.bottom = clientHeight * 17 / 180;
                 SetTextColor(deviceContext, RGB(220, 220, 220));
-                DrawTextW(deviceContext, L"COMMON GLOBAL UPGRADE", -1, &line,
+                DrawTextW(deviceContext, L"GLOBAL UPGRADE", -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                line.top = clientHeight * 24 / 180;
-                line.bottom = clientHeight * 40 / 180;
-                wsprintfW(titleText, titleStatus == 3 ? L"COIN %03ld / LOW"
-                    : (titleStatus == 4 ? L"COIN %03ld / OK"
-                        : (titleStatus == 5 ? L"COIN %03ld / MAX" : L"COIN %03ld")),
-                    globalCoin);
-                SetTextColor(deviceContext, titleStatus == 3
-                    ? RGB(255, 96, 96) : RGB(220, 220, 220));
+                line.top = clientHeight * 17 / 180;
+                line.bottom = clientHeight * 31 / 180;
+                wsprintfW(titleText, L"COIN %03ld", globalCoin);
+                SetTextColor(deviceContext, RGB(220, 220, 220));
                 DrawTextW(deviceContext, titleText, -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                 constexpr const wchar_t* commonNames[commonUpgradeCount]
                     { L"RUN REROLL", L"FIELD RECOVERY", L"COIN SENSE" };
                 for (LONG item = 0; item < 6; ++item)
                 {
-                    const wchar_t* text = item == 3 ? L"[ CHARACTER ]"
-                        : (item == 4 ? L"[ RUN START ]" : L"[ BACK ]");
+                    bool focused = item == menuSelection;
                     if (item < commonUpgradeCount)
                     {
                         BYTE level = commonGlobalLevel[item];
                         BYTE maximum = commonUpgradeMaximum[item];
+                        LONG logicalTop = 33 + item * 28;
+                        RECT card
+                        {
+                            clientWidth * 22 / 320,
+                            clientHeight * logicalTop / 180,
+                            clientWidth * 298 / 320,
+                            clientHeight * (logicalTop + 24) / 180
+                        };
+                        FillRect(deviceContext, &card,
+                            reinterpret_cast<HBRUSH>(GetStockObject(
+                                focused ? DKGRAY_BRUSH : BLACK_BRUSH)));
+                        FrameRect(deviceContext, &card,
+                            reinterpret_cast<HBRUSH>(GetStockObject(
+                                focused ? WHITE_BRUSH : GRAY_BRUSH)));
+                        if (focused)
+                        {
+                            RECT focusMarker
+                            {
+                                card.left + clientWidth * 3 / 320,
+                                card.top + clientHeight * 4 / 180,
+                                card.left + clientWidth * 5 / 320,
+                                card.bottom - clientHeight * 4 / 180
+                            };
+                            FillRect(deviceContext, &focusMarker,
+                                reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+                        }
+                        line.left = card.left + clientWidth * 9 / 320;
+                        line.right = card.right - clientWidth * 45 / 320;
+                        line.top = card.top + clientHeight / 180;
+                        line.bottom = card.top + clientHeight * 12 / 180;
+                        SetTextColor(deviceContext, focused ? RGB(255, 216, 0)
+                            : RGB(185, 185, 185));
+                        DrawTextW(deviceContext, commonNames[item], -1, &line,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+                        LONG indicatorLeft = 288 - maximum * 9;
+                        for (BYTE indicator = 0; indicator < maximum; ++indicator)
+                        {
+                            RECT levelBox
+                            {
+                                clientWidth * (indicatorLeft + indicator * 9) / 320,
+                                card.top + clientHeight * 5 / 180,
+                                clientWidth * (indicatorLeft + indicator * 9 + 6) / 320,
+                                card.top + clientHeight * 10 / 180
+                            };
+                            if (indicator < level)
+                            {
+                                FillRect(deviceContext, &levelBox,
+                                    reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+                            }
+                            else
+                            {
+                                FrameRect(deviceContext, &levelBox,
+                                    reinterpret_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
+                            }
+                        }
                         if (level >= maximum)
                         {
-                            wsprintfW(titleText, L"%s  Lv%u/%u  MAX", commonNames[item],
-                                static_cast<UINT>(level), static_cast<UINT>(maximum));
+                            wsprintfW(titleText, L"MAX");
                         }
                         else
                         {
-                            wsprintfW(titleText, L"%s  Lv%u/%u  COST %ld",
-                                commonNames[item], static_cast<UINT>(level),
-                                static_cast<UINT>(maximum), commonUpgradeCost[item][level]);
+                            bool low = globalCoin < commonUpgradeCost[item][level];
+                            wsprintfW(titleText, low ? L"COST %ld   LOW" : L"COST %ld",
+                                commonUpgradeCost[item][level]);
                         }
-                        text = titleText;
+                        line.left = card.left + clientWidth * 9 / 320;
+                        line.right = card.right - clientWidth * 9 / 320;
+                        line.top = card.top + clientHeight * 12 / 180;
+                        line.bottom = card.bottom - clientHeight / 180;
+                        SetTextColor(deviceContext, level >= maximum
+                            ? RGB(100, 220, 170)
+                            : (globalCoin < commonUpgradeCost[item][level]
+                                ? RGB(255, 96, 96) : RGB(150, 150, 150)));
+                        DrawTextW(deviceContext, titleText, -1, &line,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE);
                     }
-                    LONG logicalTop = item < 3 ? 46 + item * 22 : 120 + (item - 3) * 20;
-                    line.top = clientHeight * logicalTop / 180;
-                    line.bottom = clientHeight * (logicalTop + 17) / 180;
-                    SetTextColor(deviceContext, item == menuSelection
-                        ? RGB(255, 216, 0) : RGB(160, 160, 160));
-                    DrawTextW(deviceContext, text, -1, &line,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    else
+                    {
+                        const wchar_t* action = item == 3 ? L"CHARACTER"
+                            : (item == 4 ? L"RUN START" : L"BACK");
+                        LONG logicalTop = 120 + (item - 3) * 20;
+                        RECT card
+                        {
+                            clientWidth * 70 / 320,
+                            clientHeight * logicalTop / 180,
+                            clientWidth * 250 / 320,
+                            clientHeight * (logicalTop + 18) / 180
+                        };
+                        FillRect(deviceContext, &card,
+                            reinterpret_cast<HBRUSH>(GetStockObject(
+                                focused ? DKGRAY_BRUSH : BLACK_BRUSH)));
+                        FrameRect(deviceContext, &card,
+                            reinterpret_cast<HBRUSH>(GetStockObject(
+                                focused ? WHITE_BRUSH : LTGRAY_BRUSH)));
+                        if (focused)
+                        {
+                            RECT focusMarker
+                            {
+                                card.left + clientWidth * 3 / 320,
+                                card.top + clientHeight * 3 / 180,
+                                card.left + clientWidth * 5 / 320,
+                                card.bottom - clientHeight * 3 / 180
+                            };
+                            FillRect(deviceContext, &focusMarker,
+                                reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+                        }
+                        line.left = card.left + clientWidth * 7 / 320;
+                        line.right = card.right - clientWidth * 4 / 320;
+                        line.top = card.top + clientHeight / 180;
+                        line.bottom = card.bottom - clientHeight / 180;
+                        SetTextColor(deviceContext, focused ? RGB(255, 216, 0)
+                            : RGB(160, 160, 160));
+                        DrawTextW(deviceContext, action, -1, &line,
+                            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    }
                 }
             }
             else
@@ -3000,147 +3102,344 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                 line.left = quarter * 2;
                 line.right = clientWidth;
-                DrawTextW(deviceContext, L"CHARACTER GLOBAL UPGRADE", -1, &line,
+                DrawTextW(deviceContext, L"GLOBAL UPGRADE", -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-                line.left = 0;
-                line.right = quarter;
                 for (LONG item = 0; item < characterCount; ++item)
                 {
                     bool unlocked = (unlockedCharacterMask & (1 << item)) != 0;
-                    if (unlocked)
+                    bool cursor = item == menuSelection;
+                    bool selected = item == selectedCharacter;
+                    bool focused = cursor && !characterUpgradeFocus;
+                    LONG slotTop = 23 + item * 30;
+                    RECT card
                     {
-                        wsprintfW(titleText, item == selectedCharacter ? L"> %s" : L"%s",
-                            CharacterName(static_cast<BYTE>(item)));
+                        clientWidth * 3 / 320,
+                        clientHeight * slotTop / 180,
+                        clientWidth * 77 / 320,
+                        clientHeight * (slotTop + 26) / 180
+                    };
+                    FillRect(deviceContext, &card,
+                        reinterpret_cast<HBRUSH>(GetStockObject(
+                            selected || focused ? DKGRAY_BRUSH : BLACK_BRUSH)));
+                    FrameRect(deviceContext, &card,
+                        reinterpret_cast<HBRUSH>(GetStockObject(
+                            focused ? WHITE_BRUSH
+                                : (selected ? LTGRAY_BRUSH : GRAY_BRUSH))));
+                    if (selected)
+                    {
+                        RECT selectedMarker
+                        {
+                            card.right - clientWidth * 4 / 320,
+                            card.top + clientHeight * 3 / 180,
+                            card.right - clientWidth * 2 / 320,
+                            card.bottom - clientHeight * 3 / 180
+                        };
+                        FillRect(deviceContext, &selectedMarker,
+                            reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+                    }
+                    line.left = card.left + clientWidth * 2 / 320;
+                    line.right = card.right - clientWidth * 2 / 320;
+                    line.top = card.top + clientHeight * 2 / 180;
+                    line.bottom = card.top + clientHeight * 15 / 180;
+                    wsprintfW(titleText, cursor ? L"> %s" : L"%s",
+                        CharacterName(static_cast<BYTE>(item)));
+                    SetTextColor(deviceContext, focused ? RGB(255, 216, 0)
+                        : (unlocked ? RGB(210, 210, 210) : RGB(120, 120, 120)));
+                    DrawTextW(deviceContext, titleText, -1, &line,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    if (!unlocked)
+                    {
+                        line.top = card.top + clientHeight * 14 / 180;
+                        line.bottom = card.bottom - clientHeight / 180;
+                        SetTextColor(deviceContext, RGB(180, 90, 90));
+                        DrawTextW(deviceContext, L"LOCK 100 C", -1, &line,
+                            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    }
+                }
+
+                BYTE previewCharacter = static_cast<BYTE>(menuSelection);
+                bool previewUnlocked
+                    = (unlockedCharacterMask & (1 << previewCharacter)) != 0;
+                RECT previewCard
+                {
+                    clientWidth * 83 / 320, clientHeight * 21 / 180,
+                    clientWidth * 157 / 320, clientHeight * 174 / 180
+                };
+                FillRect(deviceContext, &previewCard,
+                    reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+                FrameRect(deviceContext, &previewCard,
+                    reinterpret_cast<HBRUSH>(GetStockObject(LTGRAY_BRUSH)));
+                line.left = previewCard.left + clientWidth * 2 / 320;
+                line.right = previewCard.right - clientWidth * 2 / 320;
+                line.top = clientHeight * 22 / 180;
+                line.bottom = clientHeight * 36 / 180;
+                SetTextColor(deviceContext, RGB(220, 220, 220));
+                DrawTextW(deviceContext, CharacterName(previewCharacter), -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                line.top = clientHeight * 35 / 180;
+                line.bottom = clientHeight * 47 / 180;
+                SetTextColor(deviceContext, RGB(120, 180, 200));
+                DrawTextW(deviceContext, CharacterRoleName(previewCharacter), -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                if (!previewUnlocked)
+                {
+                    line.top = clientHeight * 69 / 180;
+                    line.bottom = clientHeight * 85 / 180;
+                    SetTextColor(deviceContext, RGB(210, 100, 100));
+                    DrawTextW(deviceContext, L"LOCKED", -1, &line,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    line.top = clientHeight * 87 / 180;
+                    line.bottom = clientHeight * 101 / 180;
+                    DrawTextW(deviceContext, L"UNLOCK", -1, &line,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    line.top = clientHeight * 101 / 180;
+                    line.bottom = clientHeight * 115 / 180;
+                    DrawTextW(deviceContext, L"100 C", -1, &line,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                }
+                else
+                {
+                    LONG previewScale = clientHeight / 60;
+                    if (previewScale < 1)
+                    {
+                        previewScale = 1;
+                    }
+                    LONG previewLeft = quarter + quarter / 2 - 4 * previewScale;
+                    LONG previewTop = clientHeight * 49 / 180;
+                    for (LONG y = 0; y < playerHeight; ++y)
+                    {
+                        for (LONG x = 0; x < playerWidth; ++x)
+                        {
+                            bool head = y < 3 && x >= 2 && x < 6;
+                            bool body = y >= 3 && y < 8 && x >= 1 && x < 7;
+                            bool arm = y >= 4 && y < 7 && (x == 0 || x == 7);
+                            bool leg = y >= 8
+                                && ((x >= 1 && x < 3) || (x >= 5 && x < 7));
+                            bool mobilityMark = previewCharacter == mobilityCharacter
+                                && y == 4 && (x == 1 || x == 6);
+                            bool piercerMark = previewCharacter == piercerCharacter
+                                && x == 3 && y >= 3 && y < 8;
+                            bool heavyMark = previewCharacter == heavyCharacter
+                                && y == 6 && x >= 1 && x < 7;
+                            bool rapidMark = previewCharacter == rapidCharacter
+                                && (y == 4 || y == 6) && (x == 3 || x == 4);
+                            if (head || body || arm || leg)
+                            {
+                                RECT pixel
+                                {
+                                    previewLeft + x * previewScale,
+                                    previewTop + y * previewScale,
+                                    previewLeft + (x + 1) * previewScale,
+                                    previewTop + (y + 1) * previewScale
+                                };
+                                FillRect(deviceContext, &pixel,
+                                    reinterpret_cast<HBRUSH>(GetStockObject(
+                                        head ? WHITE_BRUSH
+                                            : ((mobilityMark || piercerMark
+                                                || heavyMark || rapidMark)
+                                                ? WHITE_BRUSH : LTGRAY_BRUSH))));
+                            }
+                        }
+                    }
+
+                    SetTextColor(deviceContext, RGB(220, 220, 220));
+                    wsprintfW(titleText, L"HP %ld",
+                        CharacterMaximumHP(previewCharacter) / combatScale);
+                    line.top = clientHeight * 87 / 180;
+                    line.bottom = clientHeight * 99 / 180;
+                    DrawTextW(deviceContext, titleText, -1, &line,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    wsprintfW(titleText, L"MOVE %ld", static_cast<LONG>(
+                        CharacterMoveSpeed(previewCharacter) + 0.5f));
+                    line.top = clientHeight * 100 / 180;
+                    line.bottom = clientHeight * 112 / 180;
+                    DrawTextW(deviceContext, titleText, -1, &line,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    LONG previewDamage = characterProfiles[previewCharacter].slashDamage;
+                    if (previewDamage % combatScale)
+                    {
+                        wsprintfW(titleText, L"DMG %ld.%ld",
+                            previewDamage / combatScale, previewDamage % combatScale);
                     }
                     else
                     {
-                        wsprintfW(titleText, L"LOCK %ld", characterUnlockCosts[item]);
+                        wsprintfW(titleText, L"DMG %ld", previewDamage / combatScale);
                     }
-                    line.top = clientHeight * (35 + item * 23) / 180;
-                    line.bottom = clientHeight * (52 + item * 23) / 180;
-                    SetTextColor(deviceContext, !characterUpgradeFocus && item == menuSelection
-                        ? RGB(255, 216, 0) : RGB(160, 160, 160));
+                    line.top = clientHeight * 113 / 180;
+                    line.bottom = clientHeight * 125 / 180;
+                    DrawTextW(deviceContext, titleText, -1, &line,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    wsprintfW(titleText, L"DASH %u/%u",
+                        static_cast<UINT>(CharacterDashCapacity(previewCharacter)),
+                        static_cast<UINT>(characterDashCaps[previewCharacter]));
+                    line.top = clientHeight * 126 / 180;
+                    line.bottom = clientHeight * 138 / 180;
+                    DrawTextW(deviceContext, titleText, -1, &line,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    LONG previewCooldown = static_cast<LONG>(
+                        CharacterSlashCooldown(previewCharacter) * 100.0f + 0.5f);
+                    wsprintfW(titleText, L"CD 0.%02ld", previewCooldown);
+                    line.top = clientHeight * 139 / 180;
+                    line.bottom = clientHeight * 151 / 180;
+                    DrawTextW(deviceContext, titleText, -1, &line,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    wsprintfW(titleText, L"SLASH %ldx%ld",
+                        CharacterSlashReach(previewCharacter),
+                        CharacterSlashWidth(previewCharacter));
+                    line.top = clientHeight * 152 / 180;
+                    line.bottom = clientHeight * 164 / 180;
                     DrawTextW(deviceContext, titleText, -1, &line,
                         DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                 }
 
-                BYTE previewCharacter = static_cast<BYTE>(menuSelection);
-                line.left = quarter;
-                line.right = quarter * 2;
-                line.top = clientHeight * 30 / 180;
-                line.bottom = clientHeight * 47 / 180;
-                SetTextColor(deviceContext, RGB(220, 220, 220));
-                DrawTextW(deviceContext, CharacterName(previewCharacter), -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                wsprintfW(titleText, L"HP %ld",
-                    CharacterMaximumHP(previewCharacter) / combatScale);
-                line.top = clientHeight * 93 / 180;
-                line.bottom = clientHeight * 108 / 180;
-                DrawTextW(deviceContext, titleText, -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                wsprintfW(titleText, L"MOVE %ld",
-                    static_cast<LONG>(CharacterMoveSpeed(previewCharacter) + 0.5f));
-                line.top = clientHeight * 109 / 180;
-                line.bottom = clientHeight * 124 / 180;
-                DrawTextW(deviceContext, titleText, -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                wsprintfW(titleText, L"DASH %u / %u",
-                    static_cast<UINT>(CharacterDashCapacity(previewCharacter)),
-                    static_cast<UINT>(characterDashCaps[previewCharacter]));
-                line.top = clientHeight * 125 / 180;
-                line.bottom = clientHeight * 140 / 180;
-                DrawTextW(deviceContext, titleText, -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                LONG previewDamage = characterProfiles[previewCharacter].slashDamage;
-                if (previewDamage % combatScale)
+                for (LONG item = 0; item < characterGlobalUpgradeCount; ++item)
                 {
-                    wsprintfW(titleText, L"DMG %ld.%ld", previewDamage / combatScale,
-                        previewDamage % combatScale);
-                }
-                else
-                {
-                    wsprintfW(titleText, L"DMG %ld", previewDamage / combatScale);
-                }
-                line.top = clientHeight * 141 / 180;
-                line.bottom = clientHeight * 155 / 180;
-                DrawTextW(deviceContext, titleText, -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                wsprintfW(titleText, L"TARGET %ld",
-                    CharacterSlashHitCap(previewCharacter));
-                line.top = clientHeight * 156 / 180;
-                line.bottom = clientHeight * 170 / 180;
-                DrawTextW(deviceContext, titleText, -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                LONG previewScale = clientHeight / 90;
-                if (previewScale < 1)
-                {
-                    previewScale = 1;
-                }
-                LONG previewLeft = quarter + quarter / 2 - 4 * previewScale;
-                LONG previewTop = clientHeight * 51 / 180;
-                for (LONG y = 0; y < playerHeight; ++y)
-                {
-                    for (LONG x = 0; x < playerWidth; ++x)
+                    BYTE level = characterGlobalLevel[previewCharacter][item];
+                    BYTE maximum = characterGlobalMaximum[previewCharacter][item];
+                    bool focused = characterUpgradeFocus
+                        && item == characterUpgradeSelection;
+                    LONG logicalTop = 34 + item * 31;
+                    RECT card
                     {
-                        bool head = y < 3 && x >= 2 && x < 6;
-                        bool body = y >= 3 && y < 8 && x >= 1 && x < 7;
-                        bool arm = y >= 4 && y < 7 && (x == 0 || x == 7);
-                        bool leg = y >= 8
-                            && ((x >= 1 && x < 3) || (x >= 5 && x < 7));
-                        if (head || body || arm || leg)
+                        clientWidth * 164 / 320,
+                        clientHeight * logicalTop / 180,
+                        clientWidth * 316 / 320,
+                        clientHeight * (logicalTop + 28) / 180
+                    };
+                    FillRect(deviceContext, &card,
+                        reinterpret_cast<HBRUSH>(GetStockObject(
+                            !previewUnlocked || focused ? DKGRAY_BRUSH : BLACK_BRUSH)));
+                    FrameRect(deviceContext, &card,
+                        reinterpret_cast<HBRUSH>(GetStockObject(
+                            focused ? WHITE_BRUSH : GRAY_BRUSH)));
+                    if (focused)
+                    {
+                        RECT focusMarker
                         {
-                            RECT pixel
-                            {
-                                previewLeft + x * previewScale,
-                                previewTop + y * previewScale,
-                                previewLeft + (x + 1) * previewScale,
-                                previewTop + (y + 1) * previewScale
-                            };
-                            FillRect(deviceContext, &pixel,
-                                reinterpret_cast<HBRUSH>(GetStockObject(
-                                    head ? WHITE_BRUSH : LTGRAY_BRUSH)));
-                        }
+                            card.left + clientWidth * 2 / 320,
+                            card.top + clientHeight * 3 / 180,
+                            card.left + clientWidth * 4 / 320,
+                            card.bottom - clientHeight * 3 / 180
+                        };
+                        FillRect(deviceContext, &focusMarker,
+                            reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
                     }
-                }
+                    line.left = card.left + clientWidth * 6 / 320;
+                    line.right = card.right - clientWidth * 3 / 320;
+                    line.top = card.top + clientHeight / 180;
+                    line.bottom = card.top + clientHeight * 13 / 180;
+                    SetTextColor(deviceContext, focused ? RGB(255, 216, 0)
+                        : RGB(185, 185, 185));
+                    DrawTextW(deviceContext,
+                        CharacterGlobalUpgradeName(previewCharacter,
+                            static_cast<BYTE>(item)), -1, &line,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-                line.left = quarter * 2 + 4;
-                line.right = clientWidth - 4;
-                for (LONG item = 0; item < 5; ++item)
-                {
-                    const wchar_t* text = item == 3 ? L"[ RUN START ]" : L"[ BACK ]";
-                    if (item < characterGlobalUpgradeCount)
+                    if (!previewUnlocked)
                     {
-                        BYTE level = characterGlobalLevel[previewCharacter][item];
-                        BYTE maximum = characterGlobalMaximum[previewCharacter][item];
-                        if (level >= maximum)
-                        {
-                            wsprintfW(titleText, L"%s %u/%u MAX",
-                                CharacterGlobalUpgradeName(previewCharacter,
-                                    static_cast<BYTE>(item)),
-                                static_cast<UINT>(level), static_cast<UINT>(maximum));
-                        }
-                        else
-                        {
-                            wsprintfW(titleText, L"%s %u/%u C%ld",
-                                CharacterGlobalUpgradeName(previewCharacter,
-                                    static_cast<BYTE>(item)),
-                                static_cast<UINT>(level), static_cast<UINT>(maximum),
-                                characterGlobalCost[previewCharacter][item][level]);
-                        }
-                        text = titleText;
+                        wsprintfW(titleText, L"LOCKED");
                     }
-                    LONG logicalTop = item < 3 ? 43 + item * 25 : 128 + (item - 3) * 22;
-                    line.top = clientHeight * logicalTop / 180;
-                    line.bottom = clientHeight * (logicalTop + 18) / 180;
-                    SetTextColor(deviceContext, characterUpgradeFocus
-                        && item == characterUpgradeSelection
-                        ? RGB(255, 216, 0) : RGB(160, 160, 160));
-                    DrawTextW(deviceContext, text, -1, &line,
+                    else if (level >= maximum)
+                    {
+                        wsprintfW(titleText, L"LV %u/%u   MAX",
+                            static_cast<UINT>(level), static_cast<UINT>(maximum));
+                    }
+                    else
+                    {
+                        LONG cost = characterGlobalCost[previewCharacter][item][level];
+                        wsprintfW(titleText, L"LV %u/%u   %ld C",
+                            static_cast<UINT>(level), static_cast<UINT>(maximum),
+                            cost);
+                    }
+                    line.top = card.top + clientHeight * 12 / 180;
+                    line.bottom = card.top + clientHeight * 23 / 180;
+                    SetTextColor(deviceContext, !previewUnlocked ? RGB(180, 90, 90)
+                        : (level >= maximum ? RGB(100, 220, 170)
+                            : (globalCoin < characterGlobalCost[previewCharacter][item][level]
+                                ? RGB(255, 96, 96) : RGB(160, 160, 160))));
+                    DrawTextW(deviceContext, titleText, -1, &line,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    if (previewUnlocked)
+                    {
+                        LONG indicatorLeft = 238 - maximum * 4;
+                        for (BYTE indicator = 0; indicator < maximum; ++indicator)
+                        {
+                            RECT levelBox
+                            {
+                                clientWidth * (indicatorLeft + indicator * 8) / 320,
+                                card.top + clientHeight * 23 / 180,
+                                clientWidth * (indicatorLeft + indicator * 8 + 5) / 320,
+                                card.bottom - clientHeight * 2 / 180
+                            };
+                            if (indicator < level)
+                            {
+                                FillRect(deviceContext, &levelBox,
+                                    reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+                            }
+                            else
+                            {
+                                FrameRect(deviceContext, &levelBox,
+                                    reinterpret_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
+                            }
+                        }
+                    }
+                }
+                for (LONG action = 0; action < 2; ++action)
+                {
+                    LONG item = action + characterGlobalUpgradeCount;
+                    bool focused = characterUpgradeFocus
+                        && item == characterUpgradeSelection;
+                    LONG logicalTop = action ? 156 : 131;
+                    LONG logicalBottom = action ? 176 : 153;
+                    RECT card
+                    {
+                        clientWidth * 164 / 320,
+                        clientHeight * logicalTop / 180,
+                        clientWidth * 316 / 320,
+                        clientHeight * logicalBottom / 180
+                    };
+                    FillRect(deviceContext, &card,
+                        reinterpret_cast<HBRUSH>(GetStockObject(
+                            focused ? DKGRAY_BRUSH : BLACK_BRUSH)));
+                    FrameRect(deviceContext, &card,
+                        reinterpret_cast<HBRUSH>(GetStockObject(
+                            focused ? WHITE_BRUSH : LTGRAY_BRUSH)));
+                    if (focused)
+                    {
+                        RECT focusMarker
+                        {
+                            card.left + clientWidth * 3 / 320,
+                            card.top + clientHeight * 4 / 180,
+                            card.left + clientWidth * 5 / 320,
+                            card.bottom - clientHeight * 4 / 180
+                        };
+                        FillRect(deviceContext, &focusMarker,
+                            reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+                    }
+                    if (!action)
+                    {
+                        bool runCharacterUnlocked
+                            = (unlockedCharacterMask & (1 << selectedCharacter)) != 0;
+                        wsprintfW(titleText, runCharacterUnlocked
+                            ? L"RUN %s" : L"RUN LOCKED",
+                            CharacterName(selectedCharacter));
+                    }
+                    else
+                    {
+                        wsprintfW(titleText, L"BACK");
+                    }
+                    line.left = card.left + clientWidth * 7 / 320;
+                    line.right = card.right - clientWidth * 4 / 320;
+                    line.top = card.top + clientHeight / 180;
+                    line.bottom = card.bottom - clientHeight / 180;
+                    SetTextColor(deviceContext, focused ? RGB(255, 216, 0)
+                        : RGB(160, 160, 160));
+                    DrawTextW(deviceContext, titleText, -1, &line,
                         DT_CENTER | DT_VCENTER | DT_SINGLELINE);
                 }
-                line.left = quarter;
-                line.right = clientWidth;
+                line.left = quarter * 2 + 4;
+                line.right = clientWidth - 4;
                 line.top = clientHeight * 21 / 180;
                 line.bottom = clientHeight * 36 / 180;
                 wsprintfW(titleText, titleStatus == 3 ? L"COIN %03ld / LOW"
@@ -3195,7 +3494,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             destinationX + destinationWidth / 3,
             destinationY + 24
         };
-        wsprintfW(hudText, L"%ld/%ld", currentEnemyRemaining, currentEnemyCount);
+        wsprintfW(hudText, L"E %ld/%ld", currentEnemyRemaining, currentEnemyCount);
         DrawTextW(deviceContext, hudText, -1, &hudLine,
             DT_LEFT | DT_TOP | DT_SINGLELINE);
 
@@ -3203,12 +3502,12 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             : (currentRoomType == pillarRoomType ? L"Pillar"
                 : (currentRoomType == mazeRoomType ? L"Maze"
                     : (currentRoomType == trapRoomType ? L"Trap" : L"Mixed")));
-        wsprintfW(hudText, L"%02ld.%s", currentRoom + 1, roomName);
+        wsprintfW(hudText, L"R%02ld %s", currentRoom + 1, roomName);
         hudLine.left = destinationX + destinationWidth / 2 - 60;
         hudLine.right = destinationX + destinationWidth / 2 + 60;
         DrawTextW(deviceContext, hudText, -1, &hudLine,
             DT_CENTER | DT_TOP | DT_SINGLELINE);
-        wsprintfW(hudText, L"Kill:%ld", runKillCount);
+        wsprintfW(hudText, L"K %ld", runKillCount);
         hudLine.left = destinationX + destinationWidth / 2 + 64;
         hudLine.right = destinationX + destinationWidth - 34;
         DrawTextW(deviceContext, hudText, -1, &hudLine,
@@ -3233,9 +3532,18 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
         if (gameplayMenuActive)
         {
+            RECT panel
+            {
+                clientWidth * 40 / 320, clientHeight * 18 / 180,
+                clientWidth * 280 / 320, clientHeight * 166 / 180
+            };
+            FillRect(deviceContext, &panel,
+                reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+            FrameRect(deviceContext, &panel,
+                reinterpret_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
             RECT line = clientArea;
-            line.top = clientHeight / 5;
-            line.bottom = line.top + 30;
+            line.top = clientHeight * 20 / 180;
+            line.bottom = clientHeight * 42 / 180;
             SetTextColor(deviceContext, RGB(220, 220, 220));
             DrawTextW(deviceContext, L"MENU", -1, &line,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -3245,11 +3553,13 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     : (item == 1 ? L"\uC124\uC815"
                         : (item == 2 ? L"\uB3C4\uC6C0\uB9D0"
                             : L"\uC800\uC7A5 \uD6C4 \uD0C0\uC774\uD2C0\uB85C \uAC00\uAE30"));
-                line.top = clientHeight / 5 + 50 + item * 30;
-                line.bottom = line.top + 24;
+                line.top = clientHeight * (50 + item * 28) / 180;
+                line.bottom = clientHeight * (72 + item * 28) / 180;
                 SetTextColor(deviceContext, item == gameplayMenuSelection
                     ? RGB(255, 216, 0) : RGB(160, 160, 160));
-                DrawTextW(deviceContext, text, -1, &line,
+                wsprintfW(hudText, item == gameplayMenuSelection
+                    ? L"> %s" : L"  %s", text);
+                DrawTextW(deviceContext, hudText, -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
         }
@@ -3296,6 +3606,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         else if (runEndState)
         {
+            FillRect(deviceContext, &clientArea,
+                reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
             SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
             SetBkMode(deviceContext, TRANSPARENT);
             RECT line = clientArea;
@@ -3312,6 +3624,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 L"ALERT  %u", L"KILL COIN  %ld", L"ROOM COIN  %ld",
                 L"COIN SENSE  +%ld", L"EARNED  %ld", L"TOTAL COIN  %ld"
             };
+            constexpr LONG resultTop[9]{ 20, 32, 44, 56, 72, 84, 96, 112, 126 };
             for (LONG item = 0; item < 9; ++item)
             {
                 if (item == 0)
@@ -3352,20 +3665,36 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 {
                     wsprintfW(resultText, resultLabels[item], globalCoin);
                 }
-                line.top = clientHeight * (20 + item * 12) / 180;
-                line.bottom = clientHeight * (32 + item * 12) / 180;
+                line.top = clientHeight * resultTop[item] / 180;
+                line.bottom = clientHeight * (resultTop[item] + 12) / 180;
+                SetTextColor(deviceContext, item == 7
+                    ? RGB(255, 216, 0) : RGB(220, 220, 220));
                 DrawTextW(deviceContext, resultText, -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
+            RECT divider
+            {
+                clientWidth * 90 / 320, clientHeight * 109 / 180,
+                clientWidth * 230 / 320, clientHeight * 110 / 180
+            };
+            if (divider.bottom <= divider.top)
+            {
+                divider.bottom = divider.top + 1;
+            }
+            FillRect(deviceContext, &divider,
+                reinterpret_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
             for (LONG item = 0; item < 2; ++item)
             {
-                line.top = clientHeight * (137 + item * 20) / 180;
-                line.bottom = clientHeight * (154 + item * 20) / 180;
+                line.top = clientHeight * (140 + item * 19) / 180;
+                line.bottom = clientHeight * (157 + item * 19) / 180;
                 SetTextColor(deviceContext,
                     item == runEndSelection ? RGB(255, 216, 0) : RGB(160, 160, 160));
-                DrawTextW(deviceContext,
-                    item == 0 ? L"\uB2E4\uC2DC \uC2DC\uC791" : L"\uD0C0\uC774\uD2C0\uB85C",
-                    -1, &line, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                const wchar_t* action = item == 0
+                    ? L"\uB2E4\uC2DC \uC2DC\uC791" : L"\uD0C0\uC774\uD2C0\uB85C";
+                wsprintfW(resultText, item == runEndSelection
+                    ? L"> %s" : L"  %s", action);
+                DrawTextW(deviceContext, resultText, -1, &line,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
         }
         EndPaint(window, &paint);
@@ -5446,7 +5775,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             LONG dashIndicatorWidth = currentDashMaxCharges * 4 - 1;
             LONG dashIndicatorLeft = healthBarLeft
                 + (healthBarWidth - dashIndicatorWidth) / 2;
-            LONG dashIndicatorTop = healthBarTop - 4;
+            LONG dashIndicatorTop = healthBarTop - 5;
             if (dashIndicatorLeft < 0)
             {
                 dashIndicatorLeft = 0;
@@ -7629,20 +7958,210 @@ int main()
     WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
     failures += !(unlockedCharacterMask & (1 << mobilityCharacter))
         || selectedCharacter != mobilityCharacter || globalCoin != 0;
+    menuSelection = basicCharacter;
+    characterUpgradeFocus = false;
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    failures += selectedCharacter != basicCharacter;
+    menuSelection = mobilityCharacter;
     characterUpgradeFocus = true;
     characterUpgradeSelection = 0;
     globalCoin = characterGlobalCost[mobilityCharacter][0][0];
     WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
     WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
     failures += characterGlobalLevel[mobilityCharacter][0] != 1
-        || globalCoin != 0;
+        || globalCoin != 0 || selectedCharacter != basicCharacter;
+    escapePressed = false;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_ESCAPE, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_ESCAPE, 0);
+    failures += applicationState != preparationState || menuSelection != 3
+        || selectedCharacter != basicCharacter
+        || characterGlobalLevel[mobilityCharacter][0] != 1;
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    failures += applicationState != characterSelectState
+        || menuSelection != basicCharacter;
+    menuSelection = rapidCharacter;
+    characterUpgradeFocus = true;
     characterUpgradeSelection = 3;
     WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
     WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
     failures += applicationState != gameplayState || !newGameRequested
-        || selectedCharacter != mobilityCharacter;
+        || selectedCharacter != basicCharacter;
     newGameRequested = false;
     printf("section_ui=%ld\n", failures);
+
+    constexpr LONG commonUpgradeTop[3]{ 33, 61, 89 };
+    for (LONG item = 0; item < 3; ++item)
+    {
+        failures += commonUpgradeTop[item] < 31
+            || commonUpgradeTop[item] + 24 > 180
+            || (item && commonUpgradeTop[item - 1] + 24
+                > commonUpgradeTop[item]);
+    }
+    constexpr LONG commonActionTop[3]{ 120, 140, 160 };
+    for (LONG item = 0; item < 3; ++item)
+    {
+        failures += commonActionTop[item] < 0 || commonActionTop[item] + 18 > 180
+            || (item && commonActionTop[item - 1] + 18 > commonActionTop[item]);
+    }
+    for (LONG item = 0; item < characterCount; ++item)
+    {
+        LONG slotTop = 23 + item * 30;
+        failures += slotTop < 0 || slotTop + 26 > 180
+            || (item && slotTop < 23 + (item - 1) * 30 + 26);
+    }
+    for (LONG item = 0; item < characterGlobalUpgradeCount; ++item)
+    {
+        LONG upgradeTop = 34 + item * 31;
+        failures += upgradeTop < 0 || upgradeTop + 28 > 180
+            || (item && upgradeTop < 34 + (item - 1) * 31 + 28);
+    }
+    constexpr LONG resultTop[9]{ 20, 32, 44, 56, 72, 84, 96, 112, 126 };
+    for (LONG item = 0; item < 9; ++item)
+    {
+        failures += resultTop[item] < 0 || resultTop[item] + 12 > 180
+            || (item && resultTop[item - 1] + 12 > resultTop[item]);
+    }
+    failures += 320 / 4 != 80 || 320 / 2 != 160
+        || 22 < 0 || 298 > 320 || 70 < 0 || 250 > 320
+        || commonUpgradeTop[2] + 24 > commonActionTop[0]
+        || 3 < 0 || 77 > 80 || 83 < 80 || 157 > 160
+        || 164 < 160 || 316 > 320 || 21 < 0 || 174 > 180
+        || 131 < 34 + 2 * 31 + 28 || 153 > 156
+        || 156 < 153 || 176 > 180 || 109 < resultTop[6] + 12
+        || 110 > resultTop[7]
+        || lstrlenW(L"FIELD RECOVERY  LV 0/1  COST 25  LOW") > 45
+        || lstrlenW(L"PIERCE THROUGH") > 20
+        || lstrlenW(L"LV 0/3   100 C") > 18
+        || lstrlenW(L"TOTAL COIN  2147483647") > 32
+        || lstrlenW(L"R12 Pillar") > 17;
+    HDC measurementDC = CreateCompatibleDC(nullptr);
+    SIZE textSize{};
+    if (!measurementDC)
+    {
+        ++failures;
+    }
+    else
+    {
+        SelectObject(measurementDC, GetStockObject(DEFAULT_GUI_FONT));
+        GetTextExtentPoint32W(measurementDC,
+            L"FIELD RECOVERY", lstrlenW(L"FIELD RECOVERY"), &textSize);
+        failures += textSize.cx > 222;
+        GetTextExtentPoint32W(measurementDC,
+            L"COST 100   LOW", lstrlenW(L"COST 100   LOW"), &textSize);
+        failures += textSize.cx > 258;
+        GetTextExtentPoint32W(measurementDC,
+            L"COIN 2147483647", lstrlenW(L"COIN 2147483647"), &textSize);
+        failures += textSize.cx > 312;
+        GetTextExtentPoint32W(measurementDC,
+            L"CHARACTER", lstrlenW(L"CHARACTER"), &textSize);
+        failures += textSize.cx > 169;
+        GetTextExtentPoint32W(measurementDC, L"> MOBILITY",
+            lstrlenW(L"> MOBILITY"), &textSize);
+        failures += textSize.cx > 70;
+        GetTextExtentPoint32W(measurementDC, L"LOCK 100 C",
+            lstrlenW(L"LOCK 100 C"), &textSize);
+        failures += textSize.cx > 70;
+        GetTextExtentPoint32W(measurementDC, L"UNLOCK",
+            lstrlenW(L"UNLOCK"), &textSize);
+        failures += textSize.cx > 76;
+        GetTextExtentPoint32W(measurementDC, L"100 C",
+            lstrlenW(L"100 C"), &textSize);
+        failures += textSize.cx > 76;
+        GetTextExtentPoint32W(measurementDC, L"SLASH 16x3",
+            lstrlenW(L"SLASH 16x3"), &textSize);
+        failures += textSize.cx > 70;
+        GetTextExtentPoint32W(measurementDC,
+            L"LV 0/3   100 C", lstrlenW(L"LV 0/3   100 C"), &textSize);
+        failures += textSize.cx > 143;
+        GetTextExtentPoint32W(measurementDC, L"COIN 2147483647 / LOW",
+            lstrlenW(L"COIN 2147483647 / LOW"), &textSize);
+        failures += textSize.cx > 152;
+        GetTextExtentPoint32W(measurementDC, L"RUN MOBILITY",
+            lstrlenW(L"RUN MOBILITY"), &textSize);
+        failures += textSize.cx > 141;
+        GetTextExtentPoint32W(measurementDC,
+            L"TOTAL COIN  2147483647",
+            lstrlenW(L"TOTAL COIN  2147483647"), &textSize);
+        failures += textSize.cx > 312;
+        GetTextExtentPoint32W(measurementDC, L"R12 Pillar",
+            lstrlenW(L"R12 Pillar"), &textSize);
+        failures += textSize.cx > 120;
+        GetTextExtentPoint32W(measurementDC, L"E 24/24",
+            lstrlenW(L"E 24/24"), &textSize);
+        failures += textSize.cx > 98;
+        GetTextExtentPoint32W(measurementDC, L"K 156",
+            lstrlenW(L"K 156"), &textSize);
+        failures += textSize.cx > 62;
+        for (BYTE character = 0; character < characterCount; ++character)
+        {
+            GetTextExtentPoint32W(measurementDC, CharacterName(character),
+                lstrlenW(CharacterName(character)), &textSize);
+            failures += textSize.cx > 76;
+            GetTextExtentPoint32W(measurementDC, CharacterRoleName(character),
+                lstrlenW(CharacterRoleName(character)), &textSize);
+            failures += textSize.cx > 76;
+            for (BYTE upgrade = 0; upgrade < characterGlobalUpgradeCount; ++upgrade)
+            {
+                BYTE maximum = characterGlobalMaximum[character][upgrade];
+                for (BYTE level = 0; level <= maximum; ++level)
+                {
+                    wchar_t statusText[64]{};
+                    if (level >= maximum)
+                    {
+                        wsprintfW(statusText, L"LV %u/%u   MAX",
+                            static_cast<UINT>(level), static_cast<UINT>(maximum));
+                    }
+                    else
+                    {
+                        wsprintfW(statusText, L"LV %u/%u   %ld C",
+                            static_cast<UINT>(level), static_cast<UINT>(maximum),
+                            characterGlobalCost[character][upgrade][level]);
+                    }
+                    GetTextExtentPoint32W(measurementDC, statusText,
+                        lstrlenW(statusText), &textSize);
+                    failures += textSize.cx > 143;
+                }
+            }
+        }
+        GetTextExtentPoint32W(measurementDC,
+            L"\uC800\uC7A5 \uD6C4 \uD0C0\uC774\uD2C0\uB85C \uAC00\uAE30",
+            lstrlenW(L"\uC800\uC7A5 \uD6C4 \uD0C0\uC774\uD2C0\uB85C \uAC00\uAE30"), &textSize);
+        failures += textSize.cx > 232;
+        LONG maximumDashIndicatorWidth
+            = characterDashCaps[mobilityCharacter] * 4 - 1;
+        constexpr LONG dashHudTopOffset = -5;
+        constexpr LONG dashHudHeight = 3;
+        failures += maximumDashIndicatorWidth != 15
+            || maximumDashIndicatorWidth > 12 + 4
+            || dashHudTopOffset + dashHudHeight >= 0;
+        DeleteDC(measurementDC);
+    }
+    printf("section_ui_layout=%ld\n", failures);
+
+    applicationState = gameplayState;
+    runEndState = gameOverEndState;
+    runEndSelection = 0;
+    downPressed = false;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_DOWN, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_DOWN, 0);
+    failures += runEndSelection != 1;
+    zPressed = false;
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    failures += applicationState != titleMainState || runEndState != 0;
+    applicationState = gameplayState;
+    runEndState = runClearEndState;
+    runEndSelection = 0;
+    newGameRequested = false;
+    zPressed = false;
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    failures += !newGameRequested || runEndState != runClearEndState;
+    newGameRequested = false;
+    runEndState = 0;
+    printf("section_result_input=%ld\n", failures);
 
     EnemyRuntime locatorEnemies[5]{};
     for (LONG enemyIndex = 0; enemyIndex < 5; ++enemyIndex)
@@ -7674,6 +8193,16 @@ int main()
     failures += !EnemyVisibleInViewport(locatorEnemies[0], 0, 0)
         || EnemyVisibleInViewport(locatorEnemies[1], 0, 0)
         || !EnemyVisibleInViewport(locatorEnemies[1], 100, 0);
+    for (LONG pixel = 0; pixel < framebufferWidth * framebufferHeight; ++pixel)
+    {
+        framebuffer[pixel] = 0;
+    }
+    currentEnemyRemaining = 1;
+    roomSizeStage = 3;
+    failures += DrawEnemyLocators(&locatorEnemies[1], 1, 0, 0) != 1
+        || framebuffer[90 * framebufferWidth + 309] != 0x00FFD060
+        || framebuffer[89 * framebufferWidth + 308] != 0x00FFD060
+        || framebuffer[91 * framebufferWidth + 308] != 0x00FFD060;
     for (LONG enemyIndex = 0; enemyIndex < 5; ++enemyIndex)
     {
         locatorEnemies[enemyIndex].alive = true;
