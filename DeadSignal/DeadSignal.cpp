@@ -141,6 +141,90 @@ constexpr BYTE piercerCharacter = 2;
 constexpr BYTE heavyCharacter = 3;
 constexpr BYTE rapidCharacter = 4;
 constexpr BYTE characterCount = 5;
+constexpr DWORD playerPalette[]
+{
+    0x00000000, 0x00080A0E, 0x00101018, 0x001C1F24,
+    0x003A3D44, 0x00C8CAC6, 0x005A1314, 0x00BE261C,
+    0x00E07023, 0x00ECC430, 0x0040C2C2, 0x004678B4,
+    0x009A48BE, 0x00755334
+};
+constexpr BYTE playerSprites[characterCount][playerHeight][playerWidth / 2]
+{
+    {
+        { 0x00, 0x77, 0x77, 0x00 }, { 0x07, 0x77, 0x77, 0x70 },
+        { 0x00, 0x75, 0x57, 0x00 }, { 0x00, 0x15, 0x51, 0x00 },
+        { 0x03, 0x22, 0x22, 0x30 }, { 0x43, 0x2B, 0xB2, 0x34 },
+        { 0x43, 0x22, 0x22, 0x34 }, { 0x43, 0x22, 0x22, 0x34 },
+        { 0x03, 0x33, 0x33, 0x30 }, { 0x03, 0x30, 0x03, 0x30 },
+        { 0x03, 0x30, 0x03, 0x30 }, { 0x64, 0x40, 0x04, 0x46 }
+    },
+    {
+        { 0x00, 0x77, 0x77, 0x00 }, { 0x07, 0x77, 0x77, 0x70 },
+        { 0x00, 0x75, 0x57, 0x00 }, { 0x00, 0x15, 0x51, 0x00 },
+        { 0x03, 0x22, 0x22, 0x30 }, { 0x43, 0x22, 0x22, 0x34 },
+        { 0xA3, 0x22, 0x22, 0x3A }, { 0x43, 0x22, 0x22, 0x34 },
+        { 0x03, 0x33, 0x33, 0x30 }, { 0x0A, 0x30, 0x03, 0xA0 },
+        { 0x03, 0x30, 0x03, 0x30 }, { 0x64, 0x40, 0x04, 0x46 }
+    },
+    {
+        { 0x00, 0x77, 0x77, 0x00 }, { 0x07, 0x77, 0x77, 0x70 },
+        { 0x00, 0x75, 0x57, 0x00 }, { 0x00, 0x15, 0x51, 0x00 },
+        { 0x03, 0x2C, 0x22, 0x30 }, { 0x43, 0x2C, 0x22, 0x34 },
+        { 0x43, 0x2C, 0x22, 0x34 }, { 0x43, 0x2C, 0x22, 0x34 },
+        { 0x03, 0x3C, 0x33, 0x30 }, { 0x03, 0x30, 0x03, 0x30 },
+        { 0x03, 0x30, 0x03, 0x30 }, { 0x64, 0x40, 0x04, 0x46 }
+    },
+    {
+        { 0x00, 0x77, 0x77, 0x00 }, { 0x07, 0x77, 0x77, 0x70 },
+        { 0x00, 0x75, 0x57, 0x00 }, { 0x00, 0x15, 0x51, 0x00 },
+        { 0x03, 0x22, 0x22, 0x30 }, { 0xD3, 0x22, 0x22, 0x3D },
+        { 0x48, 0x88, 0x88, 0x84 }, { 0x48, 0x88, 0x88, 0x84 },
+        { 0x03, 0x33, 0x33, 0x30 }, { 0x03, 0x30, 0x03, 0x30 },
+        { 0x03, 0x30, 0x03, 0x30 }, { 0x64, 0x40, 0x04, 0x46 }
+    },
+    {
+        { 0x00, 0x77, 0x77, 0x00 }, { 0x07, 0x77, 0x77, 0x70 },
+        { 0x00, 0x75, 0x57, 0x00 }, { 0x00, 0x15, 0x51, 0x00 },
+        { 0x03, 0x29, 0x92, 0x30 }, { 0x43, 0x22, 0x22, 0x34 },
+        { 0x43, 0x29, 0x92, 0x34 }, { 0x43, 0x22, 0x22, 0x34 },
+        { 0x03, 0x93, 0x39, 0x30 }, { 0x03, 0x30, 0x03, 0x30 },
+        { 0x03, 0x30, 0x03, 0x30 }, { 0x64, 0x40, 0x04, 0x46 }
+    }
+};
+static_assert(sizeof(playerSprites) == 240);
+
+constexpr BYTE PlayerSpritePaletteIndex(BYTE character, LONG x, LONG y)
+{
+    BYTE packedPixels = playerSprites[character][y][x / 2];
+    return x & 1 ? packedPixels & 0x0F : packedPixels >> 4;
+}
+
+constexpr DWORD PlayerSpriteColor(BYTE character, LONG x, LONG y)
+{
+    return playerPalette[PlayerSpritePaletteIndex(character, x, y)];
+}
+
+constexpr DWORD PlayerSpriteFeedbackColor(DWORD color, bool alive, bool hit,
+    bool dash)
+{
+    return !alive ? 0x00404050
+        : (hit ? 0x00FFFFFF : (dash ? 0x0080FFFF : color));
+}
+
+static_assert(playerWidth == 8 && playerHeight == 12
+    && sizeof(playerPalette) / sizeof(playerPalette[0]) == 14);
+static_assert(PlayerSpritePaletteIndex(basicCharacter, 3, 5) == 0x0B
+    && PlayerSpritePaletteIndex(mobilityCharacter, 0, 6) == 0x0A
+    && PlayerSpritePaletteIndex(piercerCharacter, 3, 4) == 0x0C
+    && PlayerSpritePaletteIndex(heavyCharacter, 0, 5) == 0x0D
+    && PlayerSpritePaletteIndex(heavyCharacter, 1, 6) == 0x08
+    && PlayerSpritePaletteIndex(rapidCharacter, 3, 4) == 0x09);
+static_assert(PlayerSpriteFeedbackColor(0x00123456, false, true, true)
+        == 0x00404050
+    && PlayerSpriteFeedbackColor(0x00123456, true, true, true) == 0x00FFFFFF
+    && PlayerSpriteFeedbackColor(0x00123456, true, false, true) == 0x0080FFFF
+    && PlayerSpriteFeedbackColor(0x00123456, true, false, false) == 0x00123456);
+
 constexpr LONG characterUnlockCosts[characterCount]{ 0, 100, 100, 100, 100 };
 constexpr BYTE characterDashCaps[characterCount]{ 3, 4, 2, 1, 2 };
 constexpr BYTE commonUpgradeCount = 3;
@@ -3211,20 +3295,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     {
                         for (LONG x = 0; x < playerWidth; ++x)
                         {
-                            bool head = y < 3 && x >= 2 && x < 6;
-                            bool body = y >= 3 && y < 8 && x >= 1 && x < 7;
-                            bool arm = y >= 4 && y < 7 && (x == 0 || x == 7);
-                            bool leg = y >= 8
-                                && ((x >= 1 && x < 3) || (x >= 5 && x < 7));
-                            bool mobilityMark = previewCharacter == mobilityCharacter
-                                && y == 4 && (x == 1 || x == 6);
-                            bool piercerMark = previewCharacter == piercerCharacter
-                                && x == 3 && y >= 3 && y < 8;
-                            bool heavyMark = previewCharacter == heavyCharacter
-                                && y == 6 && x >= 1 && x < 7;
-                            bool rapidMark = previewCharacter == rapidCharacter
-                                && (y == 4 || y == 6) && (x == 3 || x == 4);
-                            if (head || body || arm || leg)
+                            DWORD color = PlayerSpriteColor(previewCharacter, x, y);
+                            if (color)
                             {
                                 RECT pixel
                                 {
@@ -3233,12 +3305,13 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                                     previewLeft + (x + 1) * previewScale,
                                     previewTop + (y + 1) * previewScale
                                 };
+                                SetDCBrushColor(deviceContext, RGB(
+                                    (color >> 16) & 0xFF,
+                                    (color >> 8) & 0xFF,
+                                    color & 0xFF));
                                 FillRect(deviceContext, &pixel,
-                                    reinterpret_cast<HBRUSH>(GetStockObject(
-                                        head ? WHITE_BRUSH
-                                            : ((mobilityMark || piercerMark
-                                                || heavyMark || rapidMark)
-                                                ? WHITE_BRUSH : LTGRAY_BRUSH))));
+                                    reinterpret_cast<HBRUSH>(
+                                        GetStockObject(DC_BRUSH)));
                             }
                         }
                     }
@@ -3830,18 +3903,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     {
         for (LONG x = 0; x < playerWidth; ++x)
         {
-            bool head = y < 3 && x >= 2 && x < 6;
-            bool body = y >= 3 && y < 8 && x >= 1 && x < 7;
-            bool arm = y >= 4 && y < 7 && (x == 0 || x == 7);
-            bool leg = y >= 8 && ((x >= 1 && x < 3) || (x >= 5 && x < 7));
+            DWORD color = PlayerSpriteColor(basicCharacter, x, y);
             LONG pixelX = playerLeft + x;
             LONG pixelY = playerTop + y;
-            if ((head || body || arm || leg)
+            if (color
                 && pixelX >= 0 && pixelX < framebufferWidth
                 && pixelY >= 0 && pixelY < framebufferHeight)
             {
-                framebuffer[pixelY * framebufferWidth + pixelX]
-                    = head ? 0x00FFFFFF : 0x0000A0FF;
+                framebuffer[pixelY * framebufferWidth + pixelX] = color;
             }
         }
     }
@@ -5740,34 +5809,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             {
                 for (LONG x = 0; x < playerWidth; ++x)
                 {
-                    bool head = y < 3 && x >= 2 && x < 6;
-                    bool body = y >= 3 && y < 8 && x >= 1 && x < 7;
-                    bool arm = y >= 4 && y < 7 && (x == 0 || x == 7);
-                    bool leg = y >= 8 && ((x >= 1 && x < 3) || (x >= 5 && x < 7));
-                    bool mobilityMark = selectedCharacter == mobilityCharacter
-                        && y == 4 && (x == 1 || x == 6);
-                    bool piercerMark = selectedCharacter == piercerCharacter
-                        && x == 3 && y >= 3 && y < 8;
-                    bool heavyMark = selectedCharacter == heavyCharacter
-                        && y == 6 && x >= 1 && x < 7;
-                    bool rapidMark = selectedCharacter == rapidCharacter
-                        && (y == 4 || y == 6) && (x == 3 || x == 4);
+                    DWORD color = PlayerSpriteColor(selectedCharacter, x, y);
                     LONG pixelX = drawingLeft + x;
                     LONG pixelY = drawingTop + y;
-                    if ((head || body || arm || leg)
+                    if (color
                         && pixelX >= 0 && pixelX < framebufferWidth
                         && pixelY >= 0 && pixelY < framebufferHeight)
                     {
                         framebuffer[pixelY * framebufferWidth + pixelX]
-                            = !playerAlive ? 0x00404050
-                            : (playerHitRemaining > 0.0f ? 0x00FFFFFF
-                                : (playerDashingThisUpdate ? 0x0080FFFF
-                                    : (head ? 0x00FFFFFF
-                                        : (mobilityMark ? 0x0040E0C0
-                                            : (piercerMark ? 0x00C060FF
-                                                : (heavyMark ? 0x00FF9040
-                                                    : (rapidMark ? 0x00FFF060
-                                                        : 0x0000A0FF)))))));
+                            = PlayerSpriteFeedbackColor(color, playerAlive,
+                                playerHitRemaining > 0.0f,
+                                playerDashingThisUpdate);
                     }
                 }
             }
