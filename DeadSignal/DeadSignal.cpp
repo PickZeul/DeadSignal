@@ -170,6 +170,14 @@ constexpr BYTE enemyFrameCount = 7;
 constexpr float enemyMoveFrameDuration = 0.12f;
 constexpr float enemySensorFrameDuration = 0.20f;
 constexpr float enemyAttackRecoveryVisualDuration = 0.10f;
+constexpr BYTE pressureIdleFrame = 0;
+constexpr BYTE pressureMoveAFrame = 1;
+constexpr BYTE pressureMoveBFrame = 2;
+constexpr BYTE pressureAttackBraceFrame = 3;
+constexpr BYTE pressureAttackCrushFrame = 4;
+constexpr BYTE pressureAttackRecoveryFrame = 5;
+constexpr BYTE pressureFrameCount = 6;
+constexpr float pressureMoveFrameDuration = 0.18f;
 constexpr BYTE playerSprites[characterCount][playerFrameCount]
     [playerHeight][playerWidth / 2]
 {
@@ -925,6 +933,99 @@ static_assert(EnemyAttackAnimationFrame(enemyAttackWindupDuration, 0.0f)
     && EnemyAttackAnimationFrame(0.0f, enemyAttackCooldownDuration)
         == enemyAttackRecoveryFrame
     && EnemyAttackAnimationFrame(0.0f, 0.0f) == 0xFF);
+
+constexpr BYTE pressureSprites[pressureFrameCount][pressureVisualHeight]
+    [pressureVisualWidth / 2]
+{
+    {
+        { 0x00, 0x33, 0x33, 0x33, 0x00 }, { 0x03, 0xDD, 0x33, 0xDD, 0x30 },
+        { 0x33, 0xD5, 0x11, 0x5D, 0x33 }, { 0xD4, 0x33, 0x33, 0x33, 0x4D },
+        { 0xD4, 0x32, 0x88, 0x23, 0x4D }, { 0xD4, 0x32, 0x77, 0x23, 0x4D },
+        { 0xD4, 0x33, 0x33, 0x33, 0x4D }, { 0x0D, 0x43, 0x33, 0x34, 0xD0 },
+        { 0x00, 0x33, 0x00, 0x33, 0x00 }, { 0x03, 0x33, 0x00, 0x33, 0x30 },
+        { 0xDD, 0x40, 0x00, 0x04, 0xDD }, { 0x04, 0x40, 0x00, 0x04, 0x40 }
+    },
+    {
+        { 0x00, 0x33, 0x33, 0x33, 0x00 }, { 0x03, 0xDD, 0x33, 0xDD, 0x30 },
+        { 0x33, 0xD5, 0x11, 0x5D, 0x33 }, { 0xD4, 0x33, 0x33, 0x33, 0x4D },
+        { 0xD4, 0x32, 0x88, 0x23, 0x4D }, { 0xD4, 0x32, 0x77, 0x23, 0x4D },
+        { 0xD4, 0x33, 0x33, 0x33, 0x4D }, { 0x0D, 0x43, 0x33, 0x34, 0xD0 },
+        { 0x03, 0x33, 0x00, 0x33, 0x00 }, { 0x33, 0x30, 0x00, 0x33, 0x30 },
+        { 0xDD, 0x40, 0x00, 0x04, 0xD0 }, { 0x44, 0x00, 0x00, 0x00, 0x40 }
+    },
+    {
+        { 0x00, 0x33, 0x33, 0x33, 0x00 }, { 0x03, 0xDD, 0x33, 0xDD, 0x30 },
+        { 0x33, 0xD5, 0x11, 0x5D, 0x33 }, { 0xD4, 0x33, 0x33, 0x33, 0x4D },
+        { 0xD4, 0x32, 0x88, 0x23, 0x4D }, { 0xD4, 0x32, 0x77, 0x23, 0x4D },
+        { 0xD4, 0x33, 0x33, 0x33, 0x4D }, { 0x0D, 0x43, 0x33, 0x34, 0xD0 },
+        { 0x00, 0x33, 0x00, 0x33, 0x30 }, { 0x03, 0x33, 0x00, 0x03, 0x33 },
+        { 0x0D, 0x40, 0x00, 0x04, 0xDD }, { 0x04, 0x00, 0x00, 0x00, 0x44 }
+    },
+    {
+        { 0x00, 0x00, 0x00, 0x00, 0x00 }, { 0x00, 0x33, 0x33, 0x33, 0x00 },
+        { 0x03, 0xDD, 0x33, 0xDD, 0x30 }, { 0x33, 0xD5, 0x11, 0x5D, 0x33 },
+        { 0xD4, 0x33, 0x33, 0x33, 0x4D }, { 0xD4, 0x32, 0x88, 0x23, 0x4D },
+        { 0xD4, 0x32, 0x99, 0x23, 0x4D }, { 0xD4, 0x33, 0x33, 0x33, 0x4D },
+        { 0x0D, 0x43, 0x33, 0x34, 0xD0 }, { 0x03, 0x33, 0x00, 0x33, 0x30 },
+        { 0xDD, 0x40, 0x00, 0x04, 0xDD }, { 0x04, 0x40, 0x00, 0x04, 0x40 }
+    },
+    {
+        { 0x00, 0x03, 0x33, 0x33, 0x30 }, { 0x00, 0x3D, 0xD3, 0x3D, 0xD3 },
+        { 0x03, 0x3D, 0x51, 0x15, 0xD3 }, { 0x0D, 0x43, 0x33, 0x33, 0x34 },
+        { 0xD4, 0x43, 0x28, 0x82, 0x34 }, { 0xD4, 0x43, 0x29, 0x92, 0x34 },
+        { 0x0D, 0x43, 0x33, 0x33, 0xDD }, { 0x00, 0xD4, 0x33, 0x34, 0xDD },
+        { 0x00, 0x03, 0x30, 0x03, 0x30 }, { 0x00, 0x33, 0x30, 0x03, 0x33 },
+        { 0x0D, 0xD4, 0x00, 0x00, 0x4D }, { 0x00, 0x44, 0x00, 0x00, 0x44 }
+    },
+    {
+        { 0x00, 0x33, 0x33, 0x33, 0x00 }, { 0x03, 0xDD, 0x33, 0xDD, 0x30 },
+        { 0x33, 0xD5, 0x11, 0x5D, 0x33 }, { 0xD4, 0x33, 0x33, 0x33, 0x4D },
+        { 0xD4, 0x32, 0x99, 0x23, 0x4D }, { 0xD4, 0x32, 0x88, 0x23, 0x4D },
+        { 0xD4, 0x33, 0x33, 0x33, 0x4D }, { 0x0D, 0x43, 0x33, 0x34, 0xD0 },
+        { 0x00, 0x33, 0x30, 0x33, 0x00 }, { 0x03, 0x33, 0x00, 0x33, 0x30 },
+        { 0xDD, 0x40, 0x00, 0x04, 0xDD }, { 0x04, 0x40, 0x00, 0x04, 0x40 }
+    }
+};
+static_assert(sizeof(pressureSprites) == 360);
+
+constexpr BYTE PressureSpritePaletteIndex(BYTE frame, LONG x, LONG y)
+{
+    BYTE packedPixels = pressureSprites[frame][y][x / 2];
+    return x & 1 ? packedPixels & 0x0F : packedPixels >> 4;
+}
+
+constexpr BYTE PressureAnimationFrame(float windupRemaining,
+    float cooldownRemaining, bool moved, float visualTime)
+{
+    if (windupRemaining > 0.0f)
+    {
+        return windupRemaining > enemyAttackWindupDuration * 0.5f
+            ? pressureAttackBraceFrame : pressureAttackCrushFrame;
+    }
+    if (cooldownRemaining > enemyAttackCooldownDuration
+        - enemyAttackRecoveryVisualDuration)
+    {
+        return pressureAttackRecoveryFrame;
+    }
+    if (moved)
+    {
+        return static_cast<LONG>(visualTime / pressureMoveFrameDuration) & 1
+            ? pressureMoveBFrame : pressureMoveAFrame;
+    }
+    return pressureIdleFrame;
+}
+
+static_assert(pressureVisualWidth == 10 && pressureVisualHeight == 12
+    && PressureSpritePaletteIndex(pressureIdleFrame, 4, 4) == 8
+    && PressureSpritePaletteIndex(pressureAttackBraceFrame, 4, 6) == 9
+    && PressureAnimationFrame(enemyAttackWindupDuration, 0.0f, true, 1.0f)
+        == pressureAttackBraceFrame
+    && PressureAnimationFrame(enemyAttackWindupDuration * 0.5f, 0.0f, true, 1.0f)
+        == pressureAttackCrushFrame
+    && PressureAnimationFrame(0.0f, enemyAttackCooldownDuration, true, 1.0f)
+        == pressureAttackRecoveryFrame
+    && PressureAnimationFrame(0.0f, 0.0f, true, 0.0f) == pressureMoveAFrame
+    && PressureAnimationFrame(0.0f, 0.0f, false, 1.0f) == pressureIdleFrame);
 
 constexpr LONG characterUnlockCosts[characterCount]{ 0, 100, 100, 100, 100 };
 constexpr BYTE characterDashCaps[characterCount]{ 3, 4, 2, 1, 2 };
@@ -2229,6 +2330,232 @@ bool TrapIsActive(LONG trap, float cycleElapsed)
         phase -= trapCycleDuration;
     }
     return phase >= trapOffDuration;
+}
+
+DWORD FloorVisualColor(LONG worldX, LONG worldY, DWORD visualSeed)
+{
+    LONG localX = worldX & 15;
+    LONG localY = worldY & 7;
+    DWORD tileX = static_cast<DWORD>(worldX >> 4);
+    DWORD tileY = static_cast<DWORD>(worldY >> 3);
+    DWORD tileHash = visualSeed ^ tileX * 0x9E3779B9u ^ tileY * 0x85EBCA6Bu;
+    DWORD color = tileHash & 1 ? 0x000D1015 : 0x000B0E13;
+    if (localX == 0 || localY == 0)
+    {
+        color = 0x0012161C;
+    }
+    else if ((localX == 2 || localX == 13) && (localY == 2 || localY == 5))
+    {
+        color = 0x001A1F25;
+    }
+    else if ((tileHash & 3) == 1 && localY == 4 && localX >= 6 && localX <= 9)
+    {
+        color = 0x0016191D;
+    }
+    else if ((tileHash & 3) == 2 && localX == 7 && localY >= 3 && localY <= 5)
+    {
+        color = 0x00090B10;
+    }
+    else if ((tileHash & 15) == 3 && localX == 11 && localY == 3)
+    {
+        color = 0x00201618;
+    }
+
+    if (currentRoomType == openRoomType
+        && (worldY & 31) == static_cast<LONG>((visualSeed >> 5) & 31)
+        && ((worldX + static_cast<LONG>(visualSeed >> 13)) & 63) < 22)
+    {
+        color = (worldX & 3) ? 0x000A1216 : 0x00142529;
+    }
+    else if (currentRoomType == mazeRoomType && (tileHash & 31) == 5
+        && localY == 6 && localX >= 4 && localX <= 11)
+    {
+        color = 0x00171120;
+    }
+    else if (currentRoomType == trapRoomType && (tileHash & 15) == 7
+        && localY == 3 && localX >= 5 && localX <= 10 && (localX & 1))
+    {
+        color = 0x00221714;
+    }
+    else if (currentRoomType == pillarRoomType && (tileHash & 31) == 9
+        && (localX == 5 || localX == 10) && localY == 4)
+    {
+        color = 0x001D2227;
+    }
+    return color;
+}
+
+DWORD WallVisualColor(LONG wall, LONG worldX, LONG worldY, DWORD visualSeed)
+{
+    LONG left = currentWallLeft[wall];
+    LONG top = currentWallTop[wall];
+    LONG width = currentWallRight[wall] - left;
+    LONG height = currentWallBottom[wall] - top;
+    LONG localX = worldX - left;
+    LONG localY = worldY - top;
+    DWORD detailHash = visualSeed ^ static_cast<DWORD>(wall) * 0x27D4EB2Du;
+    bool pillar = currentRoomType == pillarRoomType
+        || currentRoomType == mixedRoomType;
+    if (pillar)
+    {
+        DWORD color = 0x00171B20;
+        if (localY < 2 || localY >= height - 2)
+        {
+            color = localY ? 0x00101418 : 0x00434A52;
+        }
+        else if (localX >= 3 && localX < width - 3)
+        {
+            color = 0x002A3036;
+            LONG bandY = detailHash & 1 ? 6 : 15;
+            if (localY == bandY || localY == bandY + 1)
+            {
+                color = localY == bandY ? 0x00464D54 : 0x0013171C;
+            }
+        }
+        if ((localX == 1 || localX == width - 2)
+            && (localY == 2 || localY == height - 3))
+        {
+            color = 0x00545A5E;
+        }
+        LONG indicatorX = detailHash & 2 ? 3 : width - 4;
+        if (localX == indicatorX && (localY == 9 || localY == 10))
+        {
+            color = localY == 9 ? 0x00BE261C : 0x005A1314;
+        }
+        return color;
+    }
+
+    bool topOrLeft = localX == 0 || localY == 0;
+    bool bottomOrRight = localX == width - 1 || localY == height - 1;
+    if (topOrLeft)
+    {
+        return 0x003A4149;
+    }
+    if (bottomOrRight)
+    {
+        return 0x000E1116;
+    }
+    bool horizontal = width >= height;
+    LONG seam = horizontal ? localX : localY;
+    if (seam && !(seam & 15))
+    {
+        return 0x0012161B;
+    }
+    if (((worldX * 13 + worldY * 7 + static_cast<LONG>(detailHash)) & 127) == 0)
+    {
+        return 0x0040191A;
+    }
+    if ((horizontal ? localY : localX) == 2 && (seam & 15) == 7)
+    {
+        return currentRoomType == mazeRoomType ? 0x0042282A : 0x00342B25;
+    }
+    return 0x00232930;
+}
+
+BYTE TrapVisualState(LONG trap, float cycleElapsed)
+{
+    float phase = cycleElapsed + currentTrapPhaseOffset[trap];
+    while (phase >= trapCycleDuration)
+    {
+        phase -= trapCycleDuration;
+    }
+    if (phase >= trapOffDuration)
+    {
+        return 2;
+    }
+    return phase >= trapOffDuration - 0.25f ? 1 : 0;
+}
+
+DWORD TrapVisualColor(LONG trap, LONG worldX, LONG worldY, BYTE state)
+{
+    LONG localX = worldX - currentTrapLeft[trap];
+    LONG localY = worldY - currentTrapTop[trap];
+    LONG width = currentTrapRight[trap] - currentTrapLeft[trap];
+    LONG height = currentTrapBottom[trap] - currentTrapTop[trap];
+    if (localX == 0 || localY == 0)
+    {
+        return 0x003C444C;
+    }
+    if (localX == width - 1 || localY == height - 1)
+    {
+        return 0x00090B0F;
+    }
+    if ((localX == 2 || localX == width - 3)
+        && (localY == 2 || localY == height - 3))
+    {
+        return state == 2 ? 0x00ECC430 : 0x00545B60;
+    }
+    if ((localY == 2 || localY == height - 3) && localX >= 4
+        && localX < width - 4 && ((localX >> 1) & 1))
+    {
+        return state ? 0x00E07023 : 0x005A2820;
+    }
+    if (localY >= 5 && localY < height - 5)
+    {
+        if (state == 2)
+        {
+            LONG blade = (localX + localY * 2) & 7;
+            return blade == 0 ? 0x00ECC430
+                : (blade <= 2 ? 0x00E07023 : 0x00611A18);
+        }
+        if (state == 1 && localX >= width / 2 - 2 && localX <= width / 2 + 1)
+        {
+            return ((localX + localY) & 1) ? 0x00E07023 : 0x00ECC430;
+        }
+        return 0x0007090D;
+    }
+    return state == 2 ? 0x00431A19 : 0x0021262C;
+}
+
+DWORD ExitVisualColor(LONG worldX, LONG worldY, bool unlocked)
+{
+    LONG width = currentExitRight - currentExitLeft;
+    LONG height = currentExitBottom - currentExitTop;
+    LONG localX = worldX - currentExitLeft;
+    LONG localY = worldY - currentExitTop;
+    bool verticalDoor = currentExitSide < 2;
+    bool frame = localX < 2 || localX >= width - 2
+        || localY < 2 || localY >= height - 2;
+    DWORD color = frame
+        ? ((localX == 0 || localY == 0) ? 0x00464D54 : 0x0012161B)
+        : 0x00232930;
+    if (!frame)
+    {
+        LONG split = verticalDoor ? localY - height / 2 : localX - width / 2;
+        if (!split)
+        {
+            color = unlocked ? 0x00040609 : 0x000B0D11;
+        }
+        else if (unlocked)
+        {
+            LONG depth = verticalDoor ? localX : localY;
+            color = depth >= 4 && depth < (verticalDoor ? width : height) - 4
+                ? 0x00040609 : 0x001A2025;
+        }
+        else if ((verticalDoor ? localX : localY) == 4)
+        {
+            color = 0x00343A40;
+        }
+    }
+    LONG indicatorX = currentExitSide == 0 ? width - 4
+        : (currentExitSide == 1 ? 3 : width / 2 - 1);
+    LONG indicatorY = currentExitSide == 2 ? height - 4
+        : (currentExitSide == 3 ? 3 : height / 2 - 1);
+    if (localX >= indicatorX && localX < indicatorX + 2
+        && localY >= indicatorY && localY < indicatorY + 2)
+    {
+        color = unlocked ? 0x0040C87A : 0x00BE261C;
+    }
+    return color;
+}
+
+DWORD BoundaryVisualColor(LONG position, bool inner, DWORD visualSeed)
+{
+    if (((position + static_cast<LONG>(visualSeed >> 9)) & 31) == 6)
+    {
+        return 0x0040191A;
+    }
+    return inner ? 0x00171C22 : 0x00313941;
 }
 
 void SetRoomSizeStage(LONG stage)
@@ -5785,6 +6112,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             }
             }
 
+            float pressurePreviousX = pressureEnemy.x;
+            float pressurePreviousY = pressureEnemy.y;
             if (pressureEnemy.alive && playerAlive)
             {
                 float playerDifferenceX = playerX - pressureEnemy.x;
@@ -6204,32 +6533,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 cameraY = maximumCameraY;
             }
 
-            for (LONG pixel = 0; pixel < framebufferWidth * framebufferHeight; ++pixel)
-            {
-                framebuffer[pixel] = 0x00101018;
-            }
-
-            LONG worldCenterScreenY = worldHeight / 2 - cameraY;
-            if (worldCenterScreenY >= 0 && worldCenterScreenY < framebufferHeight)
+            DWORD roomVisualSeed = RoomRandom(runSeed, currentRoom) ^ 0xA24BAED5u;
+            for (LONG y = 0; y < framebufferHeight; ++y)
             {
                 for (LONG x = 0; x < framebufferWidth; ++x)
                 {
-                    framebuffer[worldCenterScreenY * framebufferWidth + x] = 0x00404040;
+                    framebuffer[y * framebufferWidth + x]
+                        = FloorVisualColor(x + cameraX, y + cameraY, roomVisualSeed);
                 }
             }
-            LONG worldCenterScreenX = worldWidth / 2 - cameraX;
-            if (worldCenterScreenX >= 0 && worldCenterScreenX < framebufferWidth)
-            {
-                for (LONG y = 0; y < framebufferHeight; ++y)
-                {
-                    framebuffer[y * framebufferWidth + worldCenterScreenX] = 0x00404040;
-                }
-            }
+
             if (cameraY == 0)
             {
                 for (LONG x = 0; x < framebufferWidth; ++x)
                 {
-                    framebuffer[x] = 0x00800000;
+                    framebuffer[x] = BoundaryVisualColor(x, false, roomVisualSeed);
+                    framebuffer[framebufferWidth + x]
+                        = BoundaryVisualColor(x, true, roomVisualSeed);
                 }
             }
             if (cameraY == maximumCameraY)
@@ -6239,7 +6559,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 {
                     if (boundaryY >= 0 && boundaryY < framebufferHeight)
                     {
-                        framebuffer[boundaryY * framebufferWidth + x] = 0x00000080;
+                        framebuffer[boundaryY * framebufferWidth + x]
+                            = BoundaryVisualColor(x, false, roomVisualSeed);
+                        if (boundaryY > 0)
+                        {
+                            framebuffer[(boundaryY - 1) * framebufferWidth + x]
+                                = BoundaryVisualColor(x, true, roomVisualSeed);
+                        }
                     }
                 }
             }
@@ -6247,7 +6573,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             {
                 for (LONG y = 0; y < framebufferHeight; ++y)
                 {
-                    framebuffer[y * framebufferWidth] = 0x00008000;
+                    framebuffer[y * framebufferWidth]
+                        = BoundaryVisualColor(y, false, roomVisualSeed);
+                    framebuffer[y * framebufferWidth + 1]
+                        = BoundaryVisualColor(y, true, roomVisualSeed);
                 }
             }
             if (cameraX == maximumCameraX)
@@ -6257,7 +6586,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 {
                     for (LONG y = 0; y < framebufferHeight; ++y)
                     {
-                        framebuffer[y * framebufferWidth + boundaryX] = 0x00808000;
+                        framebuffer[y * framebufferWidth + boundaryX]
+                            = BoundaryVisualColor(y, false, roomVisualSeed);
+                        if (boundaryX > 0)
+                        {
+                            framebuffer[y * framebufferWidth + boundaryX - 1]
+                                = BoundaryVisualColor(y, true, roomVisualSeed);
+                        }
                     }
                 }
             }
@@ -6321,7 +6656,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
             for (LONG trap = 0; trap < currentTrapCount; ++trap)
             {
-                bool active = TrapIsActive(trap, trapCycleElapsed);
+                BYTE trapVisualState = TrapVisualState(trap, trapCycleElapsed);
                 for (LONG y = currentTrapTop[trap]; y < currentTrapBottom[trap]; ++y)
                 {
                     for (LONG x = currentTrapLeft[trap]; x < currentTrapRight[trap]; ++x)
@@ -6331,16 +6666,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         if (screenX >= 0 && screenX < framebufferWidth
                             && screenY >= 0 && screenY < framebufferHeight)
                         {
-                            bool outline = x == currentTrapLeft[trap]
-                                || x == currentTrapRight[trap] - 1
-                                || y == currentTrapTop[trap]
-                                || y == currentTrapBottom[trap] - 1;
-                            DWORD color = outline ? 0x00484858 : 0x00242830;
-                            if (active)
-                            {
-                                color = ((x + y) & 3) < 2 ? 0x00F06030 : 0x00FFB040;
-                            }
-                            framebuffer[screenY * framebufferWidth + screenX] = color;
+                            framebuffer[screenY * framebufferWidth + screenX]
+                                = TrapVisualColor(trap, x, y, trapVisualState);
                         }
                     }
                 }
@@ -6357,7 +6684,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         if (screenX >= 0 && screenX < framebufferWidth
                             && screenY >= 0 && screenY < framebufferHeight)
                         {
-                            framebuffer[screenY * framebufferWidth + screenX] = 0x00606070;
+                            framebuffer[screenY * framebufferWidth + screenX]
+                                = WallVisualColor(wall, x, y, roomVisualSeed);
                         }
                     }
                 }
@@ -6373,7 +6701,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         && screenY >= 0 && screenY < framebufferHeight)
                     {
                         framebuffer[screenY * framebufferWidth + screenX]
-                            = exitUnlocked ? 0x0040E080 : 0x00282830;
+                            = ExitVisualColor(x, y, exitUnlocked);
                     }
                 }
             }
@@ -6530,26 +6858,42 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     - pressureVisualWidth / 2 - cameraX;
                 LONG pressureTop = static_cast<LONG>(pressureEnemy.y)
                     - pressureVisualHeight / 2 - cameraY;
+                bool pressureMovedThisUpdate
+                    = pressureEnemy.x != pressurePreviousX
+                    || pressureEnemy.y != pressurePreviousY;
+                BYTE pressureFrame = PressureAnimationFrame(
+                    pressureEnemy.attackWindupRemaining,
+                    pressureEnemy.attackCooldownRemaining,
+                    pressureMovedThisUpdate, enemyVisualTime);
+                bool mirrorPressure = cosf(pressureEnemy.facingAngle) < 0.0f;
                 for (LONG y = 0; y < pressureVisualHeight; ++y)
                 {
                     for (LONG x = 0; x < pressureVisualWidth; ++x)
                     {
-                        bool head = y < 3 && x >= 1 && x < 9;
-                        bool body = y >= 3 && y < 9 && x >= 1 && x < 9;
-                        bool arm = y >= 4 && y < 8 && (x == 0 || x == 9);
-                        bool leg = y >= 9 && (x < 4 || x >= 6);
-                        bool pressureMark = (y == 4 || y == 6) && x >= 3 && x < 7;
+                        LONG sourceX = mirrorPressure
+                            ? pressureVisualWidth - 1 - x : x;
+                        BYTE paletteIndex = PressureSpritePaletteIndex(
+                            pressureFrame, sourceX, y);
+                        DWORD color = spritePalette[paletteIndex];
+                        if (pressureEnemy.attackWindupRemaining > 0.0f
+                            && paletteIndex >= 7 && paletteIndex <= 9)
+                        {
+                            color = pressureEnemy.attackWindupRemaining
+                                > enemyAttackWindupDuration * 0.5f
+                                ? 0x00E07023 : 0x00ECC430;
+                        }
+                        else if (pressureEnemy.attackWindupRemaining > 0.0f
+                            && paletteIndex == 0x0D && !((x + y) & 7))
+                        {
+                            color = 0x007A201B;
+                        }
                         LONG pixelX = pressureLeft + x;
                         LONG pixelY = pressureTop + y;
-                        if ((head || body || arm || leg)
+                        if (color
                             && pixelX >= 0 && pixelX < framebufferWidth
                             && pixelY >= 0 && pixelY < framebufferHeight)
                         {
-                            framebuffer[pixelY * framebufferWidth + pixelX]
-                                = pressureEnemy.attackWindupRemaining > 0.0f
-                                    ? (((x + y) & 1) ? 0x00FFF060 : 0x00FF8020)
-                                    : (pressureMark ? 0x00FFF080
-                                        : (head ? 0x00D0A060 : 0x00705030));
+                            framebuffer[pixelY * framebufferWidth + pixelX] = color;
                         }
                     }
                 }
