@@ -2,7 +2,7 @@
 #include <timeapi.h>
 #include <math.h>
 #if defined(DEAD_SIGNAL_B01_VALIDATION) || defined(DEAD_SIGNAL_B02_VALIDATION) \
-    || defined(DEAD_SIGNAL_B03_VALIDATION) || defined(DEAD_SIGNAL_B05_VALIDATION)
+    || defined(DEAD_SIGNAL_B03_VALIDATION) || defined(DEAD_SIGNAL_B06_VALIDATION)
 #include <stdio.h>
 #endif
 
@@ -85,8 +85,8 @@ constexpr float enemyReacquireRangeSquared = 42.0f * 42.0f;
 constexpr float hunterReacquireRangeSquared = 70.0f * 70.0f;
 constexpr float listenerMovementHearingRangeSquared = 80.0f * 80.0f;
 constexpr float listenerDashHearingRangeSquared = 120.0f * 120.0f;
-constexpr float slashLocalAlertRangeSquared = 65.0f * 65.0f;
-constexpr float listenerAlertRangeSquared = 70.0f * 70.0f;
+constexpr float slashLocalAlertRangeSquared = 70.0f * 70.0f;
+constexpr float listenerAlertRangeSquared = 80.0f * 80.0f;
 constexpr float spinnerRotationSpeed = 1.04719755f;
 constexpr float enemyFacingTurnSpeed = 2.0943951f;
 constexpr float enemyScanAngle = 0.47996554f;
@@ -5487,7 +5487,7 @@ extern "C" __declspec(dllexport) void CALLBACK RunB02Validation(HWND, HINSTANCE,
 int main()
 {
     LONG failures = 0;
-    failures += slashLocalAlertRangeSquared != 65.0f * 65.0f;
+    failures += slashLocalAlertRangeSquared != 70.0f * 70.0f;
     failures += listenerMovementHearingRangeSquared != 80.0f * 80.0f
         || listenerDashHearingRangeSquared != 120.0f * 120.0f;
     failures += enemyVisionRange != 70 || enemyAttackWindupDuration != 0.3f
@@ -5537,10 +5537,10 @@ int main()
     {
         local[index].alive = true;
         local[index].role = watcherEnemyRole;
-        local[index].x = index & 1 ? 165.0f : 164.0f;
+        local[index].x = index & 1 ? 170.0f : 169.0f;
         local[index].y = 100.0f;
     }
-    local[maxEnemyCount - 2].x = 165.1f;
+    local[maxEnemyCount - 2].x = 170.1f;
     local[maxEnemyCount - 1].alive = false;
     local[maxEnemyCount - 1].x = 100.0f;
     AlertEnemiesNear(local, maxEnemyCount, 100.0f, 100.0f);
@@ -5633,7 +5633,7 @@ int main()
         GetTickCount64() - soakStart, soakUpdates, soakFailures);
 #endif
 
-    printf("b03_failures=%ld slash65=%d sector=%d wall_clip=%d execute170=%d highest=%ld windup=%d capacity=%ld\n",
+    printf("b03_failures=%ld slash70=%d sector=%d wall_clip=%d execute170=%d highest=%ld windup=%d capacity=%ld\n",
         failures, local[0].alert, rawSector, !clippedSector,
         !PointInsideExecuteFacing(0.0f, 0.0f, 1.0f, 0.0f, -1.0f, 0.0f),
         pendingDamage, windupDamage, maxEnemyCount);
@@ -5653,12 +5653,12 @@ extern "C" __declspec(dllexport) void CALLBACK RunB03Validation(HWND, HINSTANCE,
 }
 #endif
 
-#ifdef DEAD_SIGNAL_B05_VALIDATION
+#ifdef DEAD_SIGNAL_B06_VALIDATION
 int main()
 {
     LONG failures = 0;
-    failures += slashLocalAlertRangeSquared != 65.0f * 65.0f
-        || listenerAlertRangeSquared != 70.0f * 70.0f;
+    failures += slashLocalAlertRangeSquared != 70.0f * 70.0f
+        || listenerAlertRangeSquared != 80.0f * 80.0f;
     failures += ListenerTargetForRoomSize(1, 24) != 2
         || ListenerTargetForRoomSize(2, 24) != 2
         || ListenerTargetForRoomSize(3, 24) != 3
@@ -5675,10 +5675,10 @@ int main()
             watcherEnemyRole, spinnerEnemyRole, pressureEnemyRole,
             patrollerEnemyRole };
     constexpr float slashX[10]
-        = { 100.0f, 164.0f, 165.0f, 100.0f, 36.0f, 35.0f,
-            166.0f, 34.0f, 100.0f, 100.0f };
+        = { 100.0f, 169.0f, 170.0f, 100.0f, 31.0f, 30.0f,
+            171.0f, 29.0f, 100.0f, 100.0f };
     constexpr float slashY[10]
-        = { 100.0f, 100.0f, 100.0f, 165.0f, 100.0f, 100.0f,
+        = { 100.0f, 100.0f, 100.0f, 170.0f, 100.0f, 100.0f,
             100.0f, 100.0f, 100.0f, 100.0f };
     for (LONG index = 0; index < 10; ++index)
     {
@@ -5707,11 +5707,11 @@ int main()
             spinnerEnemyRole, pressureEnemyRole, patrollerEnemyRole,
             hunterEnemyRole };
     constexpr float relayX[10]
-        = { 0.0f, 69.0f, 138.0f, 0.0f, 138.0f,
+        = { 0.0f, 79.0f, 158.0f, 0.0f, 158.0f,
             10.0f, 20.0f, 30.0f, 0.0f, 5.0f };
     constexpr float relayY[10]
-        = { 0.0f, 0.0f, 0.0f, 70.0f, 70.0f,
-            0.0f, 0.0f, 0.0f, 71.0f, 0.0f };
+        = { 0.0f, 0.0f, 0.0f, 80.0f, 80.0f,
+            0.0f, 0.0f, 0.0f, 81.0f, 0.0f };
     for (LONG index = 0; index < 10; ++index)
     {
         relay[index].alive = index != 9;
@@ -5731,14 +5731,14 @@ int main()
     EnemyRuntime listenerBoundary[2]{};
     listenerBoundary[0].alive = listenerBoundary[1].alive = true;
     listenerBoundary[0].role = listenerBoundary[1].role = listenerEnemyRole;
-    listenerBoundary[1].x = 71.0f;
+    listenerBoundary[1].x = 81.0f;
     failures += EnterEnemyAlert(listenerBoundary, 2, 0) != 1
         || listenerBoundary[1].alert;
     listenerBoundary[0] = {};
     listenerBoundary[1] = {};
     listenerBoundary[0].alive = listenerBoundary[1].alive = true;
     listenerBoundary[0].role = listenerBoundary[1].role = listenerEnemyRole;
-    listenerBoundary[1].x = 70.0f;
+    listenerBoundary[1].x = 80.0f;
     failures += EnterEnemyAlert(listenerBoundary, 2, 0) != 2
         || !listenerBoundary[1].alert;
 
@@ -5756,6 +5756,192 @@ int main()
     failures += alertEventActive;
     failures += EnterEnemyAlert(relay, 10, 5) != 1
         || alertEventCount != 2 || !alertEventActive;
+
+    constexpr LONG expectedHP[characterCount]{ 10, 9, 8, 12, 9 };
+    constexpr float expectedMoveSpeed[characterCount]
+        { 60.0f, 66.0f, 63.0f, 51.0f, 63.0f };
+    constexpr float expectedSlashCooldown[characterCount]
+        { 0.5f, 0.45f, 0.55f, 0.625f, 0.375f };
+    constexpr LONG expectedSlashReach[characterCount]{ 8, 7, 12, 7, 7 };
+    constexpr LONG expectedSlashWidth[characterCount]{ 8, 8, 4, 8, 8 };
+    constexpr LONG expectedSlashDamage[characterCount]{ 1, 1, 1, 2, 1 };
+    constexpr LONG expectedSlashHitCap[characterCount]{ 3, 2, 1, 4, 2 };
+    constexpr float expectedDashDistance[characterCount]
+        { 32.0f, 35.2f, 32.0f, 28.8f, 32.0f };
+    constexpr BYTE expectedCharacterDashCap[characterCount]{ 3, 3, 2, 2, 3 };
+
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        const CharacterProfile& profile = characterProfiles[character];
+        failures += profile.maxHP != expectedHP[character]
+            || fabsf(playerMoveSpeed * profile.moveScale
+                - expectedMoveSpeed[character]) > 0.0001f
+            || fabsf(slashCooldownDuration * profile.slashCooldownScale
+                - expectedSlashCooldown[character]) > 0.0001f
+            || profile.slashReach != expectedSlashReach[character]
+            || profile.slashWidth != expectedSlashWidth[character]
+            || profile.slashDamage != expectedSlashDamage[character]
+            || profile.slashHitCap != expectedSlashHitCap[character]
+            || fabsf(dashDistance * profile.dashDistanceScale
+                - expectedDashDistance[character]) > 0.0001f
+            || characterDashCaps[character] != expectedCharacterDashCap[character];
+
+        selectedCharacter = character;
+        moveUpgradeStack = 0;
+        slashUpgradeStack = 0;
+        dashUpgradeStack = 0;
+        functionalUpgradeFlags = 0;
+        float profileMove = 0.0f;
+        float profileSlashCooldown = 0.0f;
+        float profileDashCooldown = 0.0f;
+        RecalculateAugmentStats(profileMove, profileSlashCooldown,
+            profileDashCooldown);
+        failures += fabsf(profileMove - expectedMoveSpeed[character]) > 0.0001f
+            || fabsf(profileSlashCooldown - expectedSlashCooldown[character])
+                > 0.0001f
+            || profileDashCooldown != dashCooldownDuration
+            || CurrentExecuteReach() != executeReach;
+        printf("character=%u hp=%ld move=%.3f slash_cd=%.3f damage=%ld reach=%ld width=%ld target_cap=%ld dash=%.3f dash_cap=%u\n",
+            character, profile.maxHP, profileMove, profileSlashCooldown,
+            profile.slashDamage, profile.slashReach, profile.slashWidth,
+            profile.slashHitCap, dashDistance * profile.dashDistanceScale,
+            characterDashCaps[character]);
+    }
+
+    const CharacterProfile& basicProfile = characterProfiles[basicCharacter];
+    const CharacterProfile& mobilityProfile = characterProfiles[mobilityCharacter];
+    const CharacterProfile& piercerProfile = characterProfiles[piercerCharacter];
+    const CharacterProfile& heavyProfile = characterProfiles[heavyCharacter];
+    const CharacterProfile& rapidProfile = characterProfiles[rapidCharacter];
+    failures += !(mobilityProfile.moveScale > basicProfile.moveScale
+            && mobilityProfile.slashCooldownScale < basicProfile.slashCooldownScale
+            && mobilityProfile.dashDistanceScale > basicProfile.dashDistanceScale
+            && mobilityProfile.maxHP < basicProfile.maxHP
+            && mobilityProfile.slashReach < basicProfile.slashReach
+            && mobilityProfile.slashHitCap < basicProfile.slashHitCap);
+    failures += !(piercerProfile.moveScale > basicProfile.moveScale
+            && piercerProfile.slashReach > basicProfile.slashReach
+            && piercerProfile.maxHP < basicProfile.maxHP
+            && piercerProfile.slashCooldownScale > basicProfile.slashCooldownScale
+            && piercerProfile.slashWidth < basicProfile.slashWidth
+            && piercerProfile.slashHitCap < basicProfile.slashHitCap);
+    failures += !(heavyProfile.maxHP > basicProfile.maxHP
+            && heavyProfile.slashDamage > basicProfile.slashDamage
+            && heavyProfile.slashHitCap > basicProfile.slashHitCap
+            && heavyProfile.moveScale < basicProfile.moveScale
+            && heavyProfile.slashCooldownScale > basicProfile.slashCooldownScale
+            && heavyProfile.dashDistanceScale < basicProfile.dashDistanceScale);
+    failures += !(rapidProfile.moveScale > basicProfile.moveScale
+            && rapidProfile.slashCooldownScale < basicProfile.slashCooldownScale
+            && rapidProfile.maxHP < basicProfile.maxHP
+            && rapidProfile.slashReach < basicProfile.slashReach
+            && rapidProfile.slashHitCap < basicProfile.slashHitCap);
+
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        selectedCharacter = character;
+        const CharacterProfile& profile = characterProfiles[character];
+        EnemyRuntime hitEnemies[maxEnemyCount]{};
+        for (LONG enemyIndex = 0; enemyIndex < maxEnemyCount; ++enemyIndex)
+        {
+            hitEnemies[enemyIndex].alive = enemyIndex != 0;
+            hitEnemies[enemyIndex].role
+                = static_cast<BYTE>(enemyIndex % enemyRoleCount);
+            hitEnemies[enemyIndex].x = 108.0f;
+            hitEnemies[enemyIndex].y = 100.0f;
+            hitEnemies[enemyIndex].hp = 3;
+        }
+        LONG hitCount = 0;
+        LONG slashLeftTest = 100 + playerWidth / 2;
+        LONG slashRightTest = slashLeftTest + profile.slashReach;
+        LONG slashTopTest = 100 - profile.slashWidth / 2;
+        LONG slashBottomTest = slashTopTest + profile.slashWidth;
+        for (LONG enemyIndex = 0; enemyIndex < maxEnemyCount; ++enemyIndex)
+        {
+            EnemyRuntime& enemy = hitEnemies[enemyIndex];
+            LONG enemyLeft = static_cast<LONG>(enemy.x) - enemyWidth / 2;
+            LONG enemyTop = static_cast<LONG>(enemy.y) - enemyHeight / 2;
+            bool overlap = character == piercerCharacter
+                ? PiercerSlashHitsEnemy(100.0f, 100.0f, 1, 0,
+                    enemy.x, enemy.y)
+                : slashLeftTest < enemyLeft + enemyWidth
+                    && slashRightTest > enemyLeft
+                    && slashTopTest < enemyTop + enemyHeight
+                    && slashBottomTest > enemyTop;
+            if (enemy.alive && overlap && hitCount < profile.slashHitCap)
+            {
+                ++hitCount;
+                enemy.hp -= profile.slashDamage;
+            }
+        }
+        failures += hitCount != profile.slashHitCap || hitEnemies[0].hp != 3;
+        for (LONG enemyIndex = 1; enemyIndex < maxEnemyCount; ++enemyIndex)
+        {
+            LONG expectedHPAfterHit = enemyIndex <= profile.slashHitCap
+                ? 3 - profile.slashDamage : 3;
+            failures += hitEnemies[enemyIndex].hp != expectedHPAfterHit;
+        }
+        EnemyRuntime pressureTarget{};
+        pressureTarget.alive = true;
+        pressureTarget.role = pressureEnemyRole;
+        pressureTarget.hp = 3;
+        failures += pressureTarget.hp != 3;
+    }
+
+    failures += !PiercerSlashHitsEnemy(100.0f, 100.0f, 1, 0,
+            119.0f, 100.0f)
+        || PiercerSlashHitsEnemy(100.0f, 100.0f, 1, 0,
+            110.0f, 109.0f)
+        || !PiercerSlashHitsEnemy(100.0f, 100.0f, 1, 1,
+            110.0f, 110.0f)
+        || !PiercerSlashOutlinePixel(100.0f, 100.0f, 1, 0,
+            104.5f, 100.0f)
+        || PiercerSlashOutlinePixel(100.0f, 100.0f, 1, 0,
+            116.5f, 100.0f);
+
+    moveUpgradeStack = 1;
+    slashUpgradeStack = 0;
+    dashUpgradeStack = 0;
+    functionalUpgradeFlags = 0;
+    selectedCharacter = mobilityCharacter;
+    float combinationMove = 0.0f;
+    float combinationSlash = 0.0f;
+    float combinationDash = 0.0f;
+    RecalculateAugmentStats(combinationMove, combinationSlash,
+        combinationDash);
+    failures += fabsf(combinationMove - 72.6f) > 0.0001f
+        || fabsf(combinationSlash - 0.45f) > 0.0001f;
+    selectedCharacter = heavyCharacter;
+    moveUpgradeStack = 0;
+    slashUpgradeStack = 1;
+    RecalculateAugmentStats(combinationMove, combinationSlash,
+        combinationDash);
+    failures += fabsf(combinationMove - 51.0f) > 0.0001f
+        || fabsf(combinationSlash - 0.5f) > 0.0001f;
+    selectedCharacter = piercerCharacter;
+    slashUpgradeStack = 0;
+    functionalUpgradeFlags = executeReachUpgradeFlag;
+    RecalculateAugmentStats(combinationMove, combinationSlash,
+        combinationDash);
+    failures += fabsf(combinationMove - 63.0f) > 0.0001f
+        || CurrentExecuteReach() != 8
+        || characterProfiles[selectedCharacter].slashReach != 12;
+    selectedCharacter = rapidCharacter;
+    slashUpgradeStack = 1;
+    dashUpgradeStack = 1;
+    functionalUpgradeFlags = silentDashUpgradeFlag;
+    RecalculateAugmentStats(combinationMove, combinationSlash,
+        combinationDash);
+    failures += fabsf(combinationSlash - 0.3f) > 0.0001f
+        || fabsf(combinationDash - 0.8f) > 0.0001f
+        || PlayerMovementIsAudible(true, true)
+        || !PlayerMovementIsAudible(true, false);
+    selectedCharacter = heavyCharacter;
+    functionalUpgradeFlags = fieldMedicUpgradeFlag;
+    LONG medicHP = 11;
+    ApplyFieldMedic(medicHP);
+    ApplyFieldMedic(medicHP);
+    failures += medicHP != heavyProfile.maxHP;
 
     constexpr BYTE expectedDashCapacity[characterCount][3]
     {
@@ -5791,21 +5977,59 @@ int main()
     UpdateDashRecharge(1.0f, 1.0f, recharge);
     failures += currentDashCharges != 3 || recharge != 0.0f;
 
-    runSeed = 12345;
-    currentRoom = 8;
-    moveUpgradeStack = 1;
-    slashUpgradeStack = 1;
-    dashUpgradeStack = 1;
-    functionalUpgradeFlags = silentDashUpgradeFlag;
-    rerollUsed = true;
-    selectedCharacter = basicCharacter;
-    currentDashCharges = 2;
-    alertEventCount = 7;
-    WriteCheckpoint(runSeed, currentRoom, 8, 11);
-    SaveCheckpoint checkpoint{};
-    failures += !ReadCheckpoint(&checkpoint) || checkpoint.alertEvents != 7
-        || checkpoint.dashCharges != 2 || checkpoint.runKills != 11;
-    DeleteFileW(saveFileName);
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        runSeed = 12345 + character;
+        currentRoom = 10;
+        moveUpgradeStack = 1;
+        slashUpgradeStack = 1;
+        dashUpgradeStack = 1;
+        functionalUpgradeFlags = executeReachUpgradeFlag
+            | fieldMedicUpgradeFlag;
+        rerollUsed = true;
+        selectedCharacter = character;
+        dashGrowthLevel = maximumDashGrowthLevel;
+        currentDashMaxCharges = CurrentDashCapacity();
+        currentDashCharges = currentDashMaxCharges;
+        alertEventCount = 7;
+        WriteCheckpoint(runSeed, currentRoom,
+            characterProfiles[character].maxHP - 1, 11);
+        SaveCheckpoint checkpoint{};
+        failures += !ReadCheckpoint(&checkpoint)
+            || checkpoint.character != character
+            || checkpoint.playerHP != characterProfiles[character].maxHP - 1
+            || checkpoint.alertEvents != 7
+            || checkpoint.dashCharges != currentDashMaxCharges
+            || checkpoint.runKills != 11;
+
+        selectedCharacter = checkpoint.character;
+        moveUpgradeStack = checkpoint.moveStack;
+        slashUpgradeStack = checkpoint.slashStack;
+        dashUpgradeStack = checkpoint.dashStack;
+        functionalUpgradeFlags = checkpoint.functionalFlags;
+        float continuedMove = 0.0f;
+        float continuedSlash = 0.0f;
+        float continuedDash = 0.0f;
+        RecalculateAugmentStats(continuedMove, continuedSlash, continuedDash);
+        failures += fabsf(continuedMove
+                - expectedMoveSpeed[character] * 1.1f) > 0.0001f
+            || fabsf(continuedSlash
+                - expectedSlashCooldown[character] * 0.8f) > 0.0001f
+            || fabsf(continuedDash - 0.8f) > 0.0001f
+            || characterProfiles[selectedCharacter].maxHP
+                != expectedHP[character];
+
+        moveUpgradeStack = 0;
+        slashUpgradeStack = 0;
+        dashUpgradeStack = 0;
+        functionalUpgradeFlags = 0;
+        RecalculateAugmentStats(continuedMove, continuedSlash, continuedDash);
+        failures += selectedCharacter != character
+            || fabsf(continuedMove - expectedMoveSpeed[character]) > 0.0001f
+            || fabsf(continuedSlash - expectedSlashCooldown[character])
+                > 0.0001f;
+        DeleteFileW(saveFileName);
+    }
 
     globalCoin = 0;
     runKillCount = 4;
@@ -5826,7 +6050,7 @@ int main()
     GrantRunCoin(true);
     failures += globalCoin != 16;
 
-#ifdef DEAD_SIGNAL_B05_SOAK_VALIDATION
+#ifdef DEAD_SIGNAL_B06_SOAK_VALIDATION
     EnemyRuntime soakEnemies[maxEnemyCount]{};
     ULONGLONG soakStart = GetTickCount64();
     ULONGLONG soakUpdates = 0;
@@ -5840,7 +6064,7 @@ int main()
             enemy.alive = true;
             enemy.role = index < 4 ? listenerEnemyRole
                 : static_cast<BYTE>(index % enemyRoleCount);
-            enemy.x = index < 4 ? 10.0f + index * 69.0f
+            enemy.x = index < 4 ? 10.0f + index * 79.0f
                 : 100.0f + static_cast<float>(index * 3);
             enemy.y = 100.0f;
         }
@@ -5869,8 +6093,23 @@ int main()
                 170.0f, 100.0f)
             || PointInsideVisionSector(100.0f, 100.0f, 1.0f, 0.0f,
                 171.0f, 100.0f);
-        selectedCharacter = basicCharacter;
-        dashGrowthLevel = maximumDashGrowthLevel;
+        selectedCharacter = static_cast<BYTE>(soakUpdates % characterCount);
+        moveUpgradeStack = static_cast<BYTE>(soakUpdates % 3);
+        slashUpgradeStack = static_cast<BYTE>((soakUpdates / 3) % 3);
+        dashUpgradeStack = static_cast<BYTE>((soakUpdates / 9) % 3);
+        functionalUpgradeFlags = (soakUpdates & 1) ? silentDashUpgradeFlag : 0;
+        float soakMove = 0.0f;
+        float soakSlash = 0.0f;
+        float soakDash = 0.0f;
+        RecalculateAugmentStats(soakMove, soakSlash, soakDash);
+        const CharacterProfile& soakProfile = characterProfiles[selectedCharacter];
+        soakFailures += fabsf(soakMove - playerMoveSpeed * soakProfile.moveScale
+                * (1.0f + moveUpgradeStack * 0.1f)) > 0.0001f
+            || fabsf(soakSlash - slashCooldownDuration
+                * soakProfile.slashCooldownScale
+                * (1.0f - slashUpgradeStack * 0.2f)) > 0.0001f
+            || soakProfile.slashHitCap < 1 || soakProfile.slashHitCap > 4;
+        dashGrowthLevel = static_cast<BYTE>((soakUpdates / 27) % 3);
         currentDashMaxCharges = CurrentDashCapacity();
         currentDashCharges = currentDashMaxCharges;
         float soakRecharge = 0.0f;
@@ -5893,18 +6132,18 @@ int main()
 #endif
 
     DeleteFileW(metaFileName);
-    printf("b05_failures=%ld slash65=%d relay70=%ld events=%u dash=%u save=%lu meta=%lu\n",
+    printf("b06_failures=%ld slash70=%d relay80=%ld events=%u dash=%u save=%lu meta=%lu\n",
         failures, slashEnemies[5].alert, relayEntered, alertEventCount,
         currentDashCharges, static_cast<unsigned long>(sizeof(SaveCheckpoint)),
         static_cast<unsigned long>(sizeof(MetaProfile)));
     return failures;
 }
 
-extern "C" __declspec(dllexport) void CALLBACK RunB05Validation(HWND, HINSTANCE,
+extern "C" __declspec(dllexport) void CALLBACK RunB06Validation(HWND, HINSTANCE,
     LPSTR, int)
 {
     FILE* output = nullptr;
-    freopen_s(&output, "B05Validation.txt", "w", stdout);
+    freopen_s(&output, "B06Validation.txt", "w", stdout);
     main();
     if (output)
     {
