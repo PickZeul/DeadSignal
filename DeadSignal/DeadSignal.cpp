@@ -4611,6 +4611,68 @@ void FillUiRectangle(HDC deviceContext, const RECT& rectangle, COLORREF color)
         reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
 }
 
+LONG CenteredUiTextLeft(HDC deviceContext, const RECT& rectangle,
+    const wchar_t* text, SIZE& textSize)
+{
+    GetTextExtentPoint32W(deviceContext, text, lstrlenW(text), &textSize);
+    return rectangle.left
+        + (rectangle.right - rectangle.left - textSize.cx) / 2;
+}
+
+void DrawFocusArrow(HDC deviceContext, const RECT& rectangle, LONG textLeft)
+{
+    TEXTMETRICW metric{};
+    GetTextMetricsW(deviceContext, &metric);
+    LONG unit = metric.tmHeight / 8;
+    if (unit < 2)
+    {
+        unit = 2;
+    }
+    LONG arrowRight = textLeft - metric.tmAveCharWidth;
+    LONG arrowLeft = arrowRight - unit * 4;
+    LONG arrowTop = (rectangle.top + rectangle.bottom - unit * 5) / 2;
+    constexpr LONG offset[5]{ 0, 1, 2, 1, 0 };
+    for (LONG row = 0; row < 5; ++row)
+    {
+        RECT pixel
+        {
+            arrowLeft + offset[row] * unit, arrowTop + row * unit,
+            arrowLeft + (offset[row] + 2) * unit,
+            arrowTop + (row + 1) * unit
+        };
+        FillUiRectangle(deviceContext, pixel, RGB(224, 112, 35));
+    }
+}
+
+void DrawCenteredUiText(HDC deviceContext, const wchar_t* text,
+    const RECT& rectangle, bool focused = false)
+{
+    SIZE textSize{};
+    LONG textLeft = CenteredUiTextLeft(deviceContext, rectangle, text, textSize);
+    RECT textRectangle
+    {
+        textLeft, rectangle.top, textLeft + textSize.cx, rectangle.bottom
+    };
+    DrawTextW(deviceContext, text, -1, &textRectangle,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+    if (focused)
+    {
+        DrawFocusArrow(deviceContext, rectangle, textLeft);
+    }
+}
+
+void DrawLeftUiText(HDC deviceContext, const wchar_t* text,
+    const RECT& rectangle, bool focused = false)
+{
+    RECT textRectangle = rectangle;
+    DrawTextW(deviceContext, text, -1, &textRectangle,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    if (focused)
+    {
+        DrawFocusArrow(deviceContext, rectangle, rectangle.left);
+    }
+}
+
 void DrawTerminalPanel(HDC deviceContext, const RECT& rectangle, bool focused)
 {
     FillUiRectangle(deviceContext, rectangle,
@@ -4619,18 +4681,22 @@ void DrawTerminalPanel(HDC deviceContext, const RECT& rectangle, bool focused)
         focused ? RGB(176, 54, 46) : RGB(55, 64, 71));
     FrameRect(deviceContext, &rectangle,
         reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
-    LONG markWidth = (rectangle.right - rectangle.left) / 12;
-    if (markWidth < 4)
+    if (focused)
     {
-        markWidth = 4;
+        LONG markWidth = (rectangle.right - rectangle.left) / 12;
+        if (markWidth < 4)
+        {
+            markWidth = 4;
+        }
+        LONG markLeft = rectangle.left
+            + (rectangle.right - rectangle.left - markWidth) / 2;
+        RECT signal
+        {
+            markLeft, rectangle.top + 1,
+            markLeft + markWidth, rectangle.top + 3
+        };
+        FillUiRectangle(deviceContext, signal, RGB(224, 112, 35));
     }
-    RECT signal
-    {
-        rectangle.left + 1, rectangle.top + 1,
-        rectangle.left + 1 + markWidth, rectangle.top + 3
-    };
-    FillUiRectangle(deviceContext, signal,
-        focused ? RGB(224, 112, 35) : RGB(82, 30, 30));
 }
 
 void DrawTerminalBackdrop(HDC deviceContext, const RECT& clientArea)
@@ -4646,12 +4712,6 @@ void DrawTerminalBackdrop(HDC deviceContext, const RECT& clientArea)
     SetDCBrushColor(deviceContext, RGB(39, 47, 54));
     FrameRect(deviceContext, &frame,
         reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
-    RECT signal
-    {
-        frame.left + 1, frame.top + 1,
-        frame.left + width * 22 / 320, frame.top + height * 2 / 180 + 1
-    };
-    FillUiRectangle(deviceContext, signal, RGB(90, 28, 29));
 }
 
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -5168,44 +5228,42 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 L"OPEN \uBB34\uC801 \uC555\uBC15\uD615\uC740 \uCC98\uCE58 \uB300\uC0C1\uC774 \uC544\uB2C8\uB2E4."
             };
             constexpr LONG helpTop[11]
-                { 10, 31, 43, 54, 65, 76, 87, 105, 117, 129, 141 };
+                { 20, 38, 48, 58, 68, 78, 88, 103, 113, 123, 133 };
             int clientWidth = clientArea.right - clientArea.left;
             int clientHeight = clientArea.bottom - clientArea.top;
             RECT panel
             {
-                clientWidth * 30 / 320, clientHeight * 7 / 180,
-                clientWidth * 290 / 320, clientHeight * 173 / 180
+                clientWidth * 49 / 320, clientHeight * 18 / 180,
+                clientWidth * 271 / 320, clientHeight * 162 / 180
             };
             DrawTerminalPanel(deviceContext, panel, false);
             RECT section
             {
-                clientWidth * 42 / 320, clientHeight * 29 / 180,
-                clientWidth * 278 / 320, clientHeight * 99 / 180
+                clientWidth * 59 / 320, clientHeight * 34 / 180,
+                clientWidth * 261 / 320, clientHeight * 98 / 180
             };
             DrawTerminalPanel(deviceContext, section, false);
-            section.top = clientHeight * 103 / 180;
-            section.bottom = clientHeight * 153 / 180;
+            section.top = clientHeight * 102 / 180;
+            section.bottom = clientHeight * 150 / 180;
             DrawTerminalPanel(deviceContext, section, false);
             RECT line = clientArea;
             for (LONG item = 0; item < 11; ++item)
             {
-                line.left = clientWidth * 44 / 320;
-                line.right = clientWidth * 276 / 320;
+                line.left = clientWidth * 61 / 320;
+                line.right = clientWidth * 259 / 320;
                 line.top = clientHeight * helpTop[item] / 180;
-                line.bottom = clientHeight * (helpTop[item] + 11) / 180;
+                line.bottom = clientHeight * (helpTop[item] + 9) / 180;
                 SetTextColor(deviceContext, item == 0 ? RGB(232, 232, 228)
                     : (item == 1 || item == 7 ? RGB(224, 112, 35)
                         : (item == 10 ? RGB(190, 120, 92) : RGB(185, 190, 190))));
-                DrawTextW(deviceContext, helpLines[item], -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                DrawCenteredUiText(deviceContext, helpLines[item], line);
             }
-            line.left = clientWidth * 94 / 320;
-            line.right = clientWidth * 226 / 320;
-            line.top = clientHeight * 156 / 180;
-            line.bottom = clientHeight * 170 / 180;
+            line.left = clientWidth * 104 / 320;
+            line.right = clientWidth * 216 / 320;
+            line.top = clientHeight * 151 / 180;
+            line.bottom = clientHeight * 160 / 180;
             SetTextColor(deviceContext, RGB(255, 216, 0));
-            DrawTextW(deviceContext, L"Z / ESC : \uB4A4\uB85C", -1, &line,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawCenteredUiText(deviceContext, L"Z / ESC : \uB4A4\uB85C", line);
             PresentLogicalFrame(paintContext, windowClientArea);
             EndPaint(window, &paint);
             return 0;
@@ -5222,37 +5280,36 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             int clientHeight = clientArea.bottom - clientArea.top;
             RECT panel
             {
-                clientWidth * 95 / 320, clientHeight * 10 / 180,
-                clientWidth * 225 / 320, clientHeight * 172 / 180
+                clientWidth * 105 / 320, clientHeight * 21 / 180,
+                clientWidth * 215 / 320, clientHeight * 159 / 180
             };
             DrawTerminalPanel(deviceContext, panel, false);
-            line.top = clientHeight * 13 / 180;
-            line.bottom = clientHeight * 29 / 180;
+            line.top = clientHeight * 22 / 180;
+            line.bottom = clientHeight * 36 / 180;
             SetTextColor(deviceContext, RGB(220, 220, 220));
-            DrawTextW(deviceContext, L"\uC124\uC815", -1, &line,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawCenteredUiText(deviceContext, L"\uC124\uC815", line);
             RECT volumeOption
             {
-                clientWidth * 100 / 320, clientHeight * 32 / 180,
-                clientWidth * 220 / 320, clientHeight * 68 / 180
+                clientWidth * 109 / 320, clientHeight * 38 / 180,
+                clientWidth * 211 / 320, clientHeight * 68 / 180
             };
             DrawTerminalPanel(deviceContext, volumeOption,
                 settingsSelection == 0);
             line.left = volumeOption.left;
             line.right = volumeOption.right;
-            line.top = clientHeight * 34 / 180;
-            line.bottom = clientHeight * 47 / 180;
+            line.top = clientHeight * 39 / 180;
+            line.bottom = clientHeight * 50 / 180;
             SetTextColor(deviceContext, settingsSelection == 0
                 ? RGB(255, 216, 0) : RGB(180, 180, 180));
-            DrawTextW(deviceContext, L"MASTER VOLUME", -1, &line,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawCenteredUiText(deviceContext, L"MASTER VOLUME", line,
+                settingsSelection == 0);
             for (LONG block = 0; block < masterVolumeMaximumStep; ++block)
             {
                 RECT volumeBlock
                 {
-                    clientWidth * (115 + block * 7) / 320,
-                    clientHeight * 52 / 180,
-                    clientWidth * (120 + block * 7) / 320,
+                    clientWidth * (118 + block * 6) / 320,
+                    clientHeight * 53 / 180,
+                    clientWidth * (122 + block * 6) / 320,
                     clientHeight * 62 / 180
                 };
                 if (block < masterVolumeStep)
@@ -5278,95 +5335,88 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             {
                 lstrcpyW(volumeText, L"OFF");
             }
-            line.left = clientWidth * 185 / 320;
-            line.right = clientWidth * 210 / 320;
-            line.top = clientHeight * 50 / 180;
+            line.left = clientWidth * 179 / 320;
+            line.right = clientWidth * 204 / 320;
+            line.top = clientHeight * 51 / 180;
             line.bottom = clientHeight * 64 / 180;
             SetTextColor(deviceContext, masterVolumeStep
                 ? RGB(210, 210, 205) : RGB(210, 90, 80));
-            DrawTextW(deviceContext, volumeText, -1, &line,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            line.left = clientWidth * 101 / 320;
-            line.right = clientWidth * 114 / 320;
+            DrawCenteredUiText(deviceContext, volumeText, line);
+            line.left = clientWidth * 110 / 320;
+            line.right = clientWidth * 119 / 320;
             SetTextColor(deviceContext, settingsSelection == 0
                 ? RGB(255, 216, 0) : RGB(90, 100, 105));
-            DrawTextW(deviceContext, L"<", -1, &line,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            line.left = clientWidth * 210 / 320;
-            line.right = clientWidth * 219 / 320;
-            DrawTextW(deviceContext, L">", -1, &line,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawCenteredUiText(deviceContext, L"<", line);
+            line.left = clientWidth * 204 / 320;
+            line.right = clientWidth * 210 / 320;
+            DrawCenteredUiText(deviceContext, L">", line);
 
             RECT resolutionOption
             {
-                clientWidth * 100 / 320, clientHeight * 73 / 180,
-                clientWidth * 220 / 320, clientHeight * 103 / 180
+                clientWidth * 109 / 320, clientHeight * 72 / 180,
+                clientWidth * 211 / 320, clientHeight * 98 / 180
             };
             DrawTerminalPanel(deviceContext, resolutionOption,
                 settingsSelection == 1);
             line.left = resolutionOption.left;
             line.right = resolutionOption.right;
-            line.top = clientHeight * 75 / 180;
-            line.bottom = clientHeight * 88 / 180;
+            line.top = clientHeight * 73 / 180;
+            line.bottom = clientHeight * 84 / 180;
             SetTextColor(deviceContext, settingsSelection == 1
                 ? RGB(255, 216, 0) : RGB(180, 180, 180));
-            DrawTextW(deviceContext, L"RESOLUTION", -1, &line,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawCenteredUiText(deviceContext, L"RESOLUTION", line,
+                settingsSelection == 1);
             wchar_t resolutionText[24];
             wsprintfW(resolutionText, L"< %ld x %ld >",
                 windowResolutionWidth[windowResolutionIndex],
                 windowResolutionHeight[windowResolutionIndex]);
-            line.top = clientHeight * 87 / 180;
-            line.bottom = clientHeight * 101 / 180;
+            line.top = clientHeight * 84 / 180;
+            line.bottom = clientHeight * 97 / 180;
             SetTextColor(deviceContext, settingsSelection == 1
                 ? RGB(255, 216, 0) : RGB(160, 170, 172));
-            DrawTextW(deviceContext, resolutionText, -1, &line,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawCenteredUiText(deviceContext, resolutionText, line);
 
             RECT fullscreenOption
             {
-                clientWidth * 100 / 320, clientHeight * 108 / 180,
-                clientWidth * 220 / 320, clientHeight * 138 / 180
+                clientWidth * 109 / 320, clientHeight * 102 / 180,
+                clientWidth * 211 / 320, clientHeight * 128 / 180
             };
             DrawTerminalPanel(deviceContext, fullscreenOption,
                 settingsSelection == 2);
             line.left = fullscreenOption.left;
             line.right = fullscreenOption.right;
-            line.top = clientHeight * 110 / 180;
-            line.bottom = clientHeight * 123 / 180;
+            line.top = clientHeight * 103 / 180;
+            line.bottom = clientHeight * 114 / 180;
             SetTextColor(deviceContext, settingsSelection == 2
                 ? RGB(255, 216, 0) : RGB(180, 180, 180));
-            DrawTextW(deviceContext, L"FULLSCREEN", -1, &line,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            line.top = clientHeight * 122 / 180;
-            line.bottom = clientHeight * 136 / 180;
+            DrawCenteredUiText(deviceContext, L"FULLSCREEN", line,
+                settingsSelection == 2);
+            line.top = clientHeight * 114 / 180;
+            line.bottom = clientHeight * 127 / 180;
             SetTextColor(deviceContext, fullscreenEnabled
                 ? RGB(224, 112, 35) : (settingsSelection == 2
                     ? RGB(255, 216, 0) : RGB(145, 150, 152)));
-            DrawTextW(deviceContext, fullscreenEnabled
-                ? L"< ON >" : L"< OFF >", -1, &line,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawCenteredUiText(deviceContext, fullscreenEnabled
+                ? L"< ON >" : L"< OFF >", line);
 
             RECT backOption
             {
-                clientWidth * 112 / 320, clientHeight * 143 / 180,
-                clientWidth * 208 / 320, clientHeight * 160 / 180
+                clientWidth * 119 / 320, clientHeight * 133 / 180,
+                clientWidth * 201 / 320, clientHeight * 148 / 180
             };
             DrawTerminalPanel(deviceContext, backOption,
                 settingsSelection == 3);
             line = backOption;
             SetTextColor(deviceContext, settingsSelection == 3
                 ? RGB(255, 216, 0) : RGB(160, 160, 160));
-            DrawTextW(deviceContext, settingsSelection == 3
-                ? L"> \uB4A4\uB85C" : L"  \uB4A4\uB85C", -1, &line,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawCenteredUiText(deviceContext, L"\uB4A4\uB85C", line,
+                settingsSelection == 3);
             line.left = panel.left;
             line.right = panel.right;
-            line.top = clientHeight * 162 / 180;
-            line.bottom = clientHeight * 171 / 180;
+            line.top = clientHeight * 150 / 180;
+            line.bottom = clientHeight * 158 / 180;
             SetTextColor(deviceContext, RGB(105, 125, 132));
-            DrawTextW(deviceContext, L"L/R CHANGE   Z TOGGLE", -1, &line,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawCenteredUiText(deviceContext, L"L/R CHANGE   Z TOGGLE", line);
             PresentLogicalFrame(paintContext, windowClientArea);
             EndPaint(window, &paint);
             return 0;
@@ -5386,58 +5436,52 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             {
                 RECT panel
                 {
-                    clientWidth * 96 / 320, clientHeight * 14 / 180,
-                    clientWidth * 224 / 320, clientHeight * 166 / 180
+                    clientWidth * 106 / 320, clientHeight * 25 / 180,
+                    clientWidth * 214 / 320, clientHeight * 155 / 180
                 };
                 DrawTerminalPanel(deviceContext, panel, false);
                 line.left = panel.left;
                 line.right = panel.right;
-                line.top = clientHeight * 15 / 180;
-                line.bottom = clientHeight * 43 / 180;
+                line.top = clientHeight * 27 / 180;
+                line.bottom = clientHeight * 48 / 180;
                 SetTextColor(deviceContext, RGB(235, 235, 230));
                 if (titleFont)
                 {
                     SelectObject(deviceContext, titleFont);
                 }
-                DrawTextW(deviceContext, L"DEAD SIGNAL", -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                SIZE titleSize{};
+                LONG titleLeft = CenteredUiTextLeft(deviceContext, line,
+                    L"DEAD SIGNAL", titleSize);
+                DrawCenteredUiText(deviceContext, L"DEAD SIGNAL", line);
                 SelectObject(deviceContext, uiFont
                     ? uiFont : GetStockObject(DEFAULT_GUI_FONT));
                 RECT divider
                 {
-                    clientWidth * 106 / 320, clientHeight * 45 / 180,
-                    clientWidth * 214 / 320, clientHeight * 46 / 180
+                    clientWidth * 114 / 320, clientHeight * 48 / 180,
+                    clientWidth * 206 / 320, clientHeight * 49 / 180
                 };
                 FillUiRectangle(deviceContext, divider, RGB(136, 42, 33));
+                LONG bracketGap = clientWidth * 4 / 320;
+                LONG bracketWidth = clientWidth * 2 / 320;
                 RECT titleAccent
                 {
-                    clientWidth * 102 / 320, clientHeight * 21 / 180,
-                    clientWidth * 104 / 320, clientHeight * 37 / 180
+                    titleLeft - bracketGap - bracketWidth,
+                    clientHeight * 31 / 180,
+                    titleLeft - bracketGap, clientHeight * 44 / 180
                 };
                 FillUiRectangle(deviceContext, titleAccent, RGB(91, 29, 30));
-                titleAccent.left = clientWidth * 216 / 320;
-                titleAccent.right = clientWidth * 218 / 320;
+                titleAccent.left = titleLeft + titleSize.cx + bracketGap;
+                titleAccent.right = titleAccent.left + bracketWidth;
                 FillUiRectangle(deviceContext, titleAccent, RGB(91, 29, 30));
-                titleAccent =
-                {
-                    clientWidth * 105 / 320, clientHeight * 18 / 180,
-                    clientWidth * 108 / 320, clientHeight * 20 / 180
-                };
-                FillUiRectangle(deviceContext, titleAccent, RGB(184, 60, 42));
-                titleAccent.left = clientWidth * 212 / 320;
-                titleAccent.right = clientWidth * 215 / 320;
-                titleAccent.top = clientHeight * 38 / 180;
-                titleAccent.bottom = clientHeight * 40 / 180;
-                FillUiRectangle(deviceContext, titleAccent, RGB(126, 37, 34));
                 for (LONG item = 0; item < 5; ++item)
                 {
                     bool focused = item == menuSelection;
                     RECT option
                     {
-                        clientWidth * 115 / 320,
-                        clientHeight * (58 + item * 18) / 180,
-                        clientWidth * 205 / 320,
-                        clientHeight * (72 + item * 18) / 180
+                        clientWidth * 122 / 320,
+                        clientHeight * (59 + item * 16) / 180,
+                        clientWidth * 198 / 320,
+                        clientHeight * (71 + item * 16) / 180
                     };
                     DrawTerminalPanel(deviceContext, option, focused);
                     const wchar_t* text = item == 0 ? L"\uAC8C\uC784 \uC2DC\uC791"
@@ -5450,36 +5494,31 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     line.bottom = option.bottom;
                     SetTextColor(deviceContext, focused
                         ? RGB(255, 216, 0) : RGB(160, 160, 160));
-                    wsprintfW(titleText, focused ? L"> %s" : L"  %s", text);
-                    DrawTextW(deviceContext, titleText, -1, &line,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    DrawCenteredUiText(deviceContext, text, line, focused);
                 }
                 if (titleStatus)
                 {
-                    line.top = clientHeight * 154 / 180;
-                    line.bottom = clientHeight * 168 / 180;
+                    line.top = clientHeight * 139 / 180;
+                    line.bottom = clientHeight * 151 / 180;
                     SetTextColor(deviceContext, RGB(220, 110, 95));
-                    DrawTextW(deviceContext, L"\uC800\uC7A5 \uC5C6\uC74C", -1, &line,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    DrawCenteredUiText(deviceContext, L"\uC800\uC7A5 \uC5C6\uC74C", line);
                 }
             }
             else if (applicationState == preparationState)
             {
-                line.top = clientHeight * 2 / 180;
-                line.bottom = clientHeight * 17 / 180;
+                line.top = clientHeight * 15 / 180;
+                line.bottom = clientHeight * 28 / 180;
                 SetTextColor(deviceContext, RGB(220, 220, 220));
-                DrawTextW(deviceContext, L"GLOBAL UPGRADE", -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                line.top = clientHeight * 17 / 180;
-                line.bottom = clientHeight * 31 / 180;
+                DrawCenteredUiText(deviceContext, L"GLOBAL UPGRADE", line);
+                line.top = clientHeight * 28 / 180;
+                line.bottom = clientHeight * 40 / 180;
                 wsprintfW(titleText, L"COIN %03ld", globalCoin);
                 SetTextColor(deviceContext, RGB(220, 220, 220));
-                DrawTextW(deviceContext, titleText, -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                DrawCenteredUiText(deviceContext, titleText, line);
                 RECT headerDivider
                 {
-                    clientWidth * 91 / 320, clientHeight * 29 / 180,
-                    clientWidth * 229 / 320, clientHeight * 30 / 180
+                    clientWidth * 101 / 320, clientHeight * 38 / 180,
+                    clientWidth * 219 / 320, clientHeight * 39 / 180
                 };
                 FillUiRectangle(deviceContext, headerDivider, RGB(91, 29, 30));
                 constexpr const wchar_t* commonNames[commonUpgradeCount]
@@ -5491,45 +5530,32 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     {
                         BYTE level = commonGlobalLevel[item];
                         BYTE maximum = commonUpgradeMaximum[item];
-                        LONG logicalTop = 33 + item * 28;
+                        LONG logicalTop = 42 + item * 24;
                         RECT card
                         {
-                            clientWidth * 22 / 320,
+                            clientWidth * 43 / 320,
                             clientHeight * logicalTop / 180,
-                            clientWidth * 298 / 320,
-                            clientHeight * (logicalTop + 24) / 180
+                            clientWidth * 277 / 320,
+                            clientHeight * (logicalTop + 20) / 180
                         };
                         DrawTerminalPanel(deviceContext, card, focused);
-                        if (focused)
-                        {
-                            RECT focusMarker
-                            {
-                                card.left + clientWidth * 3 / 320,
-                                card.top + clientHeight * 4 / 180,
-                                card.left + clientWidth * 5 / 320,
-                                card.bottom - clientHeight * 4 / 180
-                            };
-                            FillRect(deviceContext, &focusMarker,
-                                reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-                        }
-                        line.left = card.left + clientWidth * 9 / 320;
-                        line.right = card.right - clientWidth * 45 / 320;
+                        line.left = card.left + clientWidth * 8 / 320;
+                        line.right = card.right - clientWidth * 38 / 320;
                         line.top = card.top + clientHeight / 180;
-                        line.bottom = card.top + clientHeight * 12 / 180;
+                        line.bottom = card.top + clientHeight * 10 / 180;
                         SetTextColor(deviceContext, focused ? RGB(255, 216, 0)
                             : RGB(185, 185, 185));
-                        DrawTextW(deviceContext, commonNames[item], -1, &line,
-                            DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                        DrawLeftUiText(deviceContext, commonNames[item], line, focused);
 
-                        LONG indicatorLeft = 288 - maximum * 9;
+                        LONG indicatorLeft = 269 - maximum * 8;
                         for (BYTE indicator = 0; indicator < maximum; ++indicator)
                         {
                             RECT levelBox
                             {
-                                clientWidth * (indicatorLeft + indicator * 9) / 320,
-                                card.top + clientHeight * 5 / 180,
-                                clientWidth * (indicatorLeft + indicator * 9 + 6) / 320,
-                                card.top + clientHeight * 10 / 180
+                                clientWidth * (indicatorLeft + indicator * 8) / 320,
+                                card.top + clientHeight * 4 / 180,
+                                clientWidth * (indicatorLeft + indicator * 8 + 5) / 320,
+                                card.top + clientHeight * 9 / 180
                             };
                             if (indicator < level)
                             {
@@ -5552,9 +5578,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                             wsprintfW(titleText, low ? L"COST %ld   LOW" : L"COST %ld",
                                 commonUpgradeCost[item][level]);
                         }
-                        line.left = card.left + clientWidth * 9 / 320;
-                        line.right = card.right - clientWidth * 9 / 320;
-                        line.top = card.top + clientHeight * 12 / 180;
+                        line.left = card.left + clientWidth * 8 / 320;
+                        line.right = card.right - clientWidth * 8 / 320;
+                        line.top = card.top + clientHeight * 10 / 180;
                         line.bottom = card.bottom - clientHeight / 180;
                         SetTextColor(deviceContext, level >= maximum
                             ? RGB(100, 220, 170)
@@ -5567,35 +5593,22 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     {
                         const wchar_t* action = item == 3 ? L"CHARACTER"
                             : (item == 4 ? L"RUN START" : L"BACK");
-                        LONG logicalTop = 120 + (item - 3) * 20;
+                        LONG logicalTop = 116 + (item - 3) * 17;
                         RECT card
                         {
-                            clientWidth * 70 / 320,
+                            clientWidth * 84 / 320,
                             clientHeight * logicalTop / 180,
-                            clientWidth * 250 / 320,
-                            clientHeight * (logicalTop + 18) / 180
+                            clientWidth * 236 / 320,
+                            clientHeight * (logicalTop + 15) / 180
                         };
                         DrawTerminalPanel(deviceContext, card, focused);
-                        if (focused)
-                        {
-                            RECT focusMarker
-                            {
-                                card.left + clientWidth * 3 / 320,
-                                card.top + clientHeight * 3 / 180,
-                                card.left + clientWidth * 5 / 320,
-                                card.bottom - clientHeight * 3 / 180
-                            };
-                            FillRect(deviceContext, &focusMarker,
-                                reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-                        }
-                        line.left = card.left + clientWidth * 7 / 320;
-                        line.right = card.right - clientWidth * 4 / 320;
+                        line.left = card.left;
+                        line.right = card.right;
                         line.top = card.top + clientHeight / 180;
                         line.bottom = card.bottom - clientHeight / 180;
                         SetTextColor(deviceContext, focused ? RGB(255, 216, 0)
                             : RGB(160, 160, 160));
-                        DrawTextW(deviceContext, action, -1, &line,
-                            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                        DrawCenteredUiText(deviceContext, action, line, focused);
                     }
                 }
             }
@@ -5608,21 +5621,18 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 divider.right = divider.left + 1;
                 FillUiRectangle(deviceContext, divider, RGB(47, 56, 63));
 
-                line.top = clientHeight * 3 / 180;
-                line.bottom = clientHeight * 20 / 180;
+                line.top = clientHeight * 10 / 180;
+                line.bottom = clientHeight * 24 / 180;
                 line.left = 0;
                 line.right = quarter;
                 SetTextColor(deviceContext, RGB(220, 220, 220));
-                DrawTextW(deviceContext, L"CHAR", -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                DrawCenteredUiText(deviceContext, L"CHAR", line);
                 line.left = quarter;
                 line.right = quarter * 2;
-                DrawTextW(deviceContext, L"PREVIEW", -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                DrawCenteredUiText(deviceContext, L"PREVIEW", line);
                 line.left = quarter * 2;
                 line.right = clientWidth;
-                DrawTextW(deviceContext, L"GLOBAL UPGRADE", -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                DrawCenteredUiText(deviceContext, L"GLOBAL UPGRADE", line);
 
                 for (LONG item = 0; item < characterCount; ++item)
                 {
@@ -5630,13 +5640,13 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     bool cursor = item == menuSelection;
                     bool selected = item == selectedCharacter;
                     bool focused = cursor && !characterUpgradeFocus;
-                    LONG slotTop = 23 + item * 30;
+                    LONG slotTop = 33 + item * 26;
                     RECT card
                     {
-                        clientWidth * 3 / 320,
+                        clientWidth * 9 / 320,
                         clientHeight * slotTop / 180,
-                        clientWidth * 77 / 320,
-                        clientHeight * (slotTop + 26) / 180
+                        clientWidth * 71 / 320,
+                        clientHeight * (slotTop + 22) / 180
                     };
                     DrawTerminalPanel(deviceContext, card, focused);
                     if (selected)
@@ -5661,23 +5671,21 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                         FillUiRectangle(deviceContext, selectedMarker,
                             RGB(64, 194, 194));
                     }
-                    line.left = card.left + clientWidth * 2 / 320;
-                    line.right = card.right - clientWidth * 2 / 320;
-                    line.top = card.top + clientHeight * 2 / 180;
-                    line.bottom = card.top + clientHeight * 15 / 180;
-                    wsprintfW(titleText, cursor ? L"> %s" : L"%s",
-                        CharacterName(static_cast<BYTE>(item)));
+                    line.left = card.left + clientWidth / 320;
+                    line.right = card.right - clientWidth / 320;
+                    line.top = card.top + clientHeight / 180;
+                    line.bottom = card.top + clientHeight * 12 / 180;
+                    const wchar_t* characterName
+                        = CharacterName(static_cast<BYTE>(item));
                     SetTextColor(deviceContext, focused ? RGB(255, 216, 0)
                         : (unlocked ? RGB(210, 210, 210) : RGB(120, 120, 120)));
-                    DrawTextW(deviceContext, titleText, -1, &line,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    DrawCenteredUiText(deviceContext, characterName, line, focused);
                     if (!unlocked)
                     {
-                        line.top = card.top + clientHeight * 14 / 180;
+                        line.top = card.top + clientHeight * 11 / 180;
                         line.bottom = card.bottom - clientHeight / 180;
                         SetTextColor(deviceContext, RGB(180, 90, 90));
-                        DrawTextW(deviceContext, L"LOCK 100 C", -1, &line,
-                            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                        DrawCenteredUiText(deviceContext, L"LOCK 100 C", line);
                     }
                 }
 
@@ -5686,47 +5694,44 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     = (unlockedCharacterMask & (1 << previewCharacter)) != 0;
                 RECT previewCard
                 {
-                    clientWidth * 83 / 320, clientHeight * 21 / 180,
-                    clientWidth * 157 / 320, clientHeight * 174 / 180
+                    clientWidth * 89 / 320, clientHeight * 32 / 180,
+                    clientWidth * 151 / 320, clientHeight * 162 / 180
                 };
                 DrawTerminalPanel(deviceContext, previewCard, false);
                 line.left = previewCard.left + clientWidth * 2 / 320;
                 line.right = previewCard.right - clientWidth * 2 / 320;
-                line.top = clientHeight * 22 / 180;
-                line.bottom = clientHeight * 36 / 180;
+                line.top = clientHeight * 33 / 180;
+                line.bottom = clientHeight * 44 / 180;
                 SetTextColor(deviceContext, RGB(220, 220, 220));
-                DrawTextW(deviceContext, CharacterName(previewCharacter), -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                line.top = clientHeight * 35 / 180;
-                line.bottom = clientHeight * 47 / 180;
+                DrawCenteredUiText(deviceContext,
+                    CharacterName(previewCharacter), line);
+                line.top = clientHeight * 44 / 180;
+                line.bottom = clientHeight * 54 / 180;
                 SetTextColor(deviceContext, RGB(120, 180, 200));
-                DrawTextW(deviceContext, CharacterRoleName(previewCharacter), -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                DrawCenteredUiText(deviceContext,
+                    CharacterRoleName(previewCharacter), line);
                 if (!previewUnlocked)
                 {
                     line.top = clientHeight * 69 / 180;
-                    line.bottom = clientHeight * 85 / 180;
+                    line.bottom = clientHeight * 82 / 180;
                     SetTextColor(deviceContext, RGB(210, 100, 100));
-                    DrawTextW(deviceContext, L"LOCKED", -1, &line,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                    line.top = clientHeight * 87 / 180;
-                    line.bottom = clientHeight * 101 / 180;
-                    DrawTextW(deviceContext, L"UNLOCK", -1, &line,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                    line.top = clientHeight * 101 / 180;
-                    line.bottom = clientHeight * 115 / 180;
-                    DrawTextW(deviceContext, L"100 C", -1, &line,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    DrawCenteredUiText(deviceContext, L"LOCKED", line);
+                    line.top = clientHeight * 84 / 180;
+                    line.bottom = clientHeight * 96 / 180;
+                    DrawCenteredUiText(deviceContext, L"UNLOCK", line);
+                    line.top = clientHeight * 96 / 180;
+                    line.bottom = clientHeight * 108 / 180;
+                    DrawCenteredUiText(deviceContext, L"100 C", line);
                 }
                 else
                 {
-                    LONG previewScale = clientHeight / 60;
+                    LONG previewScale = clientHeight / 72;
                     if (previewScale < 1)
                     {
                         previewScale = 1;
                     }
                     LONG previewLeft = quarter + quarter / 2 - 4 * previewScale;
-                    LONG previewTop = clientHeight * 49 / 180;
+                    LONG previewTop = clientHeight * 55 / 180;
                     for (LONG y = 0; y < playerHeight; ++y)
                     {
                         for (LONG x = 0; x < playerWidth; ++x)
@@ -5757,15 +5762,13 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     wsprintfW(titleText, L"HP %ld",
                         CharacterMaximumHP(previewCharacter) / combatScale);
                     line.top = clientHeight * 87 / 180;
-                    line.bottom = clientHeight * 99 / 180;
-                    DrawTextW(deviceContext, titleText, -1, &line,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    line.bottom = clientHeight * 97 / 180;
+                    DrawCenteredUiText(deviceContext, titleText, line);
                     wsprintfW(titleText, L"MOVE %ld", static_cast<LONG>(
                         CharacterMoveSpeed(previewCharacter) + 0.5f));
-                    line.top = clientHeight * 100 / 180;
-                    line.bottom = clientHeight * 112 / 180;
-                    DrawTextW(deviceContext, titleText, -1, &line,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    line.top = clientHeight * 98 / 180;
+                    line.bottom = clientHeight * 108 / 180;
+                    DrawCenteredUiText(deviceContext, titleText, line);
                     LONG previewDamage = characterProfiles[previewCharacter].slashDamage;
                     if (previewDamage % combatScale)
                     {
@@ -5776,31 +5779,27 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     {
                         wsprintfW(titleText, L"DMG %ld", previewDamage / combatScale);
                     }
-                    line.top = clientHeight * 113 / 180;
-                    line.bottom = clientHeight * 125 / 180;
-                    DrawTextW(deviceContext, titleText, -1, &line,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    line.top = clientHeight * 109 / 180;
+                    line.bottom = clientHeight * 119 / 180;
+                    DrawCenteredUiText(deviceContext, titleText, line);
                     wsprintfW(titleText, L"DASH %u/%u",
                         static_cast<UINT>(CharacterDashCapacity(previewCharacter)),
                         static_cast<UINT>(characterDashCaps[previewCharacter]));
-                    line.top = clientHeight * 126 / 180;
-                    line.bottom = clientHeight * 138 / 180;
-                    DrawTextW(deviceContext, titleText, -1, &line,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    line.top = clientHeight * 120 / 180;
+                    line.bottom = clientHeight * 130 / 180;
+                    DrawCenteredUiText(deviceContext, titleText, line);
                     LONG previewCooldown = static_cast<LONG>(
                         CharacterSlashCooldown(previewCharacter) * 100.0f + 0.5f);
                     wsprintfW(titleText, L"CD 0.%02ld", previewCooldown);
-                    line.top = clientHeight * 139 / 180;
-                    line.bottom = clientHeight * 151 / 180;
-                    DrawTextW(deviceContext, titleText, -1, &line,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    line.top = clientHeight * 131 / 180;
+                    line.bottom = clientHeight * 141 / 180;
+                    DrawCenteredUiText(deviceContext, titleText, line);
                     wsprintfW(titleText, L"SLASH %ldx%ld",
                         CharacterSlashReach(previewCharacter),
                         CharacterSlashWidth(previewCharacter));
-                    line.top = clientHeight * 152 / 180;
-                    line.bottom = clientHeight * 164 / 180;
-                    DrawTextW(deviceContext, titleText, -1, &line,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    line.top = clientHeight * 142 / 180;
+                    line.bottom = clientHeight * 152 / 180;
+                    DrawCenteredUiText(deviceContext, titleText, line);
                 }
 
                 for (LONG item = 0; item < characterGlobalUpgradeCount; ++item)
@@ -5809,37 +5808,24 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     BYTE maximum = characterGlobalMaximum[previewCharacter][item];
                     bool focused = characterUpgradeFocus
                         && item == characterUpgradeSelection;
-                    LONG logicalTop = 34 + item * 31;
+                    LONG logicalTop = 42 + item * 26;
                     RECT card
                     {
-                        clientWidth * 164 / 320,
+                        clientWidth * 176 / 320,
                         clientHeight * logicalTop / 180,
-                        clientWidth * 316 / 320,
-                        clientHeight * (logicalTop + 28) / 180
+                        clientWidth * 304 / 320,
+                        clientHeight * (logicalTop + 24) / 180
                     };
                     DrawTerminalPanel(deviceContext, card, focused);
-                    if (focused)
-                    {
-                        RECT focusMarker
-                        {
-                            card.left + clientWidth * 2 / 320,
-                            card.top + clientHeight * 3 / 180,
-                            card.left + clientWidth * 4 / 320,
-                            card.bottom - clientHeight * 3 / 180
-                        };
-                        FillRect(deviceContext, &focusMarker,
-                            reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-                    }
-                    line.left = card.left + clientWidth * 6 / 320;
-                    line.right = card.right - clientWidth * 3 / 320;
+                    line.left = card.left + clientWidth * 2 / 320;
+                    line.right = card.right - clientWidth * 2 / 320;
                     line.top = card.top + clientHeight / 180;
-                    line.bottom = card.top + clientHeight * 13 / 180;
+                    line.bottom = card.top + clientHeight * 11 / 180;
                     SetTextColor(deviceContext, focused ? RGB(255, 216, 0)
                         : RGB(185, 185, 185));
-                    DrawTextW(deviceContext,
+                    DrawCenteredUiText(deviceContext,
                         CharacterGlobalUpgradeName(previewCharacter,
-                            static_cast<BYTE>(item)), -1, &line,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                            static_cast<BYTE>(item)), line, focused);
 
                     if (!previewUnlocked)
                     {
@@ -5857,24 +5843,23 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                             static_cast<UINT>(level), static_cast<UINT>(maximum),
                             cost);
                     }
-                    line.top = card.top + clientHeight * 12 / 180;
-                    line.bottom = card.top + clientHeight * 23 / 180;
+                    line.top = card.top + clientHeight * 11 / 180;
+                    line.bottom = card.top + clientHeight * 20 / 180;
                     SetTextColor(deviceContext, !previewUnlocked ? RGB(180, 90, 90)
                         : (level >= maximum ? RGB(100, 220, 170)
                             : (globalCoin < characterGlobalCost[previewCharacter][item][level]
                                 ? RGB(255, 96, 96) : RGB(160, 160, 160))));
-                    DrawTextW(deviceContext, titleText, -1, &line,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    DrawCenteredUiText(deviceContext, titleText, line);
                     if (previewUnlocked)
                     {
-                        LONG indicatorLeft = 238 - maximum * 4;
+                        LONG indicatorLeft = 240 - (maximum * 7 - 2) / 2;
                         for (BYTE indicator = 0; indicator < maximum; ++indicator)
                         {
                             RECT levelBox
                             {
-                                clientWidth * (indicatorLeft + indicator * 8) / 320,
-                                card.top + clientHeight * 23 / 180,
-                                clientWidth * (indicatorLeft + indicator * 8 + 5) / 320,
+                                clientWidth * (indicatorLeft + indicator * 7) / 320,
+                                card.top + clientHeight * 19 / 180,
+                                clientWidth * (indicatorLeft + indicator * 7 + 5) / 320,
                                 card.bottom - clientHeight * 2 / 180
                             };
                             if (indicator < level)
@@ -5895,28 +5880,16 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     LONG item = action + characterGlobalUpgradeCount;
                     bool focused = characterUpgradeFocus
                         && item == characterUpgradeSelection;
-                    LONG logicalTop = action ? 156 : 131;
-                    LONG logicalBottom = action ? 176 : 153;
+                    LONG logicalTop = action ? 146 : 125;
+                    LONG logicalBottom = action ? 164 : 144;
                     RECT card
                     {
-                        clientWidth * 164 / 320,
+                        clientWidth * 176 / 320,
                         clientHeight * logicalTop / 180,
-                        clientWidth * 316 / 320,
+                        clientWidth * 304 / 320,
                         clientHeight * logicalBottom / 180
                     };
                     DrawTerminalPanel(deviceContext, card, focused);
-                    if (focused)
-                    {
-                        RECT focusMarker
-                        {
-                            card.left + clientWidth * 3 / 320,
-                            card.top + clientHeight * 4 / 180,
-                            card.left + clientWidth * 5 / 320,
-                            card.bottom - clientHeight * 4 / 180
-                        };
-                        FillRect(deviceContext, &focusMarker,
-                            reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-                    }
                     if (!action)
                     {
                         bool runCharacterUnlocked
@@ -5929,14 +5902,13 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     {
                         wsprintfW(titleText, L"BACK");
                     }
-                    line.left = card.left + clientWidth * 7 / 320;
-                    line.right = card.right - clientWidth * 4 / 320;
+                    line.left = card.left;
+                    line.right = card.right;
                     line.top = card.top + clientHeight / 180;
                     line.bottom = card.bottom - clientHeight / 180;
                     SetTextColor(deviceContext, focused ? RGB(255, 216, 0)
                         : RGB(160, 160, 160));
-                    DrawTextW(deviceContext, titleText, -1, &line,
-                        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    DrawCenteredUiText(deviceContext, titleText, line, focused);
                 }
                 line.left = quarter * 2 + 4;
                 line.right = clientWidth - 4;
@@ -5948,8 +5920,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     globalCoin);
                 SetTextColor(deviceContext, titleStatus == 3
                     ? RGB(255, 96, 96) : RGB(220, 220, 220));
-                DrawTextW(deviceContext, titleText, -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                DrawCenteredUiText(deviceContext, titleText, line);
             }
 
             PresentLogicalFrame(paintContext, windowClientArea);
@@ -6009,8 +5980,11 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             - 60 * destinationWidth / framebufferWidth;
         hudLine.right = destinationX + destinationWidth / 2
             + 60 * destinationWidth / framebufferWidth;
-        DrawTextW(deviceContext, hudText, -1, &hudLine,
-            DT_CENTER | DT_TOP | DT_SINGLELINE);
+        SIZE hudTextSize{};
+        LONG hudTextLeft = CenteredUiTextLeft(deviceContext, hudLine,
+            hudText, hudTextSize);
+        TextOutW(deviceContext, hudTextLeft, hudLine.top,
+            hudText, lstrlenW(hudText));
         wsprintfW(hudText, L"K %ld", runKillCount);
         hudLine.left = destinationX + destinationWidth / 2
             + 64 * destinationWidth / framebufferWidth;
@@ -6023,7 +5997,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         {
             RECT iconBar
             {
-                destinationX + 302 * destinationWidth / framebufferWidth,
+                destinationX + 304 * destinationWidth / framebufferWidth,
                 destinationY + (3 + bar * 4) * destinationHeight / framebufferHeight,
                 destinationX + 316 * destinationWidth / framebufferWidth,
                 destinationY + (5 + bar * 4) * destinationHeight / framebufferHeight
@@ -6040,30 +6014,29 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         {
             RECT panel
             {
-                clientWidth * 40 / 320, clientHeight * 18 / 180,
-                clientWidth * 280 / 320, clientHeight * 166 / 180
+                clientWidth * 58 / 320, clientHeight * 29 / 180,
+                clientWidth * 262 / 320, clientHeight * 155 / 180
             };
             DrawTerminalPanel(deviceContext, panel, false);
             RECT line = clientArea;
-            line.top = clientHeight * 20 / 180;
-            line.bottom = clientHeight * 42 / 180;
+            line.top = clientHeight * 31 / 180;
+            line.bottom = clientHeight * 50 / 180;
             SetTextColor(deviceContext, RGB(220, 220, 220));
-            DrawTextW(deviceContext, L"MENU", -1, &line,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawCenteredUiText(deviceContext, L"MENU", line);
             RECT divider
             {
-                clientWidth * 86 / 320, clientHeight * 42 / 180,
-                clientWidth * 234 / 320, clientHeight * 43 / 180
+                clientWidth * 97 / 320, clientHeight * 50 / 180,
+                clientWidth * 223 / 320, clientHeight * 51 / 180
             };
             FillUiRectangle(deviceContext, divider, RGB(91, 29, 30));
             for (LONG item = 0; item < 4; ++item)
             {
                 RECT option
                 {
-                    clientWidth * 66 / 320,
-                    clientHeight * (50 + item * 28) / 180,
-                    clientWidth * 254 / 320,
-                    clientHeight * (72 + item * 28) / 180
+                    clientWidth * 80 / 320,
+                    clientHeight * (56 + item * 24) / 180,
+                    clientWidth * 240 / 320,
+                    clientHeight * (75 + item * 24) / 180
                 };
                 DrawTerminalPanel(deviceContext, option,
                     item == gameplayMenuSelection);
@@ -6077,10 +6050,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 line.bottom = option.bottom;
                 SetTextColor(deviceContext, item == gameplayMenuSelection
                     ? RGB(255, 216, 0) : RGB(160, 160, 160));
-                wsprintfW(hudText, item == gameplayMenuSelection
-                    ? L"> %s" : L"  %s", text);
-                DrawTextW(deviceContext, hudText, -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                DrawCenteredUiText(deviceContext, text, line,
+                    item == gameplayMenuSelection);
             }
         }
         else if (upgradeMenuActive)
@@ -6090,20 +6061,19 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             SetBkMode(deviceContext, TRANSPARENT);
             RECT panel
             {
-                clientWidth * 48 / 320, clientHeight * 26 / 180,
-                clientWidth * 272 / 320, clientHeight * 153 / 180
+                clientWidth * 65 / 320, clientHeight * 36 / 180,
+                clientWidth * 255 / 320, clientHeight * 144 / 180
             };
             DrawTerminalPanel(deviceContext, panel, false);
             RECT line = clientArea;
-            line.top = clientHeight * 31 / 180;
-            line.bottom = clientHeight * 53 / 180;
+            line.top = clientHeight * 39 / 180;
+            line.bottom = clientHeight * 55 / 180;
             SetTextColor(deviceContext, RGB(220, 220, 220));
-            DrawTextW(deviceContext, L"UPGRADE", -1, &line,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawCenteredUiText(deviceContext, L"UPGRADE", line);
             RECT divider
             {
-                clientWidth * 86 / 320, clientHeight * 53 / 180,
-                clientWidth * 234 / 320, clientHeight * 54 / 180
+                clientWidth * 97 / 320, clientHeight * 55 / 180,
+                clientWidth * 223 / 320, clientHeight * 56 / 180
             };
             FillUiRectangle(deviceContext, divider, RGB(91, 29, 30));
             for (LONG item = 0; item < 3; ++item)
@@ -6113,10 +6083,10 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 bool focused = item == upgradeSelection;
                 RECT option
                 {
-                    clientWidth * 67 / 320,
-                    clientHeight * (63 + item * 27) / 180,
-                    clientWidth * 253 / 320,
-                    clientHeight * (85 + item * 27) / 180
+                    clientWidth * 81 / 320,
+                    clientHeight * (64 + item * 23) / 180,
+                    clientWidth * 239 / 320,
+                    clientHeight * (83 + item * 23) / 180
                 };
                 DrawTerminalPanel(deviceContext, option, focused);
                 const wchar_t* text = hudText;
@@ -6144,8 +6114,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 SetTextColor(deviceContext, focused
                     ? (item == 2 && rerollExhausted ? RGB(96, 96, 96) : RGB(255, 216, 0))
                     : (item == 2 && rerollExhausted ? RGB(64, 64, 64) : RGB(160, 160, 160)));
-                DrawTextW(deviceContext, text, -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                DrawCenteredUiText(deviceContext, text, line, focused);
             }
         }
         else if (runEndState)
@@ -6158,36 +6127,35 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             wchar_t resultText[64];
             RECT panel
             {
-                clientWidth * 58 / 320, clientHeight * 4 / 180,
-                clientWidth * 262 / 320, clientHeight * 178 / 180
+                clientWidth * 73 / 320, clientHeight * 17 / 180,
+                clientWidth * 247 / 320, clientHeight * 167 / 180
             };
             DrawTerminalPanel(deviceContext, panel, false);
             RECT missionPanel
             {
-                clientWidth * 74 / 320, clientHeight * 19 / 180,
-                clientWidth * 246 / 320, clientHeight * 66 / 180
+                clientWidth * 87 / 320, clientHeight * 32 / 180,
+                clientWidth * 233 / 320, clientHeight * 72 / 180
             };
             DrawTerminalPanel(deviceContext, missionPanel, false);
             RECT coinPanel
             {
-                clientWidth * 74 / 320, clientHeight * 69 / 180,
-                clientWidth * 246 / 320, clientHeight * 137 / 180
+                clientWidth * 87 / 320, clientHeight * 75 / 180,
+                clientWidth * 233 / 320, clientHeight * 132 / 180
             };
             DrawTerminalPanel(deviceContext, coinPanel, false);
-            line.top = clientHeight / 180;
-            line.bottom = clientHeight * 18 / 180;
+            line.top = clientHeight * 18 / 180;
+            line.bottom = clientHeight * 31 / 180;
             SetTextColor(deviceContext, runEndState == runClearEndState
                 ? RGB(96, 220, 176) : RGB(232, 78, 62));
-            DrawTextW(deviceContext, runEndState == runClearEndState
-                ? L"RUN CLEAR" : L"GAME OVER", -1, &line,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawCenteredUiText(deviceContext, runEndState == runClearEndState
+                ? L"RUN CLEAR" : L"GAME OVER", line);
             constexpr const wchar_t* resultLabels[9]
             {
                 L"CHARACTER  %s", L"ROOM  %ld / 12", L"KILL  %ld",
                 L"ALERT  %u", L"KILL COIN  %ld", L"ROOM COIN  %ld",
                 L"COIN SENSE  +%ld", L"EARNED  %ld", L"TOTAL COIN  %ld"
             };
-            constexpr LONG resultTop[9]{ 20, 32, 44, 56, 72, 84, 96, 112, 126 };
+            constexpr LONG resultTop[9]{ 33, 43, 53, 63, 76, 86, 96, 109, 120 };
             for (LONG item = 0; item < 9; ++item)
             {
                 if (item == 0)
@@ -6229,16 +6197,15 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     wsprintfW(resultText, resultLabels[item], globalCoin);
                 }
                 line.top = clientHeight * resultTop[item] / 180;
-                line.bottom = clientHeight * (resultTop[item] + 12) / 180;
+                line.bottom = clientHeight * (resultTop[item] + 9) / 180;
                 SetTextColor(deviceContext, item == 7 ? RGB(255, 216, 0)
                     : (item == 8 ? RGB(96, 220, 176) : RGB(210, 214, 212)));
-                DrawTextW(deviceContext, resultText, -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                DrawCenteredUiText(deviceContext, resultText, line);
             }
             RECT divider
             {
-                clientWidth * 90 / 320, clientHeight * 109 / 180,
-                clientWidth * 230 / 320, clientHeight * 110 / 180
+                clientWidth * 101 / 320, clientHeight * 106 / 180,
+                clientWidth * 219 / 320, clientHeight * 107 / 180
             };
             if (divider.bottom <= divider.top)
             {
@@ -6250,10 +6217,10 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             {
                 RECT option
                 {
-                    clientWidth * 94 / 320,
-                    clientHeight * (140 + item * 19) / 180,
-                    clientWidth * 226 / 320,
-                    clientHeight * (157 + item * 19) / 180
+                    clientWidth * 104 / 320,
+                    clientHeight * (134 + item * 16) / 180,
+                    clientWidth * 216 / 320,
+                    clientHeight * (148 + item * 16) / 180
                 };
                 DrawTerminalPanel(deviceContext, option, item == runEndSelection);
                 line.left = option.left;
@@ -6264,10 +6231,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     item == runEndSelection ? RGB(255, 216, 0) : RGB(160, 160, 160));
                 const wchar_t* action = item == 0
                     ? L"\uB2E4\uC2DC \uC2DC\uC791" : L"\uD0C0\uC774\uD2C0\uB85C";
-                wsprintfW(resultText, item == runEndSelection
-                    ? L"> %s" : L"  %s", action);
-                DrawTextW(deviceContext, resultText, -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                DrawCenteredUiText(deviceContext, action, line,
+                    item == runEndSelection);
             }
         }
         PresentLogicalFrame(paintContext, windowClientArea);
@@ -6460,10 +6425,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
     }
     logicalFramePreviousBitmap = SelectObject(logicalFrameContext,
         logicalFrameBitmap);
-    uiFont = CreateFontW(-25, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    uiFont = CreateFontW(-21, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         NONANTIALIASED_QUALITY, DEFAULT_PITCH, L"Malgun Gothic");
-    titleFont = CreateFontW(-40, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+    titleFont = CreateFontW(-34, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
         NONANTIALIASED_QUALITY, FIXED_PITCH, L"Consolas");
     ApplyDisplaySettings(window);
@@ -8672,7 +8637,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
 
             LONG drawingLeft = static_cast<LONG>(playerX) - playerWidth / 2 - cameraX;
             LONG drawingTop = static_cast<LONG>(playerY) - playerHeight / 2 - cameraY;
-            constexpr LONG healthBarWidth = 12;
+            constexpr LONG healthBarWidth = 10;
             constexpr LONG healthBarHeight = 2;
             LONG healthBarLeft = static_cast<LONG>(playerX) - healthBarWidth / 2 - cameraX;
             LONG healthBarTop = static_cast<LONG>(playerY) - playerHeight / 2 - 4 - cameraY;
@@ -11340,46 +11305,46 @@ int main()
     newGameRequested = false;
     printf("section_ui=%ld\n", failures);
 
-    constexpr LONG commonUpgradeTop[3]{ 33, 61, 89 };
+    constexpr LONG commonUpgradeTop[3]{ 42, 66, 90 };
     for (LONG item = 0; item < 3; ++item)
     {
-        failures += commonUpgradeTop[item] < 31
-            || commonUpgradeTop[item] + 24 > 180
-            || (item && commonUpgradeTop[item - 1] + 24
+        failures += commonUpgradeTop[item] < 39
+            || commonUpgradeTop[item] + 20 > 180
+            || (item && commonUpgradeTop[item - 1] + 20
                 > commonUpgradeTop[item]);
     }
-    constexpr LONG commonActionTop[3]{ 120, 140, 160 };
+    constexpr LONG commonActionTop[3]{ 116, 133, 150 };
     for (LONG item = 0; item < 3; ++item)
     {
-        failures += commonActionTop[item] < 0 || commonActionTop[item] + 18 > 180
-            || (item && commonActionTop[item - 1] + 18 > commonActionTop[item]);
+        failures += commonActionTop[item] < 0 || commonActionTop[item] + 15 > 180
+            || (item && commonActionTop[item - 1] + 15 > commonActionTop[item]);
     }
     for (LONG item = 0; item < characterCount; ++item)
     {
-        LONG slotTop = 23 + item * 30;
-        failures += slotTop < 0 || slotTop + 26 > 180
-            || (item && slotTop < 23 + (item - 1) * 30 + 26);
+        LONG slotTop = 33 + item * 26;
+        failures += slotTop < 0 || slotTop + 22 > 180
+            || (item && slotTop < 33 + (item - 1) * 26 + 22);
     }
     for (LONG item = 0; item < characterGlobalUpgradeCount; ++item)
     {
-        LONG upgradeTop = 34 + item * 31;
-        failures += upgradeTop < 0 || upgradeTop + 28 > 180
-            || (item && upgradeTop < 34 + (item - 1) * 31 + 28);
+        LONG upgradeTop = 42 + item * 26;
+        failures += upgradeTop < 0 || upgradeTop + 24 > 180
+            || (item && upgradeTop < 42 + (item - 1) * 26 + 24);
     }
-    constexpr LONG resultTop[9]{ 20, 32, 44, 56, 72, 84, 96, 112, 126 };
+    constexpr LONG resultTop[9]{ 33, 43, 53, 63, 76, 86, 96, 109, 120 };
     for (LONG item = 0; item < 9; ++item)
     {
-        failures += resultTop[item] < 0 || resultTop[item] + 12 > 180
-            || (item && resultTop[item - 1] + 12 > resultTop[item]);
+        failures += resultTop[item] < 0 || resultTop[item] + 9 > 180
+            || (item && resultTop[item - 1] + 9 > resultTop[item]);
     }
     failures += 320 / 4 != 80 || 320 / 2 != 160
-        || 22 < 0 || 298 > 320 || 70 < 0 || 250 > 320
-        || commonUpgradeTop[2] + 24 > commonActionTop[0]
-        || 3 < 0 || 77 > 80 || 83 < 80 || 157 > 160
-        || 164 < 160 || 316 > 320 || 21 < 0 || 174 > 180
-        || 131 < 34 + 2 * 31 + 28 || 153 > 156
-        || 156 < 153 || 176 > 180 || 109 < resultTop[6] + 12
-        || 110 > resultTop[7]
+        || 43 < 0 || 277 > 320 || 84 < 0 || 236 > 320
+        || commonUpgradeTop[2] + 20 > commonActionTop[0]
+        || 9 < 0 || 71 > 80 || 89 < 80 || 151 > 160
+        || 176 < 160 || 304 > 320 || 32 < 0 || 162 > 180
+        || 125 < 42 + 2 * 26 + 24 || 144 > 146
+        || 146 < 144 || 164 > 180 || 106 < resultTop[6] + 9
+        || 107 > resultTop[7]
         || lstrlenW(L"FIELD RECOVERY  LV 0/1  COST 25  LOW") > 45
         || lstrlenW(L"PIERCE THROUGH") > 20
         || lstrlenW(L"LV 0/3   100 C") > 18
@@ -11393,70 +11358,75 @@ int main()
     }
     else
     {
-        SelectObject(measurementDC, GetStockObject(DEFAULT_GUI_FONT));
+        HFONT measurementFont = CreateFontW(-21, 0, 0, 0, FW_NORMAL,
+            FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, DEFAULT_PITCH,
+            L"Malgun Gothic");
+        HGDIOBJ previousFont = SelectObject(measurementDC,
+            measurementFont ? measurementFont : GetStockObject(DEFAULT_GUI_FONT));
         GetTextExtentPoint32W(measurementDC,
             L"FIELD RECOVERY", lstrlenW(L"FIELD RECOVERY"), &textSize);
-        failures += textSize.cx > 222;
+        failures += textSize.cx > (277 - 43 - 46) * uiReferenceWidth / 320;
         GetTextExtentPoint32W(measurementDC,
             L"COST 100   LOW", lstrlenW(L"COST 100   LOW"), &textSize);
-        failures += textSize.cx > 258;
+        failures += textSize.cx > (277 - 43 - 16) * uiReferenceWidth / 320;
         GetTextExtentPoint32W(measurementDC,
             L"COIN 2147483647", lstrlenW(L"COIN 2147483647"), &textSize);
-        failures += textSize.cx > 312;
+        failures += textSize.cx > uiReferenceWidth / 2;
         GetTextExtentPoint32W(measurementDC,
             L"CHARACTER", lstrlenW(L"CHARACTER"), &textSize);
-        failures += textSize.cx > 169;
-        GetTextExtentPoint32W(measurementDC, L"> MOBILITY",
-            lstrlenW(L"> MOBILITY"), &textSize);
-        failures += textSize.cx > 70;
+        failures += textSize.cx > (236 - 84) * uiReferenceWidth / 320;
+        GetTextExtentPoint32W(measurementDC, L"MOBILITY",
+            lstrlenW(L"MOBILITY"), &textSize);
+        failures += textSize.cx > (71 - 9) * uiReferenceWidth / 320;
         GetTextExtentPoint32W(measurementDC, L"LOCK 100 C",
             lstrlenW(L"LOCK 100 C"), &textSize);
-        failures += textSize.cx > 70;
+        failures += textSize.cx > (71 - 9) * uiReferenceWidth / 320;
         GetTextExtentPoint32W(measurementDC, L"UNLOCK",
             lstrlenW(L"UNLOCK"), &textSize);
-        failures += textSize.cx > 76;
+        failures += textSize.cx > (151 - 89) * uiReferenceWidth / 320;
         GetTextExtentPoint32W(measurementDC, L"100 C",
             lstrlenW(L"100 C"), &textSize);
-        failures += textSize.cx > 76;
+        failures += textSize.cx > (151 - 89) * uiReferenceWidth / 320;
         GetTextExtentPoint32W(measurementDC, L"SLASH 16x3",
             lstrlenW(L"SLASH 16x3"), &textSize);
-        failures += textSize.cx > 70;
+        failures += textSize.cx > (151 - 89) * uiReferenceWidth / 320;
         GetTextExtentPoint32W(measurementDC,
             L"LV 0/3   100 C", lstrlenW(L"LV 0/3   100 C"), &textSize);
-        failures += textSize.cx > 143;
+        failures += textSize.cx > (304 - 176 - 4) * uiReferenceWidth / 320;
         GetTextExtentPoint32W(measurementDC, L"COIN 2147483647 / LOW",
             lstrlenW(L"COIN 2147483647 / LOW"), &textSize);
-        failures += textSize.cx > 152;
+        failures += textSize.cx > uiReferenceWidth / 2 - 40;
         GetTextExtentPoint32W(measurementDC, L"RUN MOBILITY",
             lstrlenW(L"RUN MOBILITY"), &textSize);
-        failures += textSize.cx > 141;
+        failures += textSize.cx > (304 - 176) * uiReferenceWidth / 320;
         GetTextExtentPoint32W(measurementDC,
             L"TOTAL COIN  2147483647",
             lstrlenW(L"TOTAL COIN  2147483647"), &textSize);
-        failures += textSize.cx > 312;
+        failures += textSize.cx > (233 - 87) * uiReferenceWidth / 320;
         GetTextExtentPoint32W(measurementDC, L"R12 Pillar",
             lstrlenW(L"R12 Pillar"), &textSize);
-        failures += textSize.cx > 120;
+        failures += textSize.cx > 120 * uiReferenceWidth / 320;
         GetTextExtentPoint32W(measurementDC, L"E 24/24",
             lstrlenW(L"E 24/24"), &textSize);
-        failures += textSize.cx > 98;
+        failures += textSize.cx > 98 * uiReferenceWidth / 320;
         GetTextExtentPoint32W(measurementDC, L"K 156",
             lstrlenW(L"K 156"), &textSize);
-        failures += textSize.cx > 62;
+        failures += textSize.cx > 62 * uiReferenceWidth / 320;
         GetTextExtentPoint32W(measurementDC, L"L/R CHANGE   Z TOGGLE",
             lstrlenW(L"L/R CHANGE   Z TOGGLE"), &textSize);
-        failures += textSize.cx > 180;
+        failures += textSize.cx > (215 - 105) * uiReferenceWidth / 320;
         GetTextExtentPoint32W(measurementDC, L"< 1920 x 1080 >",
             lstrlenW(L"< 1920 x 1080 >"), &textSize);
-        failures += textSize.cx > 160;
+        failures += textSize.cx > (211 - 109) * uiReferenceWidth / 320;
         for (BYTE character = 0; character < characterCount; ++character)
         {
             GetTextExtentPoint32W(measurementDC, CharacterName(character),
                 lstrlenW(CharacterName(character)), &textSize);
-            failures += textSize.cx > 76;
+            failures += textSize.cx > (71 - 9) * uiReferenceWidth / 320;
             GetTextExtentPoint32W(measurementDC, CharacterRoleName(character),
                 lstrlenW(CharacterRoleName(character)), &textSize);
-            failures += textSize.cx > 76;
+            failures += textSize.cx > (151 - 89) * uiReferenceWidth / 320;
             for (BYTE upgrade = 0; upgrade < characterGlobalUpgradeCount; ++upgrade)
             {
                 BYTE maximum = characterGlobalMaximum[character][upgrade];
@@ -11476,21 +11446,59 @@ int main()
                     }
                     GetTextExtentPoint32W(measurementDC, statusText,
                         lstrlenW(statusText), &textSize);
-                    failures += textSize.cx > 143;
+                    failures += textSize.cx
+                        > (304 - 176 - 4) * uiReferenceWidth / 320;
                 }
             }
         }
         GetTextExtentPoint32W(measurementDC,
             L"\uC800\uC7A5 \uD6C4 \uD0C0\uC774\uD2C0\uB85C \uAC00\uAE30",
             lstrlenW(L"\uC800\uC7A5 \uD6C4 \uD0C0\uC774\uD2C0\uB85C \uAC00\uAE30"), &textSize);
-        failures += textSize.cx > 232;
+        failures += textSize.cx > (240 - 80) * uiReferenceWidth / 320;
+        RECT cursorBox
+        {
+            122 * uiReferenceWidth / 320, 59 * uiReferenceHeight / 180,
+            198 * uiReferenceWidth / 320, 71 * uiReferenceHeight / 180
+        };
+        SIZE longTextSize{};
+        SIZE shortTextSize{};
+        LONG longTextLeft = CenteredUiTextLeft(measurementDC, cursorBox,
+            L"\uAC8C\uC784 \uC2DC\uC791", longTextSize);
+        LONG shortTextLeft = CenteredUiTextLeft(measurementDC, cursorBox,
+            L"\uC124\uC815", shortTextSize);
+        TEXTMETRICW metric{};
+        GetTextMetricsW(measurementDC, &metric);
+        LONG arrowUnit = metric.tmHeight / 8;
+        if (arrowUnit < 2) arrowUnit = 2;
+        LONG longArrowRight = longTextLeft - metric.tmAveCharWidth;
+        LONG shortArrowRight = shortTextLeft - metric.tmAveCharWidth;
+        failures += longTextLeft * 2 + longTextSize.cx
+                < cursorBox.left + cursorBox.right - 1
+            || longTextLeft * 2 + longTextSize.cx
+                > cursorBox.left + cursorBox.right
+            || shortTextLeft * 2 + shortTextSize.cx
+                < cursorBox.left + cursorBox.right - 1
+            || shortTextLeft * 2 + shortTextSize.cx
+                > cursorBox.left + cursorBox.right
+            || longTextLeft >= shortTextLeft
+            || longTextLeft - longArrowRight != metric.tmAveCharWidth
+            || shortTextLeft - shortArrowRight != metric.tmAveCharWidth
+            || longArrowRight - arrowUnit * 4 < cursorBox.left
+            || shortArrowRight - arrowUnit * 4 < cursorBox.left
+            || longTextLeft + longTextSize.cx > cursorBox.right
+            || shortTextLeft + shortTextSize.cx > cursorBox.right;
         LONG maximumDashIndicatorWidth
             = characterDashCaps[mobilityCharacter] * 4 - 1;
         constexpr LONG dashHudTopOffset = -5;
         constexpr LONG dashHudHeight = 3;
         failures += maximumDashIndicatorWidth != 15
-            || maximumDashIndicatorWidth > 12 + 4
+            || maximumDashIndicatorWidth > 10 + 6
             || dashHudTopOffset + dashHudHeight >= 0;
+        SelectObject(measurementDC, previousFont);
+        if (measurementFont)
+        {
+            DeleteObject(measurementFont);
+        }
         DeleteDC(measurementDC);
     }
     printf("section_ui_layout=%ld\n", failures);
