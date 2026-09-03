@@ -1537,10 +1537,10 @@ constexpr CharacterProfile characterProfiles[characterCount]
     { 8 * combatScale, 1.1f, 0.5f,
         slashReach - 2, slashWidth - 2, 10, 2, 1.0f }
 };
-constexpr DWORD toneSampleRate = 8000;
-constexpr DWORD toneFrequency = 440;
-constexpr DWORD toneDurationMilliseconds = 250;
-constexpr DWORD toneSampleCount = toneSampleRate * toneDurationMilliseconds / 1000;
+constexpr DWORD audioSampleRate = 8000;
+constexpr BYTE sfxVoiceCount = 6;
+constexpr BYTE audioBufferCount = 4;
+constexpr WORD audioBufferSampleCount = 128;
 constexpr BYTE masterVolumeMaximumStep = 10;
 constexpr BYTE masterVolumeStorageMarker = 0x80;
 constexpr BYTE windowResolutionCount = 5;
@@ -1686,10 +1686,141 @@ bool dashRequested = false;
 bool cPressed = false;
 bool executeRequested = false;
 bool spacePressed = false;
-bool tonePlaying = false;
-BYTE toneSamples[toneSampleCount];
+
+enum SfxId : BYTE
+{
+    sfxSlashBasic,
+    sfxSlashMobility,
+    sfxSlashPiercer,
+    sfxSlashHeavy,
+    sfxSlashRapid,
+    sfxDashBasic,
+    sfxDashMobility,
+    sfxDashPiercer,
+    sfxDashHeavy,
+    sfxDashRapid,
+    sfxExecuteBasic,
+    sfxExecuteMobility,
+    sfxExecutePiercer,
+    sfxExecuteHeavy,
+    sfxExecuteRapid,
+    sfxPlayerHit,
+    sfxEnemyHit,
+    sfxEnemyKill,
+    sfxWindupPatroller,
+    sfxWindupWatcher,
+    sfxWindupHunter,
+    sfxWindupListener,
+    sfxWindupSpinner,
+    sfxWindupPressure,
+    sfxAttackPatroller,
+    sfxAttackWatcher,
+    sfxAttackHunter,
+    sfxAttackListener,
+    sfxAttackSpinner,
+    sfxAttackPressure,
+    sfxSuspicion,
+    sfxAlert,
+    sfxTrapWarning,
+    sfxTrapActive,
+    sfxDoorOpen,
+    sfxPressureEnrage,
+    sfxUiMove,
+    sfxUiConfirm,
+    sfxUiPurchase,
+    sfxUiLow,
+    sfxUiBack,
+    sfxRunClear,
+    sfxGameOver,
+    sfxCount
+};
+
+constexpr BYTE sfxSquareWave = 0;
+constexpr BYTE sfxTriangleWave = 1;
+constexpr BYTE sfxNoiseWave = 2;
+constexpr BYTE sfxMetalWave = 3;
+constexpr BYTE sfxDoublePulse = 1;
+constexpr BYTE sfxBrokenGate = 2;
+
+struct SfxSpec
+{
+    WORD durationMilliseconds;
+    WORD startFrequency;
+    WORD endFrequency;
+    BYTE amplitude;
+    BYTE noiseAmount;
+    BYTE waveform;
+    BYTE flags;
+    BYTE priority;
+};
+
+struct SfxVoice
+{
+    DWORD phase;
+    LONG phaseStep;
+    LONG phaseDelta;
+    DWORD noiseState;
+    DWORD sample;
+    DWORD duration;
+    BYTE sound;
+    BYTE priority;
+    bool active;
+};
+
+constexpr SfxSpec sfxSpecs[sfxCount]
+{
+    { 150, 1150, 420, 86, 150, sfxMetalWave, 0, 2 },
+    { 105, 1900, 760, 76, 205, sfxNoiseWave, 0, 2 },
+    { 115, 2300, 1050, 82, 55, sfxMetalWave, 0, 2 },
+    { 205, 720, 190, 104, 145, sfxMetalWave, 0, 2 },
+    { 70, 2550, 1250, 72, 120, sfxMetalWave, 0, 2 },
+    { 130, 420, 980, 74, 80, sfxTriangleWave, 0, 2 },
+    { 190, 900, 2200, 70, 165, sfxNoiseWave, 0, 2 },
+    { 105, 1250, 2750, 68, 25, sfxSquareWave, 0, 2 },
+    { 145, 280, 620, 94, 85, sfxMetalWave, 0, 2 },
+    { 80, 1800, 700, 76, 100, sfxSquareWave, sfxBrokenGate, 2 },
+    { 245, 1250, 260, 112, 105, sfxMetalWave, 0, 4 },
+    { 220, 2200, 520, 98, 175, sfxNoiseWave, sfxDoublePulse, 4 },
+    { 205, 2850, 620, 108, 50, sfxMetalWave, sfxDoublePulse, 4 },
+    { 320, 620, 110, 122, 145, sfxMetalWave, sfxDoublePulse, 4 },
+    { 165, 2700, 780, 96, 95, sfxMetalWave, sfxDoublePulse, 4 },
+    { 180, 240, 95, 118, 105, sfxMetalWave, 0, 4 },
+    { 80, 1480, 620, 58, 135, sfxMetalWave, 0, 1 },
+    { 190, 840, 120, 92, 205, sfxMetalWave, sfxBrokenGate, 2 },
+    { 155, 540, 980, 70, 35, sfxMetalWave, 0, 2 },
+    { 180, 820, 1780, 66, 15, sfxSquareWave, 0, 2 },
+    { 240, 190, 860, 92, 170, sfxNoiseWave, 0, 2 },
+    { 105, 2050, 2650, 62, 20, sfxSquareWave, sfxDoublePulse, 2 },
+    { 230, 360, 1550, 82, 80, sfxTriangleWave, 0, 2 },
+    { 300, 120, 540, 110, 125, sfxMetalWave, 0, 3 },
+    { 125, 960, 420, 88, 95, sfxMetalWave, 0, 3 },
+    { 105, 2450, 1250, 78, 35, sfxSquareWave, 0, 3 },
+    { 155, 1750, 480, 100, 130, sfxNoiseWave, 0, 3 },
+    { 75, 2850, 1350, 70, 45, sfxSquareWave, 0, 3 },
+    { 245, 1350, 260, 94, 185, sfxNoiseWave, 0, 3 },
+    { 260, 220, 70, 124, 110, sfxMetalWave, 0, 3 },
+    { 85, 1650, 2200, 46, 20, sfxSquareWave, 0, 1 },
+    { 260, 310, 1320, 112, 40, sfxSquareWave, sfxDoublePulse, 4 },
+    { 95, 720, 1450, 52, 20, sfxMetalWave, sfxDoublePulse, 2 },
+    { 125, 2100, 520, 88, 125, sfxMetalWave, 0, 3 },
+    { 360, 330, 75, 116, 75, sfxMetalWave, 0, 3 },
+    { 410, 95, 940, 126, 155, sfxMetalWave, sfxDoublePulse, 4 },
+    { 45, 1850, 1350, 28, 10, sfxSquareWave, 0, 1 },
+    { 85, 880, 1550, 48, 10, sfxTriangleWave, 0, 1 },
+    { 155, 520, 1420, 68, 15, sfxTriangleWave, sfxDoublePulse, 1 },
+    { 85, 310, 180, 42, 25, sfxMetalWave, 0, 1 },
+    { 65, 620, 300, 38, 10, sfxSquareWave, 0, 1 },
+    { 420, 280, 920, 90, 35, sfxTriangleWave, sfxDoublePulse, 3 },
+    { 480, 520, 72, 105, 160, sfxNoiseWave, sfxBrokenGate, 4 }
+};
+
+SfxVoice sfxVoices[sfxVoiceCount]{};
+DWORD sfxLastStart[sfxCount]{};
+DWORD sfxStartCount[sfxCount]{};
+short audioSamples[audioBufferCount][audioBufferSampleCount]{};
 HWAVEOUT audioOutput = nullptr;
-WAVEHDR toneHeader{};
+WAVEHDR audioHeaders[audioBufferCount]{};
+bool audioStreamReady = false;
 short navigationParent[maxNavigationNodeCount];
 unsigned short navigationScore[maxNavigationNodeCount];
 BYTE navigationState[maxNavigationNodeCount];
@@ -1737,6 +1868,259 @@ struct EnemyRuntime
     bool alert;
     bool alive;
 };
+
+constexpr DWORD sfxPhaseUnit = 0xFFFFFFFFu / audioSampleRate;
+
+void ResetSfxVoices()
+{
+    for (BYTE voice = 0; voice < sfxVoiceCount; ++voice)
+    {
+        sfxVoices[voice].active = false;
+    }
+    for (BYTE sound = 0; sound < sfxCount; ++sound)
+    {
+        sfxLastStart[sound] = 0xFFFFFFFFu;
+    }
+}
+
+bool PlaySfx(BYTE sound)
+{
+    if (sound >= sfxCount || masterVolumeStep == 0)
+    {
+        return false;
+    }
+    DWORD now = GetTickCount();
+    if (now - sfxLastStart[sound] < 30)
+    {
+        return false;
+    }
+    sfxLastStart[sound] = now;
+    const SfxSpec& spec = sfxSpecs[sound];
+    LONG selectedVoice = -1;
+    BYTE lowestPriority = 0xFF;
+    for (BYTE voice = 0; voice < sfxVoiceCount; ++voice)
+    {
+        if (!sfxVoices[voice].active)
+        {
+            selectedVoice = voice;
+            break;
+        }
+        if (sfxVoices[voice].priority < lowestPriority)
+        {
+            lowestPriority = sfxVoices[voice].priority;
+            selectedVoice = voice;
+        }
+    }
+    if (selectedVoice < 0
+        || (sfxVoices[selectedVoice].active
+            && lowestPriority > spec.priority))
+    {
+        return false;
+    }
+    SfxVoice& voice = sfxVoices[selectedVoice];
+    voice = {};
+    voice.duration = spec.durationMilliseconds * audioSampleRate / 1000;
+    if (!voice.duration)
+    {
+        voice.duration = 1;
+    }
+    voice.phaseStep = static_cast<LONG>(spec.startFrequency * sfxPhaseUnit);
+    voice.phaseDelta = (static_cast<LONG>(spec.endFrequency)
+        - spec.startFrequency) * static_cast<LONG>(sfxPhaseUnit)
+        / static_cast<LONG>(voice.duration);
+    voice.noiseState = 0x9E3779B9u ^ (sound * 0x85EBCA6Bu)
+        ^ sfxStartCount[sound];
+    voice.sound = sound;
+    voice.priority = spec.priority;
+    voice.active = true;
+    ++sfxStartCount[sound];
+    return true;
+}
+
+LONG SfxVoiceSample(SfxVoice& voice)
+{
+    if (!voice.active || voice.sample >= voice.duration)
+    {
+        voice.active = false;
+        return 0;
+    }
+    const SfxSpec& spec = sfxSpecs[voice.sound];
+    DWORD segmentDuration = voice.duration;
+    DWORD segmentSample = voice.sample;
+    if (spec.flags & sfxDoublePulse)
+    {
+        segmentDuration = voice.duration / 2;
+        if (!segmentDuration) segmentDuration = 1;
+        segmentSample %= segmentDuration;
+    }
+    DWORD attack = segmentDuration / 12;
+    if (attack < 4) attack = 4;
+    if (attack > 32) attack = 32;
+    DWORD release = segmentDuration / 3;
+    if (release < 8) release = 8;
+    LONG envelope = 256;
+    if (segmentSample < attack)
+    {
+        envelope = static_cast<LONG>(segmentSample * 256 / attack);
+    }
+    DWORD remaining = segmentDuration - segmentSample;
+    if (remaining < release)
+    {
+        LONG releaseEnvelope = static_cast<LONG>(remaining * 256 / release);
+        if (releaseEnvelope < envelope) envelope = releaseEnvelope;
+    }
+    if ((spec.flags & sfxBrokenGate) && ((voice.sample / 29) & 1))
+    {
+        envelope /= 3;
+    }
+
+    voice.phase += static_cast<DWORD>(voice.phaseStep);
+    voice.phaseStep += voice.phaseDelta;
+    voice.noiseState = voice.noiseState * 1664525u + 1013904223u;
+    LONG noise = static_cast<LONG>(voice.noiseState >> 24) - 128;
+    LONG tone = 0;
+    if (spec.waveform == sfxSquareWave)
+    {
+        tone = voice.phase & 0x80000000u ? 127 : -127;
+    }
+    else if (spec.waveform == sfxTriangleWave)
+    {
+        LONG phase = static_cast<LONG>(voice.phase >> 24);
+        tone = phase < 128 ? phase * 2 - 127 : 383 - phase * 2;
+    }
+    else if (spec.waveform == sfxNoiseWave)
+    {
+        tone = noise;
+    }
+    else
+    {
+        LONG square = voice.phase & 0x80000000u ? 127 : -127;
+        tone = (square * 3 + noise) / 4;
+    }
+    tone = (tone * (255 - spec.noiseAmount)
+        + noise * spec.noiseAmount) / 255;
+    LONG sample = tone * spec.amplitude * envelope / (127 * 256);
+    ++voice.sample;
+    if (voice.sample >= voice.duration)
+    {
+        voice.active = false;
+    }
+    return sample;
+}
+
+short ApplyMasterVolume(LONG mixed, BYTE volumeStep)
+{
+    mixed = mixed * volumeStep / masterVolumeMaximumStep;
+    if (mixed < -32768) mixed = -32768;
+    if (mixed > 32767) mixed = 32767;
+    return static_cast<short>(mixed);
+}
+
+short MixSfxSample()
+{
+    LONG mixed = 0;
+    for (BYTE voice = 0; voice < sfxVoiceCount; ++voice)
+    {
+        mixed += SfxVoiceSample(sfxVoices[voice]);
+    }
+    mixed *= 256;
+    return ApplyMasterVolume(mixed, masterVolumeStep);
+}
+
+void FillAudioBuffer(BYTE buffer)
+{
+    for (WORD sample = 0; sample < audioBufferSampleCount; ++sample)
+    {
+        audioSamples[buffer][sample] = MixSfxSample();
+    }
+}
+
+bool StartAudioStream()
+{
+    for (BYTE buffer = 0; buffer < audioBufferCount; ++buffer)
+    {
+        WAVEHDR& header = audioHeaders[buffer];
+        header = {};
+        header.lpData = reinterpret_cast<LPSTR>(audioSamples[buffer]);
+        header.dwBufferLength = sizeof(audioSamples[buffer]);
+        FillAudioBuffer(buffer);
+        if (waveOutPrepareHeader(audioOutput, &header, sizeof(header))
+                != MMSYSERR_NOERROR
+            || waveOutWrite(audioOutput, &header, sizeof(header))
+                != MMSYSERR_NOERROR)
+        {
+            waveOutReset(audioOutput);
+            for (BYTE prepared = 0; prepared <= buffer; ++prepared)
+            {
+                if (audioHeaders[prepared].dwFlags & WHDR_PREPARED)
+                {
+                    waveOutUnprepareHeader(audioOutput,
+                        &audioHeaders[prepared], sizeof(WAVEHDR));
+                }
+            }
+            return false;
+        }
+    }
+    audioStreamReady = true;
+    return true;
+}
+
+void ServiceAudioStream()
+{
+    if (!audioStreamReady)
+    {
+        return;
+    }
+    for (BYTE buffer = 0; buffer < audioBufferCount; ++buffer)
+    {
+        WAVEHDR& header = audioHeaders[buffer];
+        if (header.dwFlags & WHDR_DONE)
+        {
+            FillAudioBuffer(buffer);
+            waveOutWrite(audioOutput, &header, sizeof(header));
+        }
+    }
+}
+
+void RestartAudioStream()
+{
+    ResetSfxVoices();
+    if (!audioStreamReady)
+    {
+        return;
+    }
+    waveOutReset(audioOutput);
+    for (BYTE buffer = 0; buffer < audioBufferCount; ++buffer)
+    {
+        FillAudioBuffer(buffer);
+        waveOutWrite(audioOutput, &audioHeaders[buffer], sizeof(WAVEHDR));
+    }
+}
+
+BYTE CharacterSlashSfx(BYTE character)
+{
+    return static_cast<BYTE>(sfxSlashBasic + character);
+}
+
+BYTE CharacterDashSfx(BYTE character)
+{
+    return static_cast<BYTE>(sfxDashBasic + character);
+}
+
+BYTE CharacterExecuteSfx(BYTE character)
+{
+    return static_cast<BYTE>(sfxExecuteBasic + character);
+}
+
+BYTE EnemyWindupSfx(BYTE role)
+{
+    return static_cast<BYTE>(sfxWindupPatroller + role);
+}
+
+BYTE EnemyAttackSfx(BYTE role)
+{
+    return static_cast<BYTE>(sfxAttackPatroller + role);
+}
 
 LONG EightDirectionIndex(float angle)
 {
@@ -1980,6 +2364,7 @@ void BeginAlertEvent()
             ++alertEventCount;
         }
         alertEventActive = true;
+        PlaySfx(sfxAlert);
     }
 }
 
@@ -2206,6 +2591,7 @@ void UpdateEnemyAttack(EnemyRuntime& enemy, bool attackEnabled, float playerX,
         if (enemy.attackWindupRemaining <= 0.0f)
         {
             enemy.attackWindupRemaining = 0.0f;
+            PlaySfx(EnemyAttackSfx(enemy.role));
             if (EnemyInAttackRange(enemy.role,
                 enemy.x, enemy.y, playerX, playerY))
             {
@@ -2227,6 +2613,7 @@ void UpdateEnemyAttack(EnemyRuntime& enemy, bool attackEnabled, float playerX,
     {
         enemy.attackWindupRemaining = enemy.role == pressureEnemyRole
             ? PressureAttackWindup(pressureEnraged) : enemyAttackWindupDuration;
+        PlaySfx(EnemyWindupSfx(enemy.role));
     }
 }
 
@@ -2595,18 +2982,21 @@ bool BuyCommonGlobalUpgrade(BYTE upgrade)
     if (level >= commonUpgradeMaximum[upgrade])
     {
         titleStatus = 5;
+        PlaySfx(sfxUiLow);
         return false;
     }
     LONG cost = commonUpgradeCost[upgrade][level];
     if (globalCoin < cost)
     {
         titleStatus = 3;
+        PlaySfx(sfxUiLow);
         return false;
     }
     globalCoin -= cost;
     ++commonGlobalLevel[upgrade];
     titleStatus = 4;
     WriteMetaProfile();
+    PlaySfx(sfxUiPurchase);
     return true;
 }
 
@@ -2616,18 +3006,21 @@ bool BuyCharacterGlobalUpgrade(BYTE character, BYTE upgrade)
     if (level >= characterGlobalMaximum[character][upgrade])
     {
         titleStatus = 5;
+        PlaySfx(sfxUiLow);
         return false;
     }
     LONG cost = characterGlobalCost[character][upgrade][level];
     if (globalCoin < cost)
     {
         titleStatus = 3;
+        PlaySfx(sfxUiLow);
         return false;
     }
     globalCoin -= cost;
     ++characterGlobalLevel[character][upgrade];
     titleStatus = 4;
     WriteMetaProfile();
+    PlaySfx(sfxUiPurchase);
     return true;
 }
 
@@ -2638,17 +3031,20 @@ bool UnlockCharacter(BYTE character)
     {
         selectedCharacter = character;
         titleStatus = 4;
+        PlaySfx(sfxUiConfirm);
         return true;
     }
     if (globalCoin < characterUnlockCosts[character])
     {
         titleStatus = 3;
+        PlaySfx(sfxUiLow);
         return false;
     }
     globalCoin -= characterUnlockCosts[character];
     unlockedCharacterMask |= characterBit;
     titleStatus = 4;
     WriteMetaProfile();
+    PlaySfx(sfxUiPurchase);
     return true;
 }
 
@@ -4430,25 +4826,6 @@ void CloseHelp()
     }
 }
 
-BYTE MasterVolumeSample(BYTE sample, BYTE volumeStep)
-{
-    LONG centered = static_cast<LONG>(sample) - 128;
-    LONG scaled = centered * volumeStep / masterVolumeMaximumStep + 128;
-    if (scaled < 0) scaled = 0;
-    if (scaled > 255) scaled = 255;
-    return static_cast<BYTE>(scaled);
-}
-
-void GenerateToneSamples()
-{
-    for (DWORD sample = 0; sample < toneSampleCount; ++sample)
-    {
-        BYTE source = ((sample * toneFrequency * 2 / toneSampleRate) & 1)
-            ? 64 : 192;
-        toneSamples[sample] = MasterVolumeSample(source, masterVolumeStep);
-    }
-}
-
 bool ChangeMasterVolume(LONG direction)
 {
     LONG nextStep = masterVolumeStep + direction;
@@ -4461,13 +4838,8 @@ bool ChangeMasterVolume(LONG direction)
     {
         return false;
     }
-    if (tonePlaying && audioOutput)
-    {
-        waveOutReset(audioOutput);
-        tonePlaying = false;
-    }
     masterVolumeStep = static_cast<BYTE>(nextStep);
-    GenerateToneSamples();
+    RestartAudioStream();
     WriteMetaProfile();
     return true;
 }
@@ -4661,21 +5033,25 @@ void ConfirmGameplayMenu(HWND window)
     if (gameplayMenuSelection == 0)
     {
         CloseGameplayMenu();
+        PlaySfx(sfxUiBack);
     }
     else if (gameplayMenuSelection == 1)
     {
         settingsActive = true;
         settingsFromGameplay = true;
         settingsSelection = 0;
+        PlaySfx(sfxUiConfirm);
     }
     else if (gameplayMenuSelection == 2)
     {
         helpActive = true;
         helpFromGameplay = true;
+        PlaySfx(sfxUiConfirm);
     }
     else
     {
         saveAndTitleRequested = true;
+        PlaySfx(sfxUiBack);
     }
     InvalidateRect(window, nullptr, FALSE);
 }
@@ -4798,11 +5174,13 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (helpActive && pressed && !escapePressed)
         {
             CloseHelp();
+            PlaySfx(sfxUiBack);
             InvalidateRect(window, nullptr, FALSE);
         }
         else if (settingsActive && pressed && !escapePressed)
         {
             CloseSettings();
+            PlaySfx(sfxUiBack);
             InvalidateRect(window, nullptr, FALSE);
         }
         else if (applicationState == characterSelectState && pressed && !escapePressed)
@@ -4810,6 +5188,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             applicationState = preparationState;
             menuSelection = 3;
             titleStatus = 0;
+            PlaySfx(sfxUiBack);
             InvalidateRect(window, nullptr, FALSE);
         }
         else if (applicationState == preparationState && pressed && !escapePressed)
@@ -4817,6 +5196,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             applicationState = titleMainState;
             menuSelection = 0;
             titleStatus = 0;
+            PlaySfx(sfxUiBack);
             InvalidateRect(window, nullptr, FALSE);
         }
         else if (applicationState == gameplayState && !runEndState && !upgradeMenuActive
@@ -4831,6 +5211,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 gameplayMenuActive = true;
                 gameplayMenuSelection = 0;
             }
+            PlaySfx(sfxUiBack);
             InvalidateRect(window, nullptr, FALSE);
         }
         escapePressed = pressed;
@@ -4926,6 +5307,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             if (pressed && !zPressed)
             {
                 CloseHelp();
+                PlaySfx(sfxUiBack);
                 InvalidateRect(window, nullptr, FALSE);
             }
         }
@@ -4936,10 +5318,12 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 if (settingsSelection == 2)
                 {
                     ToggleFullscreen(window);
+                    PlaySfx(sfxUiConfirm);
                 }
                 else if (settingsSelection == 3)
                 {
                     CloseSettings();
+                    PlaySfx(sfxUiBack);
                 }
                 InvalidateRect(window, nullptr, FALSE);
             }
@@ -4961,6 +5345,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     if (runEndSelection == 0)
                     {
                         newGameRequested = true;
+                        PlaySfx(sfxUiConfirm);
                     }
                     else
                     {
@@ -4969,6 +5354,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                         titleStatus = 0;
                         runEndState = 0;
                         runEndSelection = 0;
+                        PlaySfx(sfxUiBack);
                         InvalidateRect(window, nullptr, FALSE);
                     }
                 }
@@ -4983,6 +5369,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             titleStatus = 0;
             if (applicationState == titleMainState)
             {
+                PlaySfx(sfxUiConfirm);
                 if (menuSelection == 0)
                 {
                     applicationState = preparationState;
@@ -5018,6 +5405,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 menuSelection = selectedCharacter;
                 characterUpgradeFocus = false;
                 characterUpgradeSelection = 0;
+                PlaySfx(sfxUiConfirm);
             }
             else if (applicationState == preparationState && menuSelection == 4)
             {
@@ -5025,12 +5413,18 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 {
                     applicationState = gameplayState;
                     newGameRequested = true;
+                    PlaySfx(sfxUiConfirm);
+                }
+                else
+                {
+                    PlaySfx(sfxUiLow);
                 }
             }
             else if (applicationState == preparationState)
             {
                 applicationState = titleMainState;
                 menuSelection = 0;
+                PlaySfx(sfxUiBack);
             }
             else if (applicationState == characterSelectState)
             {
@@ -5048,6 +5442,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     else
                     {
                         titleStatus = 3;
+                        PlaySfx(sfxUiLow);
                     }
                 }
                 else if (characterUpgradeSelection == 3)
@@ -5056,12 +5451,18 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     {
                         applicationState = gameplayState;
                         newGameRequested = true;
+                        PlaySfx(sfxUiConfirm);
+                    }
+                    else
+                    {
+                        PlaySfx(sfxUiLow);
                     }
                 }
                 else
                 {
                     applicationState = preparationState;
                     menuSelection = 3;
+                    PlaySfx(sfxUiBack);
                 }
             }
 
@@ -5081,11 +5482,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     {
         bool pressed = message == WM_KEYDOWN;
         if (applicationState == gameplayState && !runEndState && !gameplayMenuActive
-            && !gameplayInputBlocked && masterVolumeStep != 0
-            && pressed && !spacePressed && !tonePlaying
-            && waveOutWrite(audioOutput, &toneHeader, sizeof(toneHeader)) == MMSYSERR_NOERROR)
+            && !gameplayInputBlocked && pressed && !spacePressed)
         {
-            tonePlaying = true;
+            PlaySfx(sfxUiConfirm);
         }
 
         spacePressed = pressed;
@@ -5129,6 +5528,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         if (settingsActive && newlyPressed)
         {
+            LONG previousSelection = settingsSelection;
             if (wParam == VK_UP && settingsSelection > 0)
             {
                 --settingsSelection;
@@ -5142,16 +5542,25 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 LONG direction = wParam == VK_LEFT ? -1 : 1;
                 if (settingsSelection == 0)
                 {
-                    ChangeMasterVolume(direction);
+                    if (ChangeMasterVolume(direction))
+                    {
+                        PlaySfx(sfxUiMove);
+                    }
                 }
                 else if (settingsSelection == 1)
                 {
                     ChangeWindowResolution(window, direction);
+                    PlaySfx(sfxUiConfirm);
                 }
                 else if (settingsSelection == 2)
                 {
                     ToggleFullscreen(window);
+                    PlaySfx(sfxUiConfirm);
                 }
+            }
+            if (settingsSelection != previousSelection)
+            {
+                PlaySfx(sfxUiMove);
             }
             InvalidateRect(window, nullptr, FALSE);
         }
@@ -5169,6 +5578,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             }
             if (gameplayMenuSelection != previousSelection)
             {
+                PlaySfx(sfxUiMove);
                 InvalidateRect(window, nullptr, FALSE);
             }
         }
@@ -5186,6 +5596,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             }
             if (runEndSelection != previousSelection)
             {
+                PlaySfx(sfxUiMove);
                 InvalidateRect(window, nullptr, FALSE);
             }
         }
@@ -5203,11 +5614,15 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             }
             if (upgradeSelection != previousSelection)
             {
+                PlaySfx(sfxUiMove);
                 InvalidateRect(window, nullptr, FALSE);
             }
         }
         else if (applicationState == characterSelectState && newlyPressed)
         {
+            LONG previousSelection = menuSelection;
+            LONG previousUpgradeSelection = characterUpgradeSelection;
+            bool previousUpgradeFocus = characterUpgradeFocus;
             if (wParam == VK_LEFT)
             {
                 characterUpgradeFocus = false;
@@ -5236,11 +5651,18 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 ++characterUpgradeSelection;
             }
             titleStatus = 0;
+            if (menuSelection != previousSelection
+                || characterUpgradeSelection != previousUpgradeSelection
+                || characterUpgradeFocus != previousUpgradeFocus)
+            {
+                PlaySfx(sfxUiMove);
+            }
             InvalidateRect(window, nullptr, FALSE);
         }
         else if (applicationState != gameplayState && newlyPressed
             && (wParam == VK_UP || wParam == VK_DOWN))
         {
+            LONG previousSelection = menuSelection;
             if (wParam == VK_UP && menuSelection > 0)
             {
                 --menuSelection;
@@ -5252,6 +5674,10 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 ++menuSelection;
             }
             titleStatus = 0;
+            if (menuSelection != previousSelection)
+            {
+                PlaySfx(sfxUiMove);
+            }
             InvalidateRect(window, nullptr, FALSE);
         }
         else if (gameplayInputBlocked && !upPressed && !downPressed
@@ -6473,24 +6899,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
         }
     }
 
-    GenerateToneSamples();
-
     WAVEFORMATEX toneFormat{};
     toneFormat.wFormatTag = WAVE_FORMAT_PCM;
     toneFormat.nChannels = 1;
-    toneFormat.nSamplesPerSec = toneSampleRate;
-    toneFormat.nAvgBytesPerSec = toneSampleRate;
-    toneFormat.nBlockAlign = 1;
-    toneFormat.wBitsPerSample = 8;
+    toneFormat.nSamplesPerSec = audioSampleRate;
+    toneFormat.nAvgBytesPerSec = audioSampleRate * sizeof(short);
+    toneFormat.nBlockAlign = sizeof(short);
+    toneFormat.wBitsPerSample = 16;
 
     if (waveOutOpen(&audioOutput, WAVE_MAPPER, &toneFormat, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR)
     {
         return 0;
     }
 
-    toneHeader.lpData = reinterpret_cast<LPSTR>(toneSamples);
-    toneHeader.dwBufferLength = sizeof(toneSamples);
-    if (waveOutPrepareHeader(audioOutput, &toneHeader, sizeof(toneHeader)) != MMSYSERR_NOERROR)
+    ResetSfxVoices();
+    if (!StartAudioStream())
     {
         waveOutClose(audioOutput);
         return 0;
@@ -6503,7 +6926,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
     ReleaseDC(window, windowContext);
     if (!logicalFrameContext || !logicalFrameBitmap)
     {
-        waveOutUnprepareHeader(audioOutput, &toneHeader, sizeof(toneHeader));
+        waveOutReset(audioOutput);
+        for (BYTE buffer = 0; buffer < audioBufferCount; ++buffer)
+        {
+            waveOutUnprepareHeader(audioOutput,
+                &audioHeaders[buffer], sizeof(WAVEHDR));
+        }
         waveOutClose(audioOutput);
         return 0;
     }
@@ -6565,7 +6993,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
     float slashCooldownRemaining = 0.0f;
     float trapCycleElapsed = 0.0f;
     float trapDamageCooldownRemaining = 0.0f;
+    BYTE trapAudioState[maxRoomTraps]{};
     bool exitUnlocked = false;
+    float doorOpenFeedbackRemaining = 0.0f;
+    bool pressureEnragedPrevious = false;
+    float pressureEnrageFeedbackRemaining = 0.0f;
     bool roomComplete = false;
     bool sequenceComplete = false;
 
@@ -6590,10 +7022,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             break;
         }
 
-        if (tonePlaying && (toneHeader.dwFlags & WHDR_DONE))
-        {
-            tonePlaying = false;
-        }
+        ServiceAudioStream();
 
         bool checkpointLoaded = false;
         if (loadGameRequested)
@@ -6747,7 +7176,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             slashCooldownRemaining = 0.0f;
             trapCycleElapsed = 0.0f;
             trapDamageCooldownRemaining = 0.0f;
+            for (LONG trap = 0; trap < currentTrapCount; ++trap)
+            {
+                trapAudioState[trap] = TrapVisualState(trap, trapCycleElapsed);
+            }
             exitUnlocked = false;
+            doorOpenFeedbackRemaining = 0.0f;
+            pressureEnragedPrevious = false;
+            pressureEnrageFeedbackRemaining = 0.0f;
             roomComplete = false;
             slashRequested = false;
             dashRequested = false;
@@ -6820,7 +7256,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                         GenerateUpgradeOffer(true);
                         ++rerollUsed;
                         upgradeSelection = 0;
+                        PlaySfx(sfxUiConfirm);
                         InvalidateRect(window, nullptr, FALSE);
+                    }
+                    else
+                    {
+                        PlaySfx(sfxUiLow);
                     }
                 }
                 else
@@ -6845,6 +7286,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                     RecalculateAugmentStats(playerMoveSpeedCurrent,
                         slashCooldownDurationCurrent, dashCooldownDurationCurrent);
                     ApplyFieldRecovery(playerHP, playerMaxHP);
+                    PlaySfx(sfxUiPurchase);
                     if (dashCooldownRemaining > dashCooldownDurationCurrent)
                     {
                         dashCooldownRemaining = dashCooldownDurationCurrent;
@@ -6900,6 +7342,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                 {
                     trapDamageCooldownRemaining -= deltaTime;
                 }
+                bool trapWarningStarted = false;
+                bool trapActiveStarted = false;
+                for (LONG trap = 0; trap < currentTrapCount; ++trap)
+                {
+                    BYTE nextState = TrapVisualState(trap, trapCycleElapsed);
+                    trapWarningStarted |= trapAudioState[trap] != 1
+                        && nextState == 1;
+                    trapActiveStarted |= trapAudioState[trap] != 2
+                        && nextState == 2;
+                    trapAudioState[trap] = nextState;
+                }
+                if (trapWarningStarted)
+                {
+                    PlaySfx(sfxTrapWarning);
+                }
+                if (trapActiveStarted)
+                {
+                    PlaySfx(sfxTrapActive);
+                }
             }
             LONG movementX = gameplayInputBlocked || !playerAlive
                 || roomComplete || sequenceComplete || upgradeMenuActive ? 0
@@ -6926,6 +7387,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                     dashDistanceRemaining = dashDistanceCurrent;
                     dashActive = true;
                     playerExecuteVisualRemaining = 0.0f;
+                    PlaySfx(CharacterDashSfx(selectedCharacter));
                 }
                 dashRequested = false;
             }
@@ -7122,6 +7584,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                 if (enemy.role == listenerEnemyRole && !playerInVision
                     && detectionProgress <= 0.0f && playerAudibleThisUpdate)
                 {
+                    bool enteringHearingSuspicion = !heardSuspicion;
                     float hearingDifferenceX = playerX - enemyX;
                     float hearingDifferenceY = playerY - enemyY;
                     float hearingRangeSquared = playerDashingThisUpdate
@@ -7180,12 +7643,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                                 hearingTargetColumn, hearingTargetRow,
                                 navigationPath[enemyIndex]);
                             searchPathIndex = 0;
+                            if (enteringHearingSuspicion)
+                            {
+                                PlaySfx(sfxSuspicion);
+                            }
                         }
                     }
                 }
 
                 if (playerInVision)
                 {
+                    bool enteringSuspicion = detectionProgress <= 0.0f
+                        && !heardSuspicion;
                     if (enemy.role == listenerEnemyRole)
                     {
                         heardSuspicion = false;
@@ -7205,6 +7674,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                         enemy.surveillanceFacingAngle = enemyFacingAngle;
                         enemy.watcherTurnVisualRemaining = 0.0f;
                         enemy.watcherTurnRate = 0.0f;
+                    }
+                    if (enteringSuspicion)
+                    {
+                        PlaySfx(sfxSuspicion);
                     }
                     detectionProgress += deltaTime / detectionFillDuration;
                     if (detectionProgress >= 1.0f)
@@ -7671,10 +8144,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
 
             float pressurePreviousX = pressureEnemy.x;
             float pressurePreviousY = pressureEnemy.y;
+            bool pressureEnraged = pressureEnemy.alive
+                && PressureIsEnraged(currentEnemyRemaining);
+            if (pressureEnraged && !pressureEnragedPrevious)
+            {
+                PlaySfx(sfxPressureEnrage);
+                pressureEnrageFeedbackRemaining = 0.30f;
+            }
+            pressureEnragedPrevious = pressureEnraged;
+            if (pressureEnrageFeedbackRemaining > 0.0f)
+            {
+                pressureEnrageFeedbackRemaining -= deltaTime;
+            }
             if (pressureEnemy.alive && playerAlive)
             {
                 float currentPressureMoveSpeed
-                    = PressureIsEnraged(currentEnemyRemaining)
+                    = pressureEnraged
                         ? pressureEnragedMoveSpeed : pressureMoveSpeed;
                 float playerDifferenceX = playerX - pressureEnemy.x;
                 float playerDifferenceY = playerY - pressureEnemy.y;
@@ -7795,6 +8280,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             {
                 playerHitRemaining -= deltaTime;
             }
+            if (doorOpenFeedbackRemaining > 0.0f)
+            {
+                doorOpenFeedbackRemaining -= deltaTime;
+            }
             for (LONG enemyIndex = 0; enemyIndex < currentEnemyCount; ++enemyIndex)
             {
                 EnemyRuntime& enemy = enemies[enemyIndex];
@@ -7878,7 +8367,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                     playerSlashVisualRemaining = playerSlashAnimationDuration;
                     playerExecuteVisualRemaining = 0.0f;
                     slashCooldownRemaining = slashCooldownDurationCurrent;
+                    PlaySfx(CharacterSlashSfx(selectedCharacter));
                     LONG slashHitCount = 0;
+                    bool slashKilledEnemy = false;
                     for (LONG enemyIndex = 0; enemyIndex < currentEnemyCount;
                         ++enemyIndex)
                     {
@@ -7904,6 +8395,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                             {
                                 enemy.hp = 0;
                                 enemy.alive = false;
+                                slashKilledEnemy = true;
                                 --currentEnemyRemaining;
                                 ++runKillCount;
                                 slashCooldownRemaining = 0.0f;
@@ -7923,6 +8415,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                             }
                             AlertEnemiesNear(enemies, currentEnemyCount, hitX, hitY);
                         }
+                    }
+                    if (slashHitCount)
+                    {
+                        PlaySfx(sfxEnemyHit);
+                    }
+                    if (slashKilledEnemy)
+                    {
+                        PlaySfx(sfxEnemyKill);
                     }
                 }
                 slashRequested = false;
@@ -7986,6 +8486,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                         executeVisualTargetY = targetY;
                         playerExecuteVisualRemaining = executeVisualDuration;
                         playerSlashVisualRemaining = 0.0f;
+                        PlaySfx(CharacterExecuteSfx(selectedCharacter));
                         enemy.hp = 0;
                         enemy.alive = false;
                         --currentEnemyRemaining;
@@ -8030,6 +8531,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                 playerHP -= pendingPlayerDamage;
                 playerHitRemaining = playerHitFeedbackDuration;
                 playerInvulnerabilityRemaining = playerInvulnerabilityDuration;
+                PlaySfx(sfxPlayerHit);
                 if (playerHP <= 0)
                 {
                     playerHP = 0;
@@ -8047,12 +8549,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                     }
                     runEndState = gameOverEndState;
                     runEndSelection = 0;
+                    PlaySfx(sfxGameOver);
                     GrantRunCoin(false);
                     DeleteFileW(saveFileName);
                 }
             }
 
+            bool exitWasUnlocked = exitUnlocked;
             exitUnlocked = playerAlive && currentEnemyRemaining == 0;
+            if (exitUnlocked && !exitWasUnlocked)
+            {
+                PlaySfx(sfxDoorOpen);
+                doorOpenFeedbackRemaining = 0.25f;
+            }
             if (playerAlive && exitUnlocked && !roomComplete && !sequenceComplete
                 && playerX - playerHalfWidth < currentExitRight
                 && playerX + playerHalfWidth > currentExitLeft
@@ -8327,6 +8836,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                     }
                 }
             }
+            if (doorOpenFeedbackRemaining > 0.0f)
+            {
+                LONG pulse = 1 + static_cast<LONG>(
+                    (0.25f - doorOpenFeedbackRemaining) * 20.0f);
+                LONG centerX = (currentExitLeft + currentExitRight) / 2;
+                LONG centerY = (currentExitTop + currentExitBottom) / 2;
+                constexpr LONG directionX[4]{ -1, 1, 0, 0 };
+                constexpr LONG directionY[4]{ 0, 0, -1, 1 };
+                for (LONG fragment = 0; fragment < 4; ++fragment)
+                {
+                    LONG screenX = centerX + directionX[fragment] * pulse - cameraX;
+                    LONG screenY = centerY + directionY[fragment] * pulse - cameraY;
+                    if (screenX >= 0 && screenX < framebufferWidth
+                        && screenY >= 0 && screenY < framebufferHeight)
+                    {
+                        framebuffer[screenY * framebufferWidth + screenX]
+                            = 0x00E07023;
+                    }
+                }
+            }
 
             if (slashVisualRemaining > 0.0f)
             {
@@ -8577,6 +9106,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                     }
                 }
 
+                if (!enemy.alive && enemy.hitRemaining > 0.0f
+                    && enemy.executeFeedbackRemaining <= 0.0f)
+                {
+                    constexpr LONG fragmentX[4]{ -4, -2, 2, 4 };
+                    constexpr LONG fragmentY[4]{ 2, 4, 3, 1 };
+                    for (LONG fragment = 0; fragment < 4; ++fragment)
+                    {
+                        LONG screenX = enemyCenterX + fragmentX[fragment] - cameraX;
+                        LONG screenY = enemyCenterY + fragmentY[fragment] - cameraY;
+                        if (screenX >= 0 && screenX < framebufferWidth
+                            && screenY >= 0 && screenY < framebufferHeight)
+                        {
+                            framebuffer[screenY * framebufferWidth + screenX]
+                                = fragment & 1 ? 0x00602028 : 0x00D06038;
+                        }
+                    }
+                }
+
                 if (enemy.executeFeedbackRemaining > 0.0f)
                 {
                     BYTE feedbackPhase = ExecuteVisualPhase(
@@ -8717,6 +9264,26 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                         }
                     }
                 }
+                if (pressureEnrageFeedbackRemaining > 0.0f)
+                {
+                    LONG pulse = 2 + static_cast<LONG>(
+                        (0.30f - pressureEnrageFeedbackRemaining) * 20.0f);
+                    LONG centerX = static_cast<LONG>(pressureEnemy.x) - cameraX;
+                    LONG centerY = static_cast<LONG>(pressureEnemy.y) - cameraY;
+                    constexpr LONG directionX[4]{ -1, 1, 0, 0 };
+                    constexpr LONG directionY[4]{ 0, 0, -1, 1 };
+                    for (LONG fragment = 0; fragment < 4; ++fragment)
+                    {
+                        LONG pixelX = centerX + directionX[fragment] * pulse;
+                        LONG pixelY = centerY + directionY[fragment] * pulse;
+                        if (pixelX >= 0 && pixelX < framebufferWidth
+                            && pixelY >= 0 && pixelY < framebufferHeight)
+                        {
+                            framebuffer[pixelY * framebufferWidth + pixelX]
+                                = 0x00E07023;
+                        }
+                    }
+                }
             }
 
             LONG drawingLeft = static_cast<LONG>(playerX) - playerWidth / 2 - cameraX;
@@ -8783,6 +9350,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                             = PlayerSpriteFeedbackColor(selectedCharacter,
                                 color, playerAlive, playerHitRemaining > 0.0f,
                                 playerDashingThisUpdate);
+                    }
+                }
+            }
+            if (playerHitRemaining > 0.0f)
+            {
+                constexpr LONG sparkX[4]{ -3, -1, 2, 4 };
+                constexpr LONG sparkY[4]{ -2, 3, -4, 1 };
+                LONG centerX = static_cast<LONG>(playerX) - cameraX;
+                LONG centerY = static_cast<LONG>(playerY) - cameraY;
+                for (LONG spark = 0; spark < 4; ++spark)
+                {
+                    LONG pixelX = centerX + sparkX[spark];
+                    LONG pixelY = centerY + sparkY[spark];
+                    if (pixelX >= 0 && pixelX < framebufferWidth
+                        && pixelY >= 0 && pixelY < framebufferHeight)
+                    {
+                        framebuffer[pixelY * framebufferWidth + pixelX]
+                            = spark & 1 ? 0x00FFFFFF : 0x00E07023;
                     }
                 }
             }
@@ -8861,6 +9446,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             {
                 runEndState = runClearEndState;
                 runEndSelection = 0;
+                PlaySfx(sfxRunClear);
                 GrantRunCoin(true);
                 DeleteFileW(saveFileName);
             }
@@ -8875,7 +9461,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
 
     timeEndPeriod(1);
     waveOutReset(audioOutput);
-    waveOutUnprepareHeader(audioOutput, &toneHeader, sizeof(toneHeader));
+    for (BYTE buffer = 0; buffer < audioBufferCount; ++buffer)
+    {
+        waveOutUnprepareHeader(audioOutput,
+            &audioHeaders[buffer], sizeof(WAVEHDR));
+    }
     waveOutClose(audioOutput);
     if (titleFont)
     {
@@ -10963,26 +11553,146 @@ int main()
     masterVolumeStep = masterVolumeMaximumStep;
     failures += ChangeMasterVolume(1)
         || masterVolumeStep != masterVolumeMaximumStep
-        || MasterVolumeSample(192, 10) != 192
-        || MasterVolumeSample(192, 5) != 160
-        || MasterVolumeSample(192, 1) != 134
-        || MasterVolumeSample(192, 0) != 128
-        || MasterVolumeSample(64, 5) != 96
-        || MasterVolumeSample(64, 1) != 122
-        || MasterVolumeSample(64, 0) != 128;
+        || ApplyMasterVolume(12000, 10) != 12000
+        || ApplyMasterVolume(12000, 5) != 6000
+        || ApplyMasterVolume(12000, 1) != 1200
+        || ApplyMasterVolume(12000, 0) != 0
+        || ApplyMasterVolume(-12000, 5) != -6000
+        || ApplyMasterVolume(100000, 10) != 32767
+        || ApplyMasterVolume(-100000, 10) != -32768;
     masterVolumeStep = 7;
     windowResolutionIndex = 2;
     fullscreenEnabled = true;
-    GenerateToneSamples();
     WriteMetaProfile();
     ResetMetaProfile();
     failures += !ReadMetaProfile() || masterVolumeStep != 7
         || windowResolutionIndex != 2 || !fullscreenEnabled
-        || toneSamples[0] != MasterVolumeSample(192, 7)
+        || ApplyMasterVolume(12000, masterVolumeStep) != 8400
         || sizeof(MetaProfile) != 32 || sizeof(SaveCheckpoint) != 32;
     printf("section_v09_audio=%ld volume=%u sample=%u\n", failures,
         static_cast<UINT>(masterVolumeStep),
-        static_cast<UINT>(toneSamples[0]));
+        static_cast<UINT>(ApplyMasterVolume(12000, masterVolumeStep)));
+
+    LONG v10AudioFailures = 0;
+    DWORD sfxHashes[sfxCount]{};
+    for (BYTE sound = 0; sound < sfxCount; ++sound)
+    {
+        const SfxSpec& spec = sfxSpecs[sound];
+        v10AudioFailures += spec.durationMilliseconds < 40
+            || spec.durationMilliseconds > 500
+            || !spec.startFrequency || spec.startFrequency >= audioSampleRate / 2
+            || !spec.endFrequency || spec.endFrequency >= audioSampleRate / 2
+            || !spec.amplitude || spec.amplitude > 127
+            || spec.waveform > sfxMetalWave
+            || !spec.priority || spec.priority > 4;
+        ResetSfxVoices();
+        sfxStartCount[sound] = 0;
+        masterVolumeStep = masterVolumeMaximumStep;
+        v10AudioFailures += !PlaySfx(sound);
+        DWORD sampleCount = spec.durationMilliseconds * audioSampleRate / 1000;
+        DWORD hash = 2166136261u;
+        LONG peak = 0;
+        for (DWORD sample = 0; sample <= sampleCount; ++sample)
+        {
+            short mixed = MixSfxSample();
+            LONG magnitude = mixed < 0 ? -static_cast<LONG>(mixed) : mixed;
+            if (magnitude > peak) peak = magnitude;
+            hash = (hash ^ static_cast<unsigned short>(mixed)) * 16777619u;
+        }
+        bool voiceStillActive = false;
+        for (BYTE voice = 0; voice < sfxVoiceCount; ++voice)
+        {
+            voiceStillActive |= sfxVoices[voice].active;
+        }
+        v10AudioFailures += peak == 0 || voiceStillActive;
+        sfxHashes[sound] = hash;
+    }
+    for (BYTE first = sfxSlashBasic; first <= sfxExecuteRapid; ++first)
+    {
+        for (BYTE second = first + 1; second <= sfxExecuteRapid; ++second)
+        {
+            v10AudioFailures += sfxHashes[first] == sfxHashes[second];
+        }
+    }
+    for (BYTE first = sfxWindupPatroller; first <= sfxAttackPressure; ++first)
+    {
+        for (BYTE second = first + 1; second <= sfxAttackPressure; ++second)
+        {
+            v10AudioFailures += sfxHashes[first] == sfxHashes[second];
+        }
+    }
+    v10AudioFailures += CharacterSlashSfx(basicCharacter) != sfxSlashBasic
+        || CharacterSlashSfx(rapidCharacter) != sfxSlashRapid
+        || CharacterDashSfx(piercerCharacter) != sfxDashPiercer
+        || CharacterExecuteSfx(heavyCharacter) != sfxExecuteHeavy
+        || EnemyWindupSfx(pressureEnemyRole) != sfxWindupPressure
+        || EnemyAttackSfx(spinnerEnemyRole) != sfxAttackSpinner
+        || !(sfxSpecs[sfxExecuteBasic].priority
+            > sfxSpecs[sfxEnemyHit].priority)
+        || !(sfxSpecs[sfxAlert].priority > sfxSpecs[sfxSuspicion].priority)
+        || ApplyMasterVolume(24000, 5) != 12000
+        || ApplyMasterVolume(24000, 1) != 2400
+        || ApplyMasterVolume(24000, 0) != 0;
+    ResetSfxVoices();
+    masterVolumeStep = masterVolumeMaximumStep;
+    v10AudioFailures += !PlaySfx(sfxUiMove) || PlaySfx(sfxUiMove);
+    ResetSfxVoices();
+    constexpr BYTE lowPrioritySounds[sfxVoiceCount]
+    {
+        sfxEnemyHit, sfxSuspicion, sfxUiMove,
+        sfxUiConfirm, sfxUiLow, sfxUiBack
+    };
+    for (BYTE voice = 0; voice < sfxVoiceCount; ++voice)
+    {
+        v10AudioFailures += !PlaySfx(lowPrioritySounds[voice]);
+    }
+    v10AudioFailures += !PlaySfx(sfxPressureEnrage);
+    bool enrageVoiceActive = false;
+    LONG activeVoices = 0;
+    for (BYTE voice = 0; voice < sfxVoiceCount; ++voice)
+    {
+        activeVoices += sfxVoices[voice].active;
+        enrageVoiceActive |= sfxVoices[voice].active
+            && sfxVoices[voice].sound == sfxPressureEnrage;
+    }
+    v10AudioFailures += activeVoices != sfxVoiceCount || !enrageVoiceActive;
+    for (BYTE role = patrollerEnemyRole; role <= pressureEnemyRole; ++role)
+    {
+        ResetSfxVoices();
+        sfxStartCount[EnemyWindupSfx(role)] = 0;
+        sfxStartCount[EnemyAttackSfx(role)] = 0;
+        EnemyRuntime audioEnemy{};
+        audioEnemy.alive = true;
+        audioEnemy.role = role;
+        LONG pendingDamage = 0;
+        UpdateEnemyAttack(audioEnemy, true, 0.0f, 0.0f, 0.0f,
+            pendingDamage, role == pressureEnemyRole);
+        v10AudioFailures += sfxStartCount[EnemyWindupSfx(role)] != 1
+            || sfxStartCount[EnemyAttackSfx(role)] != 0;
+        UpdateEnemyAttack(audioEnemy, true, 0.0f, 0.0f, 1.0f,
+            pendingDamage, role == pressureEnemyRole);
+        v10AudioFailures += sfxStartCount[EnemyAttackSfx(role)] != 1
+            || pendingDamage != playerDamageAmount;
+    }
+    BYTE savedAlertCount = alertEventCount;
+    bool savedAlertActive = alertEventActive;
+    ResetSfxVoices();
+    sfxStartCount[sfxAlert] = 0;
+    alertEventActive = false;
+    BeginAlertEvent();
+    BeginAlertEvent();
+    v10AudioFailures += sfxStartCount[sfxAlert] != 1;
+    alertEventCount = savedAlertCount;
+    alertEventActive = savedAlertActive;
+    ResetSfxVoices();
+    masterVolumeStep = 0;
+    v10AudioFailures += PlaySfx(sfxPlayerHit) || MixSfxSample() != 0;
+    masterVolumeStep = masterVolumeMaximumStep;
+    failures += v10AudioFailures;
+    printf("section_v10_audio=%ld sfx=%u voices=%u buffers=%u hashes=%08lX/%08lX\n",
+        v10AudioFailures, static_cast<UINT>(sfxCount),
+        static_cast<UINT>(sfxVoiceCount), static_cast<UINT>(audioBufferCount),
+        sfxHashes[sfxSlashBasic], sfxHashes[sfxSlashRapid]);
 
     LONG unlockCostTotal = 0;
     LONG commonCostTotal = 0;
