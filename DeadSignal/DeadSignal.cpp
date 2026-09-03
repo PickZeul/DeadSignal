@@ -66,6 +66,7 @@ constexpr LONG pressureEnemyIndex = maxEnemyCount;
 constexpr LONG pressureVisualWidth = 10;
 constexpr LONG pressureVisualHeight = 12;
 constexpr float pressureMoveSpeed = 32.0f;
+constexpr float pressureEnragedMoveSpeed = 58.0f;
 constexpr float pressureMinimumSpawnDistanceSquared = 80.0f * 80.0f;
 constexpr LONG enemyWidth = 8;
 constexpr LONG enemyHeight = 12;
@@ -86,6 +87,10 @@ constexpr LONG enemyVisionRange = 70;
 constexpr float enemyVisionSlope = 0.520567f;
 constexpr float enemyVisionRangeSquared
     = static_cast<float>(enemyVisionRange * enemyVisionRange);
+constexpr LONG watcherVisionRange = 80;
+constexpr float watcherVisionSlope = 0.63707026f;
+constexpr float watcherVisionRangeSquared
+    = static_cast<float>(watcherVisionRange * watcherVisionRange);
 constexpr float enemyReacquireRangeSquared = 42.0f * 42.0f;
 constexpr float hunterReacquireRangeSquared = 70.0f * 70.0f;
 constexpr float listenerMovementHearingRangeSquared = 80.0f * 80.0f;
@@ -95,7 +100,7 @@ constexpr float listenerAlertRangeSquared = 80.0f * 80.0f;
 constexpr float spinnerRotationSpeed = 1.04719755f;
 constexpr float enemyFacingTurnSpeed = 2.0943951f;
 constexpr float watcherCalmScanDuration = 5.0f;
-constexpr float watcherTurnVisualDuration = 0.16f;
+constexpr float watcherTurnDuration = 0.8f;
 constexpr float eightDirectionAngle[8]
 {
     0.0f, 0.78539816f, 1.57079633f, 2.35619449f,
@@ -118,6 +123,41 @@ constexpr float enemyScanDuration = 2.0f;
 constexpr float enemyAttackCooldownDuration = 1.0f;
 constexpr float enemyAttackWindupDuration = 0.3f;
 constexpr float enemyAttackContactTolerance = 1.0f;
+constexpr float pressureEnragedAttackScale = 0.8f;
+constexpr float pressureAttackRangeScale = 1.15f;
+constexpr float EnemyAttackRangeScale(BYTE role)
+{
+    return role == watcherEnemyRole ? 1.10f
+        : (role == hunterEnemyRole ? 1.20f
+            : (role == listenerEnemyRole ? 0.85f
+                : (role == spinnerEnemyRole ? 1.25f
+                    : (role == pressureEnemyRole
+                        ? pressureAttackRangeScale : 1.0f))));
+}
+constexpr float EnemyAttackRangeX(BYTE role)
+{
+    return enemyHalfWidth + playerHalfWidth
+        + enemyAttackContactTolerance * EnemyAttackRangeScale(role);
+}
+constexpr float EnemyAttackRangeY(BYTE role)
+{
+    return enemyHalfHeight + playerHalfHeight
+        + enemyAttackContactTolerance * EnemyAttackRangeScale(role);
+}
+constexpr bool PressureIsEnraged(LONG livingRegularEnemies)
+{
+    return livingRegularEnemies <= 2;
+}
+constexpr float PressureAttackCooldown(bool enraged)
+{
+    return enemyAttackCooldownDuration
+        * (enraged ? pressureEnragedAttackScale : 1.0f);
+}
+constexpr float PressureAttackWindup(bool enraged)
+{
+    return enemyAttackWindupDuration
+        * (enraged ? pressureEnragedAttackScale : 1.0f);
+}
 constexpr float playerHitFeedbackDuration = 0.10f;
 constexpr float playerInvulnerabilityDuration = 0.5f;
 constexpr float detectionFillDuration = 2.4f;
@@ -1218,21 +1258,25 @@ constexpr BYTE PressureSpritePaletteIndex(BYTE frame, LONG x, LONG y)
 }
 
 constexpr BYTE PressureAnimationFrame(float windupRemaining,
-    float cooldownRemaining, bool moved, float visualTime)
+    float cooldownRemaining, bool moved, float visualTime, bool enraged = false)
 {
+    float windupDuration = PressureAttackWindup(enraged);
+    float cooldownDuration = PressureAttackCooldown(enraged);
     if (windupRemaining > 0.0f)
     {
-        return windupRemaining > enemyAttackWindupDuration * 0.5f
+        return windupRemaining > windupDuration * 0.5f
             ? pressureAttackBraceFrame : pressureAttackCrushFrame;
     }
-    if (cooldownRemaining > enemyAttackCooldownDuration
-        - enemyAttackRecoveryVisualDuration)
+    if (cooldownRemaining > cooldownDuration
+        - enemyAttackRecoveryVisualDuration * (enraged ? 0.8f : 1.0f))
     {
         return pressureAttackRecoveryFrame;
     }
     if (moved)
     {
-        return static_cast<LONG>(visualTime / pressureMoveFrameDuration) & 1
+        float frameDuration = pressureMoveFrameDuration
+            * (enraged ? 0.65f : 1.0f);
+        return static_cast<LONG>(visualTime / frameDuration) & 1
             ? pressureMoveBFrame : pressureMoveAFrame;
     }
     return pressureIdleFrame;
@@ -1262,11 +1306,14 @@ void EnemyPoseOffset(BYTE role, BYTE frame, float facingAngle,
     }
     else if (frame == enemyAttackWindupFrame)
     {
-        forward = -1;
+        constexpr LONG windupPullback[enemyRoleCount] = { -2, -2, -3, -1, -1 };
+        forward = windupPullback[role];
+        lateral = role == listenerEnemyRole ? 1
+            : (role == spinnerEnemyRole ? -2 : 0);
     }
     else if (frame == enemyAttackStrikeFrame)
     {
-        constexpr LONG attackLean[enemyRoleCount] = { 1, 2, 2, 1, 0 };
+        constexpr LONG attackLean[enemyRoleCount] = { 2, 2, 3, 1, 1 };
         forward = attackLean[role];
         lateral = role == hunterEnemyRole ? 1 : 0;
     }
@@ -1293,13 +1340,44 @@ DWORD EnemyAttackEffectPixel(BYTE role, BYTE frame, float centerX,
     float absoluteLateral = lateral < 0.0f ? -lateral : lateral;
     if (frame == enemyAttackWindupFrame)
     {
-        return forward > 3.0f && forward < 5.0f && absoluteLateral < 0.65f
-            ? 0x00806030 : 0;
+        if (role == watcherEnemyRole)
+        {
+            bool lockLine = forward >= 1.0f && forward <= 6.0f
+                && absoluteLateral < 0.55f;
+            bool pulledWeapon = forward >= -3.0f && forward <= 1.0f
+                && lateral >= 2.0f && lateral <= 3.5f;
+            return lockLine ? (forward > 5.0f ? 0x00FFF4C8 : 0x00D07038)
+                : (pulledWeapon ? 0x00A85828 : 0);
+        }
+        if (role == hunterEnemyRole)
+        {
+            float crouchEdge = lateral + (forward + 1.0f) * 0.65f;
+            if (crouchEdge < 0.0f) crouchEdge = -crouchEdge;
+            return forward >= -5.0f && forward <= 3.0f && crouchEdge < 0.8f
+                ? (forward > 2.0f ? 0x00FFF0A0 : 0x00C06830) : 0;
+        }
+        if (role == listenerEnemyRole)
+        {
+            float pulseRadius = sqrtf(forward * forward + lateral * lateral);
+            return pulseRadius >= 4.0f && pulseRadius <= 5.5f
+                && forward >= -1.5f
+                ? (absoluteLateral > 3.5f ? 0x00FFE080 : 0x00B06830) : 0;
+        }
+        if (role == spinnerEnemyRole)
+        {
+            float radius = sqrtf(forward * forward + lateral * lateral);
+            return radius >= 5.5f && radius <= 8.5f && lateral <= 1.0f
+                ? (radius > 7.5f ? 0x00FFE080 : 0x00A06030) : 0;
+        }
+        float baton = lateral - (forward + 1.0f) * 0.75f - 3.0f;
+        if (baton < 0.0f) baton = -baton;
+        return forward >= -5.0f && forward <= 2.0f && baton < 0.75f
+            ? (forward < -4.0f ? 0x00FFF0A0 : 0x00B06030) : 0;
     }
 
     if (role == watcherEnemyRole)
     {
-        if (forward >= 3.0f && forward <= 10.0f && absoluteLateral < 0.7f)
+        if (forward >= 2.0f && forward <= 9.5f && absoluteLateral < 0.7f)
         {
             return forward > 8.0f ? 0x00FFF4C8 : 0x00D07038;
         }
@@ -1309,20 +1387,20 @@ DWORD EnemyAttackEffectPixel(BYTE role, BYTE frame, float centerX,
     {
         float slash = lateral + (forward - 6.0f) * 0.48f;
         if (slash < 0.0f) slash = -slash;
-        return forward >= 2.0f && forward <= 10.0f && slash < 0.85f
+        return forward >= 1.0f && forward <= 10.0f && slash < 0.95f
             ? 0x00F0B050 : 0;
     }
     if (role == listenerEnemyRole)
     {
-        return forward >= 3.0f && forward <= 7.0f && absoluteLateral < 0.9f
-            ? (forward > 6.0f ? 0x00FFF0A0 : 0x00C07838) : 0;
+        return forward >= 2.0f && forward <= 8.0f && absoluteLateral < 1.0f
+            ? (forward > 7.0f ? 0x00FFF0A0 : 0x00C07838) : 0;
     }
     if (role == spinnerEnemyRole)
     {
         float radius = sqrtf(forward * forward + lateral * lateral);
         bool sweptHalf = lateral >= -1.0f || forward < 0.0f;
-        return sweptHalf && radius >= 5.5f && radius <= 8.0f
-            ? (radius < 6.5f ? 0x00F0D070 : 0x009A48BE) : 0;
+        return sweptHalf && radius >= 7.5f && radius <= 10.0f
+            ? (radius < 8.5f ? 0x00F0D070 : 0x009A48BE) : 0;
     }
 
     if (forward >= 2.5f && forward <= 9.0f && absoluteLateral <= 4.5f)
@@ -1336,21 +1414,22 @@ DWORD EnemyAttackEffectPixel(BYTE role, BYTE frame, float centerX,
 }
 
 void PressurePoseOffset(BYTE frame, float facingAngle,
-    LONG& offsetX, LONG& offsetY)
+    LONG& offsetX, LONG& offsetY, bool enraged = false)
 {
     LONG forward = 0;
     LONG lateral = 0;
     if (frame == pressureMoveAFrame || frame == pressureMoveBFrame)
     {
-        offsetX = frame == pressureMoveAFrame ? -1 : 1;
+        LONG weightShift = enraged ? 2 : 1;
+        offsetX = frame == pressureMoveAFrame ? -weightShift : weightShift;
         offsetY = frame == pressureMoveAFrame ? -1 : 1;
         return;
     }
     else
     {
-        offsetY = frame == pressureAttackCrushFrame ? 1 : 0;
-        forward = frame == pressureAttackBraceFrame ? -1
-            : (frame == pressureAttackCrushFrame ? 1 : 0);
+        offsetY = frame == pressureAttackCrushFrame ? (enraged ? 2 : 1) : 0;
+        forward = frame == pressureAttackBraceFrame ? (enraged ? -3 : -2)
+            : (frame == pressureAttackCrushFrame ? (enraged ? 2 : 1) : 0);
     }
     float directionX = cosf(facingAngle);
     float directionY = sinf(facingAngle);
@@ -1360,9 +1439,9 @@ void PressurePoseOffset(BYTE frame, float facingAngle,
 }
 
 DWORD PressureAttackEffectPixel(BYTE frame, float centerX, float centerY,
-    float facingAngle, float pointX, float pointY)
+    float facingAngle, float pointX, float pointY, bool enraged = false)
 {
-    if (frame != pressureAttackCrushFrame)
+    if (frame != pressureAttackBraceFrame && frame != pressureAttackCrushFrame)
     {
         return 0;
     }
@@ -1373,9 +1452,18 @@ DWORD PressureAttackEffectPixel(BYTE frame, float centerX, float centerY,
     float forward = differenceX * directionX + differenceY * directionY;
     float lateral = differenceX * -directionY + differenceY * directionX;
     float absoluteLateral = lateral < 0.0f ? -lateral : lateral;
-    if (forward >= 4.0f && forward <= 8.0f && absoluteLateral <= 5.5f)
+    if (frame == pressureAttackBraceFrame)
     {
-        float shock = forward - (7.5f - absoluteLateral * 0.35f);
+        bool shoulderBrace = forward >= -5.0f && forward <= 1.0f
+            && absoluteLateral >= 4.0f && absoluteLateral <= (enraged ? 8.0f : 7.0f);
+        bool heatedCore = forward >= 1.0f && forward <= 4.0f
+            && absoluteLateral <= (enraged ? 2.5f : 1.5f);
+        return shoulderBrace ? 0x00C05028
+            : (heatedCore ? (enraged ? 0x00FFF070 : 0x00E07023) : 0);
+    }
+    if (forward >= 3.0f && forward <= 10.5f && absoluteLateral <= 6.5f)
+    {
+        float shock = forward - (10.0f - absoluteLateral * 0.45f);
         if (shock < 0.0f) shock = -shock;
         if (shock < 0.9f)
         {
@@ -1383,6 +1471,28 @@ DWORD PressureAttackEffectPixel(BYTE frame, float centerX, float centerY,
         }
     }
     return 0;
+}
+
+DWORD PressureEnrageEffectPixel(float centerX, float centerY, float facingAngle,
+    float visualTime, float pointX, float pointY)
+{
+    float directionX = cosf(facingAngle);
+    float directionY = sinf(facingAngle);
+    float differenceX = pointX - centerX;
+    float differenceY = pointY - centerY;
+    float forward = differenceX * directionX + differenceY * directionY;
+    float lateral = differenceX * -directionY + differenceY * directionX;
+    LONG pulse = static_cast<LONG>(visualTime / 0.08f) & 1;
+    bool exhaust = forward >= -8.0f && forward <= -5.0f
+        && (lateral >= 3.0f && lateral <= 4.0f
+            || lateral <= -3.0f && lateral >= -4.0f);
+    bool brokenSpark = pulse
+        ? (forward > -2.0f && forward < 0.0f
+            && (lateral > 6.0f && lateral < 7.0f))
+        : (forward > 1.0f && forward < 3.0f
+            && lateral < -6.0f && lateral > -7.0f);
+    return exhaust ? (pulse ? 0x00FFF070 : 0x00E07023)
+        : (brokenSpark ? 0x00FF9040 : 0);
 }
 
 constexpr LONG characterUnlockCosts[characterCount]{ 0, 100, 100, 100, 100 };
@@ -1583,6 +1693,7 @@ struct EnemyRuntime
     DWORD watcherScanRandomState;
     float watcherScanRemaining;
     float watcherTurnVisualRemaining;
+    float watcherTurnRate;
     LONG searchPathCount;
     LONG searchPathIndex;
     LONG hp;
@@ -1617,6 +1728,19 @@ LONG EightDirectionIndex(float angle)
     return bestDirection;
 }
 
+float NormalizeFacingAngle(float angle)
+{
+    while (angle > 3.14159265f)
+    {
+        angle -= 6.28318531f;
+    }
+    while (angle <= -3.14159265f)
+    {
+        angle += 6.28318531f;
+    }
+    return angle;
+}
+
 bool WatcherCalmScanActive(const EnemyRuntime& enemy)
 {
     return enemy.alive && enemy.role == watcherEnemyRole && !enemy.alert
@@ -1625,30 +1749,56 @@ bool WatcherCalmScanActive(const EnemyRuntime& enemy)
 
 LONG UpdateWatcherCalmScan(EnemyRuntime& enemy, float deltaTime)
 {
+    if (enemy.watcherTurnVisualRemaining > 0.0f)
+    {
+        float turnStep = deltaTime;
+        if (turnStep >= enemy.watcherTurnVisualRemaining)
+        {
+            enemy.facingAngle = enemy.surveillanceFacingAngle;
+            enemy.watcherTurnVisualRemaining = 0.0f;
+            enemy.watcherTurnRate = 0.0f;
+            enemy.watcherScanRemaining = watcherCalmScanDuration;
+        }
+        else
+        {
+            enemy.facingAngle = NormalizeFacingAngle(enemy.facingAngle
+                + enemy.watcherTurnRate * turnStep);
+            enemy.watcherTurnVisualRemaining -= turnStep;
+        }
+        return EightDirectionIndex(enemy.facingAngle);
+    }
+
     enemy.watcherScanRemaining -= deltaTime;
     if (enemy.watcherScanRemaining > 0.0f)
     {
-        enemy.facingAngle = enemy.surveillanceFacingAngle;
-        return EightDirectionIndex(enemy.surveillanceFacingAngle);
+        return EightDirectionIndex(enemy.facingAngle);
     }
 
     enemy.watcherScanRandomState
         = enemy.watcherScanRandomState * 1664525u + 1013904223u;
-    LONG currentDirection = EightDirectionIndex(enemy.surveillanceFacingAngle);
+    LONG currentDirection = EightDirectionIndex(enemy.facingAngle);
     LONG nextDirection = (currentDirection + 1
         + static_cast<LONG>(enemy.watcherScanRandomState % 7)) & 7;
     enemy.surveillanceFacingAngle = eightDirectionAngle[nextDirection];
-    enemy.facingAngle = enemy.surveillanceFacingAngle;
-    enemy.watcherScanRemaining = watcherCalmScanDuration;
-    enemy.watcherTurnVisualRemaining = watcherTurnVisualDuration;
-    return nextDirection;
+    float difference = NormalizeFacingAngle(enemy.surveillanceFacingAngle
+        - enemy.facingAngle);
+    if (difference > 3.141592f || difference < -3.141592f)
+    {
+        difference = enemy.watcherScanRandomState & 0x80000000u
+            ? 3.14159265f : -3.14159265f;
+    }
+    enemy.watcherTurnRate = difference / watcherTurnDuration;
+    enemy.watcherScanRemaining = 0.0f;
+    enemy.watcherTurnVisualRemaining = watcherTurnDuration;
+    return currentDirection;
 }
 
 void RestartWatcherCalmScan(EnemyRuntime& enemy)
 {
-    enemy.facingAngle = enemy.surveillanceFacingAngle;
+    enemy.surveillanceFacingAngle = enemy.facingAngle;
     enemy.watcherScanRemaining = watcherCalmScanDuration;
     enemy.watcherTurnVisualRemaining = 0.0f;
+    enemy.watcherTurnRate = 0.0f;
 }
 
 bool EnemyVisibleInViewport(const EnemyRuntime& enemy, LONG cameraX, LONG cameraY)
@@ -1782,6 +1932,13 @@ bool SetEnemyAlertState(EnemyRuntime& enemy)
     enemy.scanning = false;
     enemy.scanElapsed = 0.0f;
     enemy.patrolTurnRemaining = 0.0f;
+    if (enemy.role == watcherEnemyRole)
+    {
+        enemy.surveillanceFacingAngle = enemy.facingAngle;
+        enemy.watcherScanRemaining = watcherCalmScanDuration;
+        enemy.watcherTurnVisualRemaining = 0.0f;
+        enemy.watcherTurnRate = 0.0f;
+    }
     return true;
 }
 
@@ -1878,17 +2035,36 @@ void UpdateAlertEventState(EnemyRuntime* enemies, LONG enemyCount)
     alertEventActive = false;
 }
 
-bool PointInsideVisionSector(float originX, float originY, float facingX,
-    float facingY, float targetX, float targetY)
+bool PointInsideVisionSectorGeometry(float originX, float originY, float facingX,
+    float facingY, float targetX, float targetY, float rangeSquared, float slope)
 {
     float differenceX = targetX - originX;
     float differenceY = targetY - originY;
     float distanceSquared = differenceX * differenceX + differenceY * differenceY;
     float forward = differenceX * facingX + differenceY * facingY;
     float lateral = differenceX * -facingY + differenceY * facingX;
-    return forward > 0.0f && distanceSquared <= enemyVisionRangeSquared
+    return forward > 0.0f && distanceSquared <= rangeSquared
         && lateral * lateral <= forward * forward
-            * enemyVisionSlope * enemyVisionSlope;
+            * slope * slope;
+}
+
+bool PointInsideVisionSector(float originX, float originY, float facingX,
+    float facingY, float targetX, float targetY)
+{
+    return PointInsideVisionSectorGeometry(originX, originY, facingX, facingY,
+        targetX, targetY, enemyVisionRangeSquared, enemyVisionSlope);
+}
+
+bool PointInsideEnemyVisionSector(const EnemyRuntime& enemy,
+    float targetX, float targetY)
+{
+    float facingX = cosf(enemy.facingAngle);
+    float facingY = sinf(enemy.facingAngle);
+    bool watcher = enemy.role == watcherEnemyRole;
+    return PointInsideVisionSectorGeometry(enemy.x, enemy.y, facingX, facingY,
+        targetX, targetY, watcher ? watcherVisionRangeSquared
+            : enemyVisionRangeSquared,
+        watcher ? watcherVisionSlope : enemyVisionSlope);
 }
 
 DWORD BlendVisionColor(DWORD destination, DWORD source, BYTE alpha)
@@ -1903,12 +2079,12 @@ DWORD BlendVisionColor(DWORD destination, DWORD source, BYTE alpha)
     return (red << 16) | (green << 8) | blue;
 }
 
-BYTE VisionEdgeAlpha(float forward, float lateral, float distanceSquared)
+BYTE VisionEdgeAlphaGeometry(float forward, float lateral, float distanceSquared,
+    LONG range, float rangeSquared, float slope)
 {
     float absoluteLateral = lateral < 0.0f ? -lateral : lateral;
-    float angleMargin = forward * enemyVisionSlope - absoluteLateral;
-    float radiusMargin = (enemyVisionRangeSquared - distanceSquared)
-        / (enemyVisionRange * 2.0f);
+    float angleMargin = forward * slope - absoluteLateral;
+    float radiusMargin = (rangeSquared - distanceSquared) / (range * 2.0f);
     float margin = angleMargin < radiusMargin ? angleMargin : radiusMargin;
     return margin >= 3.0f ? 40
         : (margin >= 1.5f ? 48
@@ -1917,6 +2093,12 @@ BYTE VisionEdgeAlpha(float forward, float lateral, float distanceSquared)
                     : (margin >= -1.5f ? 72
                         : (margin >= -2.5f ? 40
                             : (margin >= -3.0f ? 32 : 0))))));
+}
+
+BYTE VisionEdgeAlpha(float forward, float lateral, float distanceSquared)
+{
+    return VisionEdgeAlphaGeometry(forward, lateral, distanceSquared,
+        enemyVisionRange, enemyVisionRangeSquared, enemyVisionSlope);
 }
 
 void AccumulateVisionOverlay(LONG pixel, bool red, BYTE alpha)
@@ -1949,16 +2131,21 @@ bool PointInsideExecuteFacing(float playerX, float playerY, float facingX,
         >= distanceSquared * executeFacingCosineSquared;
 }
 
+bool EnemyInAttackRange(BYTE role, float enemyX, float enemyY,
+    float playerX, float playerY)
+{
+    float differenceX = playerX - enemyX;
+    float differenceY = playerY - enemyY;
+    if (differenceX < 0.0f) differenceX = -differenceX;
+    if (differenceY < 0.0f) differenceY = -differenceY;
+    return differenceX <= EnemyAttackRangeX(role)
+        && differenceY <= EnemyAttackRangeY(role);
+}
+
 bool EnemyInAttackRange(float enemyX, float enemyY, float playerX, float playerY)
 {
-    return enemyX - enemyHalfWidth <= playerX + playerHalfWidth
-            + enemyAttackContactTolerance
-        && enemyX + enemyHalfWidth + enemyAttackContactTolerance
-            >= playerX - playerHalfWidth
-        && enemyY - enemyHalfHeight <= playerY + playerHalfHeight
-            + enemyAttackContactTolerance
-        && enemyY + enemyHalfHeight + enemyAttackContactTolerance
-            >= playerY - playerHalfHeight;
+    return EnemyInAttackRange(patrollerEnemyRole,
+        enemyX, enemyY, playerX, playerY);
 }
 
 void QueuePlayerDamage(LONG damage, LONG& pendingDamage)
@@ -1970,7 +2157,8 @@ void QueuePlayerDamage(LONG damage, LONG& pendingDamage)
 }
 
 void UpdateEnemyAttack(EnemyRuntime& enemy, bool attackEnabled, float playerX,
-    float playerY, float deltaTime, LONG& pendingDamage)
+    float playerY, float deltaTime, LONG& pendingDamage,
+    bool pressureEnraged = false)
 {
     if (!enemy.alive || !attackEnabled)
     {
@@ -1979,21 +2167,37 @@ void UpdateEnemyAttack(EnemyRuntime& enemy, bool attackEnabled, float playerX,
     }
     if (enemy.attackWindupRemaining > 0.0f)
     {
+        float windupDuration = enemy.role == pressureEnemyRole
+            ? PressureAttackWindup(pressureEnraged) : enemyAttackWindupDuration;
+        if (enemy.attackWindupRemaining > windupDuration)
+        {
+            enemy.attackWindupRemaining = windupDuration;
+        }
         enemy.attackWindupRemaining -= deltaTime;
         if (enemy.attackWindupRemaining <= 0.0f)
         {
             enemy.attackWindupRemaining = 0.0f;
-            if (EnemyInAttackRange(enemy.x, enemy.y, playerX, playerY))
+            if (EnemyInAttackRange(enemy.role,
+                enemy.x, enemy.y, playerX, playerY))
             {
                 QueuePlayerDamage(playerDamageAmount, pendingDamage);
             }
-            enemy.attackCooldownRemaining = enemyAttackCooldownDuration;
+            enemy.attackCooldownRemaining = enemy.role == pressureEnemyRole
+                ? PressureAttackCooldown(pressureEnraged)
+                : enemyAttackCooldownDuration;
         }
     }
-    else if (enemy.attackCooldownRemaining <= 0.0f
-        && EnemyInAttackRange(enemy.x, enemy.y, playerX, playerY))
+    else if (enemy.role == pressureEnemyRole && pressureEnraged
+        && enemy.attackCooldownRemaining > PressureAttackCooldown(true))
     {
-        enemy.attackWindupRemaining = enemyAttackWindupDuration;
+        enemy.attackCooldownRemaining = PressureAttackCooldown(true);
+    }
+    else if (enemy.attackCooldownRemaining <= 0.0f
+        && EnemyInAttackRange(enemy.role,
+            enemy.x, enemy.y, playerX, playerY))
+    {
+        enemy.attackWindupRemaining = enemy.role == pressureEnemyRole
+            ? PressureAttackWindup(pressureEnraged) : enemyAttackWindupDuration;
     }
 }
 
@@ -2822,30 +3026,30 @@ DWORD ExecuteEffectPixel(BYTE character, BYTE phase, float originX,
 
     if (character == basicCharacter)
     {
-        if (phase == 1 && absoluteLateral <= 6.5f)
+        if (phase == 1 && absoluteLateral <= 8.0f)
         {
-            float arc = distance + 1.0f - lateral * lateral * 0.14f;
+            float arc = distance + 2.0f - lateral * lateral * 0.11f;
             float arcDistance = forward - arc;
             if (arcDistance < 0.0f) arcDistance = -arcDistance;
             float afterimageDistance = forward - (arc - 3.0f);
             if (afterimageDistance < 0.0f) afterimageDistance = -afterimageDistance;
-            return arcDistance < 1.0f ? 0x00FFFFE0
-                : (arcDistance < 2.0f ? 0x00C85038
+            return arcDistance < 1.2f ? 0x00FFFFE0
+                : (arcDistance < 2.3f ? 0x00C85038
                     : (lateral > 0.0f && afterimageDistance < 0.7f
                         ? 0x00683030 : 0));
         }
         if (phase == 2)
         {
             float impactDistance = absoluteTargetX + absoluteTargetY;
-            return impactDistance < 1.5f ? 0x00FFFFFF
-                : (impactDistance < 4.0f ? 0x00D04838 : 0);
+            return impactDistance < 2.0f ? 0x00FFFFFF
+                : (impactDistance < 5.0f ? 0x00D04838 : 0);
         }
         return 0;
     }
 
     if (character == mobilityCharacter)
     {
-        if (phase == 1 && forward >= -2.0f && forward <= distance + 4.0f)
+        if (phase == 1 && forward >= -3.0f && forward <= distance + 6.0f)
         {
             if (absoluteLateral < 0.8f)
             {
@@ -2861,7 +3065,7 @@ DWORD ExecuteEffectPixel(BYTE character, BYTE phase, float originX,
                 && absoluteLateral >= 3.0f && absoluteLateral < 4.0f
                 ? 0x00285060 : 0;
         }
-        if (phase == 2 && forward > distance && forward <= distance + 7.0f
+        if (phase == 2 && forward > distance && forward <= distance + 9.0f
             && absoluteLateral < 0.8f)
         {
             return 0x0040B8C8;
@@ -2871,13 +3075,13 @@ DWORD ExecuteEffectPixel(BYTE character, BYTE phase, float originX,
 
     if (character == piercerCharacter)
     {
-        if (phase == 1 && forward >= 0.0f && forward <= distance + 1.0f
+        if (phase == 1 && forward >= -1.0f && forward <= distance + 2.0f
             && absoluteLateral < 0.75f)
         {
             return 0x00FFF8FF;
         }
         if (phase == 1 && forward >= 2.0f && forward <= distance
-            && absoluteLateral >= 0.75f && absoluteLateral < 1.6f)
+            && absoluteLateral >= 0.75f && absoluteLateral < 2.0f)
         {
             return 0x00583078;
         }
@@ -2888,31 +3092,31 @@ DWORD ExecuteEffectPixel(BYTE character, BYTE phase, float originX,
         }
         if (phase == 2)
         {
-            if (forward > distance && forward <= distance + 5.0f
+            if (forward > distance && forward <= distance + 7.0f
                 && absoluteLateral < 0.8f)
             {
                 return 0x009A48BE;
             }
             float sparkDistance = absoluteTargetX + absoluteTargetY;
-            return sparkDistance < 1.5f ? 0x00FFFFFF
-                : (sparkDistance < 3.5f ? 0x00B858D0 : 0);
+            return sparkDistance < 2.0f ? 0x00FFFFFF
+                : (sparkDistance < 4.5f ? 0x00B858D0 : 0);
         }
         return 0;
     }
 
     if (character == heavyCharacter)
     {
-        if (phase == 1 && targetLocalY >= -12.0f && targetLocalY <= 5.0f)
+        if (phase == 1 && targetLocalY >= -15.0f && targetLocalY <= 6.0f)
         {
             float cleave = targetLocalX + targetLocalY * 0.22f;
             if (cleave < 0.0f) cleave = -cleave;
             return cleave < 1.0f ? 0x00FFFFD0
-                : (cleave < 2.4f ? 0x00D06028 : 0);
+                : (cleave < 2.9f ? 0x00D06028 : 0);
         }
         if (phase == 2)
         {
-            if (absoluteTargetX <= 6.0f && targetLocalY >= 3.0f
-                && targetLocalY < 5.0f)
+            if (absoluteTargetX <= 8.0f && targetLocalY >= 3.0f
+                && targetLocalY < 6.0f)
             {
                 return absoluteTargetX < 2.0f ? 0x00FFFFFF : 0x00C04828;
             }
@@ -2927,7 +3131,7 @@ DWORD ExecuteEffectPixel(BYTE character, BYTE phase, float originX,
         return 0;
     }
 
-    if (absoluteTargetX > 6.0f || absoluteTargetY > 6.0f)
+    if (absoluteTargetX > 7.5f || absoluteTargetY > 7.5f)
     {
         return 0;
     }
@@ -2937,12 +3141,12 @@ DWORD ExecuteEffectPixel(BYTE character, BYTE phase, float originX,
     if (secondCut < 0.0f) secondCut = -secondCut;
     if (phase == 1)
     {
-        return firstCut < 0.9f ? 0x00FFF080 : 0;
+        return firstCut < 1.0f ? 0x00FFF080 : 0;
     }
     float impactDistance = absoluteTargetX + absoluteTargetY;
-    return impactDistance < 1.25f ? 0x00FFFFFF
-        : (secondCut < 0.9f ? 0x00FFFFFF
-            : (firstCut < 0.9f ? 0x00C89838 : 0));
+    return impactDistance < 2.0f ? 0x00FFFFFF
+        : (secondCut < 1.0f ? 0x00FFFFFF
+            : (firstCut < 1.0f ? 0x00C89838 : 0));
 }
 
 bool RectangleOverlapsRoomWall(float left, float top, float right, float bottom);
@@ -3744,10 +3948,7 @@ bool WallBlocksSegment(float startX, float startY, float endX, float endY)
 
 bool EnemyWitnessesPoint(const EnemyRuntime& enemy, float pointX, float pointY)
 {
-    float facingX = cosf(enemy.facingAngle);
-    float facingY = sinf(enemy.facingAngle);
-    return PointInsideVisionSector(enemy.x, enemy.y, facingX, facingY,
-        pointX, pointY)
+    return PointInsideEnemyVisionSector(enemy, pointX, pointY)
         && !WallBlocksSegment(enemy.x, enemy.y, pointX, pointY);
 }
 
@@ -6074,6 +6275,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 enemy.watcherScanRandomState = RoomRandom(runSeed, currentRoom)
                     ^ (0xA511E9B3u + 0x85EBCA6Bu * enemyIndex);
                 enemy.watcherScanRemaining = watcherCalmScanDuration;
+                enemy.watcherTurnRate = 0.0f;
                 enemy.hp = enemyMaximumHP;
                 enemy.patrolRight = currentPatrolStartsRight[enemyIndex];
                 enemy.alive = true;
@@ -6477,10 +6679,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             }
             if (enemyAlive && playerAlive && !enemyAlert)
             {
-                float facingX = cosf(enemyFacingAngle);
-                float facingY = sinf(enemyFacingAngle);
-                playerInVision = PointInsideVisionSector(enemyX, enemyY,
-                    facingX, facingY, playerX, playerY)
+                playerInVision = PointInsideEnemyVisionSector(enemy,
+                    playerX, playerY)
                     && !WallBlocksSegment(enemyX, enemyY, playerX, playerY);
 
                 if (enemy.role == listenerEnemyRole && !playerInVision
@@ -6564,6 +6764,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     enemyFacingAngle = TurnToward(enemyFacingAngle,
                         atan2f(playerY - enemyY, playerX - enemyX),
                         enemyFacingTurnSpeed * deltaTime);
+                    if (enemy.role == watcherEnemyRole)
+                    {
+                        enemy.surveillanceFacingAngle = enemyFacingAngle;
+                        enemy.watcherTurnVisualRemaining = 0.0f;
+                        enemy.watcherTurnRate = 0.0f;
+                    }
                     detectionProgress += deltaTime / detectionFillDuration;
                     if (detectionProgress >= 1.0f)
                     {
@@ -6911,10 +7117,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     if ((enemy.role == watcherEnemyRole || enemy.role == spinnerEnemyRole)
                         && !enemyReturningToPatrol)
                     {
-                        if (enemy.role == watcherEnemyRole)
-                        {
-                            enemyFacingAngle = enemy.surveillanceFacingAngle;
-                        }
                     }
                     else
                     {
@@ -7035,6 +7237,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             float pressurePreviousY = pressureEnemy.y;
             if (pressureEnemy.alive && playerAlive)
             {
+                float currentPressureMoveSpeed
+                    = PressureIsEnraged(currentEnemyRemaining)
+                        ? pressureEnragedMoveSpeed : pressureMoveSpeed;
                 float playerDifferenceX = playerX - pressureEnemy.x;
                 float playerDifferenceY = playerY - pressureEnemy.y;
                 pressureEnemy.facingAngle = atan2f(playerDifferenceY, playerDifferenceX);
@@ -7048,7 +7253,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     pressureEnemy.searchPathCount = 0;
                     pressureEnemy.searchPathIndex = 0;
                     MoveEnemyToward(pressureEnemy.x, pressureEnemy.y, playerX, playerY,
-                        pressureMoveSpeed, deltaTime, playerX, playerY);
+                        currentPressureMoveSpeed, deltaTime, playerX, playerY);
                 }
                 else
                 {
@@ -7116,7 +7321,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                 + (node / navigationColumns) * navigationCellSize;
                         }
                         if (MoveEnemyToward(pressureEnemy.x, pressureEnemy.y,
-                            movementTargetX, movementTargetY, pressureMoveSpeed,
+                            movementTargetX, movementTargetY,
+                            currentPressureMoveSpeed,
                             deltaTime, playerX, playerY))
                         {
                             if (pressureEnemy.searchPathIndex
@@ -7167,10 +7373,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 if (enemy.executeFeedbackRemaining > 0.0f)
                 {
                     enemy.executeFeedbackRemaining -= deltaTime;
-                }
-                if (enemy.watcherTurnVisualRemaining > 0.0f)
-                {
-                    enemy.watcherTurnVisualRemaining -= deltaTime;
                 }
             }
             if (pressureEnemy.attackCooldownRemaining > 0.0f)
@@ -7382,7 +7584,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             if (pressureEnemy.alive && playerAlive)
             {
                 UpdateEnemyAttack(pressureEnemy, true, playerX, playerY,
-                    deltaTime, pendingPlayerDamage);
+                    deltaTime, pendingPlayerDamage,
+                    PressureIsEnraged(currentEnemyRemaining));
             }
 
             if (playerAlive && pendingPlayerDamage > 0
@@ -7546,18 +7749,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 {
                     continue;
                 }
-                float redDistance = enemyVisionRange * enemy.detectionProgress;
+                bool watcherVision = enemy.role == watcherEnemyRole;
+                LONG visionRange = watcherVision
+                    ? watcherVisionRange : enemyVisionRange;
+                float visionRangeSquared = watcherVision
+                    ? watcherVisionRangeSquared : enemyVisionRangeSquared;
+                float visionSlope = watcherVision
+                    ? watcherVisionSlope : enemyVisionSlope;
+                float redDistance = visionRange * enemy.detectionProgress;
                 float redDistanceSquared = redDistance * redDistance;
                 float enemyFacingX = cosf(enemy.facingAngle);
                 float enemyFacingY = sinf(enemy.facingAngle);
                 constexpr LONG visionFeather = 3;
-                LONG visionLeft = enemyCenterX - enemyVisionRange
+                LONG visionLeft = enemyCenterX - visionRange
                     - visionFeather - cameraX;
-                LONG visionRight = enemyCenterX + enemyVisionRange
+                LONG visionRight = enemyCenterX + visionRange
                     + visionFeather - cameraX;
-                LONG visionTop = enemyCenterY - enemyVisionRange
+                LONG visionTop = enemyCenterY - visionRange
                     - visionFeather - cameraY;
-                LONG visionBottom = enemyCenterY + enemyVisionRange
+                LONG visionBottom = enemyCenterY + visionRange
                     + visionFeather - cameraY;
                 if (visionLeft < 0)
                 {
@@ -7591,14 +7801,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         float lateral = visionX * -enemyFacingY
                             + visionY * enemyFacingX;
                         BYTE alpha = forward >= 0.0f
-                            ? VisionEdgeAlpha(forward, lateral,
-                                visionDistanceSquared) : 0;
+                            ? VisionEdgeAlphaGeometry(forward, lateral,
+                                visionDistanceSquared, visionRange,
+                                visionRangeSquared, visionSlope) : 0;
                         if (alpha && !WallBlocksSegment(enemy.x, enemy.y,
                             worldPixelX, worldPixelY))
                         {
                             bool red = redDistance > 0.0f
                                 && visionDistanceSquared <= redDistanceSquared;
-                            if (red && redDistance < enemyVisionRange)
+                            if (red && redDistance < visionRange)
                             {
                                 float progressMargin = (redDistanceSquared
                                     - visionDistanceSquared) / (redDistance * 2.0f);
@@ -7740,10 +7951,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     ? executeVisualOriginY : executeVisualTargetY;
                 float maximumY = executeVisualOriginY > executeVisualTargetY
                     ? executeVisualOriginY : executeVisualTargetY;
-                LONG effectLeft = static_cast<LONG>(minimumX) - 14;
-                LONG effectRight = static_cast<LONG>(maximumX) + 15;
-                LONG effectTop = static_cast<LONG>(minimumY) - 14;
-                LONG effectBottom = static_cast<LONG>(maximumY) + 15;
+                LONG effectLeft = static_cast<LONG>(minimumX) - 18;
+                LONG effectRight = static_cast<LONG>(maximumX) + 19;
+                LONG effectTop = static_cast<LONG>(minimumY) - 18;
+                LONG effectBottom = static_cast<LONG>(maximumY) + 19;
                 for (LONG y = effectTop; y < effectBottom; ++y)
                 {
                     for (LONG x = effectLeft; x < effectRight; ++x)
@@ -7829,8 +8040,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         for (LONG x = 0; x < enemyWidth; ++x)
                         {
                             LONG sourceX = mirrorEnemy ? enemyWidth - 1 - x : x;
-                            DWORD color = EnemySpriteColor(enemy.role,
+                            BYTE paletteIndex = EnemySpritePaletteIndex(enemy.role,
                                 enemyFrame, sourceX, y);
+                            DWORD color = spritePalette[paletteIndex];
+                            if (enemy.attackWindupRemaining > 0.0f
+                                && (paletteIndex == 8 || paletteIndex == 9
+                                    || paletteIndex == 0x0C
+                                    || paletteIndex == 0x0D))
+                            {
+                                color = enemyFrame == enemyAttackStrikeFrame
+                                    ? 0x00FFF0A0 : 0x00E07023;
+                            }
                             LONG pixelX = enemyLeft + x + enemyVisualOffsetX
                                 - cameraX;
                             LONG pixelY = enemyTop + y + enemyVisualOffsetY
@@ -7841,11 +8061,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             {
                                 framebuffer[pixelY * framebufferWidth + pixelX]
                                     = enemy.hitRemaining > 0.0f
-                                        ? 0x00FFFFFF
-                                        : (enemy.attackWindupRemaining > 0.0f
-                                            ? (((x + y) & 1)
-                                                ? 0x00FFF060 : 0x00FF8020)
-                                            : color);
+                                        ? 0x00FFFFFF : color;
                             }
                         }
                     }
@@ -7853,11 +8069,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     if (enemyFrame == enemyAttackWindupFrame
                         || enemyFrame == enemyAttackStrikeFrame)
                     {
-                        for (LONG y = enemyCenterY - 11;
-                            y <= enemyCenterY + 11; ++y)
+                        for (LONG y = enemyCenterY - 14;
+                            y <= enemyCenterY + 14; ++y)
                         {
-                            for (LONG x = enemyCenterX - 11;
-                                x <= enemyCenterX + 11; ++x)
+                            for (LONG x = enemyCenterX - 14;
+                                x <= enemyCenterX + 14; ++x)
                             {
                                 DWORD color = EnemyAttackEffectPixel(enemy.role,
                                     enemyFrame, enemy.x, enemy.y,
@@ -7974,6 +8190,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
             if (pressureEnemy.alive)
             {
+                bool pressureEnraged
+                    = PressureIsEnraged(currentEnemyRemaining);
                 LONG pressureLeft = static_cast<LONG>(pressureEnemy.x)
                     - pressureVisualWidth / 2 - cameraX;
                 LONG pressureTop = static_cast<LONG>(pressureEnemy.y)
@@ -7984,12 +8202,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 BYTE pressureFrame = PressureAnimationFrame(
                     pressureEnemy.attackWindupRemaining,
                     pressureEnemy.attackCooldownRemaining,
-                    pressureMovedThisUpdate, enemyVisualTime);
+                    pressureMovedThisUpdate, enemyVisualTime, pressureEnraged);
                 bool mirrorPressure = cosf(pressureEnemy.facingAngle) < 0.0f;
                 LONG pressureVisualOffsetX = 0;
                 LONG pressureVisualOffsetY = 0;
                 PressurePoseOffset(pressureFrame, pressureEnemy.facingAngle,
-                    pressureVisualOffsetX, pressureVisualOffsetY);
+                    pressureVisualOffsetX, pressureVisualOffsetY, pressureEnraged);
                 pressureLeft += pressureVisualOffsetX;
                 pressureTop += pressureVisualOffsetY;
                 for (LONG y = 0; y < pressureVisualHeight; ++y)
@@ -8001,11 +8219,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         BYTE paletteIndex = PressureSpritePaletteIndex(
                             pressureFrame, sourceX, y);
                         DWORD color = spritePalette[paletteIndex];
+                        if (pressureEnraged
+                            && (paletteIndex == 8 || paletteIndex == 9))
+                        {
+                            color = (static_cast<LONG>(enemyVisualTime / 0.08f) & 1)
+                                ? 0x00FFF070 : 0x00FF9028;
+                        }
                         if (pressureEnemy.attackWindupRemaining > 0.0f
                             && paletteIndex >= 7 && paletteIndex <= 9)
                         {
                             color = pressureEnemy.attackWindupRemaining
-                                > enemyAttackWindupDuration * 0.5f
+                                > PressureAttackWindup(pressureEnraged) * 0.5f
                                 ? 0x00E07023 : 0x00ECC430;
                         }
                         else if (pressureEnemy.attackWindupRemaining > 0.0f
@@ -8023,19 +8247,28 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         }
                     }
                 }
-                if (pressureFrame == pressureAttackCrushFrame)
+                if (pressureFrame == pressureAttackBraceFrame
+                    || pressureFrame == pressureAttackCrushFrame
+                    || pressureEnraged)
                 {
                     LONG pressureCenterX = static_cast<LONG>(pressureEnemy.x);
                     LONG pressureCenterY = static_cast<LONG>(pressureEnemy.y);
-                    for (LONG y = pressureCenterY - 12;
-                        y <= pressureCenterY + 12; ++y)
+                    for (LONG y = pressureCenterY - 14;
+                        y <= pressureCenterY + 14; ++y)
                     {
-                        for (LONG x = pressureCenterX - 12;
-                            x <= pressureCenterX + 12; ++x)
+                        for (LONG x = pressureCenterX - 14;
+                            x <= pressureCenterX + 14; ++x)
                         {
                             DWORD color = PressureAttackEffectPixel(pressureFrame,
                                 pressureEnemy.x, pressureEnemy.y,
-                                pressureEnemy.facingAngle, x + 0.5f, y + 0.5f);
+                                pressureEnemy.facingAngle, x + 0.5f, y + 0.5f,
+                                pressureEnraged);
+                            if (!color && pressureEnraged)
+                            {
+                                color = PressureEnrageEffectPixel(pressureEnemy.x,
+                                    pressureEnemy.y, pressureEnemy.facingAngle,
+                                    enemyVisualTime, x + 0.5f, y + 0.5f);
+                            }
                             LONG screenX = x - cameraX;
                             LONG screenY = y - cameraY;
                             if (color && screenX >= 0
@@ -8948,19 +9181,25 @@ int main()
     EnemyRuntime watcherReplay = watcherScan;
     LONG scanA0 = UpdateWatcherCalmScan(watcherScan, 4.90f);
     LONG scanA1 = UpdateWatcherCalmScan(watcherScan, 0.11f);
-    LONG scanA2 = UpdateWatcherCalmScan(watcherScan, 5.01f);
+    float watcherTargetAngle = watcherScan.surveillanceFacingAngle;
+    UpdateWatcherCalmScan(watcherScan, 0.40f);
+    float watcherMidAngle = watcherScan.facingAngle;
+    LONG scanA2 = UpdateWatcherCalmScan(watcherScan, 0.40f);
     LONG scanB0 = UpdateWatcherCalmScan(watcherReplay, 4.90f);
     LONG scanB1 = UpdateWatcherCalmScan(watcherReplay, 0.11f);
-    LONG scanB2 = UpdateWatcherCalmScan(watcherReplay, 5.01f);
-    failures += scanA0 != 0 || scanA1 == scanA0 || scanA2 == scanA1
+    UpdateWatcherCalmScan(watcherReplay, 0.40f);
+    LONG scanB2 = UpdateWatcherCalmScan(watcherReplay, 0.40f);
+    failures += scanA0 != 0 || scanA1 != scanA0 || scanA2 == scanA1
         || scanA0 != scanB0 || scanA1 != scanB1 || scanA2 != scanB2
         || watcherScan.facingAngle != watcherReplay.facingAngle
         || watcherScan.watcherScanRandomState
             != watcherReplay.watcherScanRandomState
         || watcherScan.x != 80.0f || watcherScan.y != 90.0f
-        || watcherScan.watcherTurnVisualRemaining
-            != watcherTurnVisualDuration
-        || watcherCalmScanDuration != 5.0f;
+        || watcherScan.watcherTurnVisualRemaining != 0.0f
+        || watcherScan.facingAngle != watcherTargetAngle
+        || watcherMidAngle == eightDirectionAngle[0]
+        || watcherMidAngle == watcherTargetAngle
+        || watcherCalmScanDuration != 5.0f || watcherTurnDuration != 0.8f;
     watcherScan.detectionProgress = 0.1f;
     failures += WatcherCalmScanActive(watcherScan);
     watcherScan.detectionProgress = 0.0f;
@@ -11013,6 +11252,100 @@ int main()
         dashVisualPixels[2], dashVisualPixels[3], dashVisualPixels[4],
         enemyAttackPixels[0], enemyAttackPixels[1], enemyAttackPixels[2],
         enemyAttackPixels[3], enemyAttackPixels[4], pressurePixels);
+
+    LONG windupPixels[enemyRoleCount]{};
+    for (BYTE role = 0; role < enemyRoleCount; ++role)
+    {
+        for (LONG y = 84; y <= 116; ++y)
+        {
+            for (LONG x = 84; x <= 116; ++x)
+            {
+                windupPixels[role] += EnemyAttackEffectPixel(role,
+                    enemyAttackWindupFrame, 100.0f, 100.0f, 0.0f,
+                    x + 0.5f, y + 0.5f) != 0;
+            }
+        }
+        failures += !windupPixels[role]
+            || !EnemyInAttackRange(role, 100.0f, 100.0f,
+                99.99f + EnemyAttackRangeX(role), 100.0f)
+            || EnemyInAttackRange(role, 100.0f, 100.0f,
+                100.01f + EnemyAttackRangeX(role), 100.0f);
+    }
+    failures += fabsf(EnemyAttackRangeScale(patrollerEnemyRole) - 1.0f) > 0.0001f
+        || fabsf(EnemyAttackRangeScale(watcherEnemyRole) - 1.10f) > 0.0001f
+        || fabsf(EnemyAttackRangeScale(hunterEnemyRole) - 1.20f) > 0.0001f
+        || fabsf(EnemyAttackRangeScale(listenerEnemyRole) - 0.85f) > 0.0001f
+        || fabsf(EnemyAttackRangeScale(spinnerEnemyRole) - 1.25f) > 0.0001f
+        || fabsf(EnemyAttackRangeScale(pressureEnemyRole) - 1.15f) > 0.0001f;
+
+    EnemyRuntime watcherV08{};
+    watcherV08.alive = true;
+    watcherV08.role = watcherEnemyRole;
+    watcherV08.x = 100.0f;
+    watcherV08.y = 100.0f;
+    watcherV08.facingAngle = 0.0f;
+    float watcherInsideAngle = 32.0f * 3.14159265f / 180.0f;
+    float watcherOutsideAngle = 33.0f * 3.14159265f / 180.0f;
+    failures += watcherVisionRange != 80
+        || fabsf(watcherVisionSlope - 0.63707026f) > 0.0001f
+        || !PointInsideEnemyVisionSector(watcherV08, 179.0f, 100.0f)
+        || PointInsideEnemyVisionSector(watcherV08, 181.0f, 100.0f)
+        || !PointInsideEnemyVisionSector(watcherV08,
+            100.0f + cosf(watcherInsideAngle) * 79.0f,
+            100.0f + sinf(watcherInsideAngle) * 79.0f)
+        || PointInsideEnemyVisionSector(watcherV08,
+            100.0f + cosf(watcherOutsideAngle) * 79.0f,
+            100.0f + sinf(watcherOutsideAngle) * 79.0f);
+    watcherV08.surveillanceFacingAngle = watcherV08.facingAngle;
+    watcherV08.watcherScanRandomState = 0x12345678u;
+    watcherV08.watcherScanRemaining = watcherCalmScanDuration;
+    UpdateWatcherCalmScan(watcherV08, 5.01f);
+    float watcherV08Target = watcherV08.surveillanceFacingAngle;
+    UpdateWatcherCalmScan(watcherV08, 0.40f);
+    float watcherV08Middle = watcherV08.facingAngle;
+    UpdateWatcherCalmScan(watcherV08, 0.40f);
+    failures += watcherTurnDuration != 0.8f
+        || watcherV08Middle == 0.0f || watcherV08Middle == watcherV08Target
+        || watcherV08.facingAngle != watcherV08Target
+        || watcherV08.watcherScanRemaining != watcherCalmScanDuration;
+
+    EnemyRuntime pressureV08{};
+    pressureV08.alive = true;
+    pressureV08.role = pressureEnemyRole;
+    pressureV08.x = 100.0f;
+    pressureV08.y = 100.0f;
+    LONG pressureDamage = 0;
+    UpdateEnemyAttack(pressureV08, true, 109.0f, 100.0f,
+        0.016f, pressureDamage, true);
+    failures += pressureV08.attackWindupRemaining
+            != PressureAttackWindup(true) || pressureDamage;
+    UpdateEnemyAttack(pressureV08, true, 109.0f, 100.0f,
+        PressureAttackWindup(true), pressureDamage, true);
+    failures += pressureDamage != playerDamageAmount
+        || pressureV08.attackCooldownRemaining != PressureAttackCooldown(true)
+        || pressureEnragedMoveSpeed != 58.0f || PressureIsEnraged(3)
+        || !PressureIsEnraged(2) || !PressureIsEnraged(1)
+        || !PressureIsEnraged(0)
+        || PressureAttackCooldown(true) != enemyAttackCooldownDuration * 0.8f
+        || PressureAttackWindup(true) != enemyAttackWindupDuration * 0.8f
+        || !PressureAttackEffectPixel(pressureAttackBraceFrame,
+            100.0f, 100.0f, 0.0f, 102.5f, 100.5f, true)
+        || !PressureEnrageEffectPixel(100.0f, 100.0f, 0.0f,
+            0.08f, 93.5f, 103.5f);
+    failures += executeVisualPixels[basicCharacter] <= 54
+        || executeVisualPixels[mobilityCharacter] <= 70
+        || executeVisualPixels[piercerCharacter] <= 54
+        || executeVisualPixels[heavyCharacter] <= 72
+        || executeVisualPixels[rapidCharacter] <= 28
+        || sizeof(SaveCheckpoint) != 32 || sizeof(MetaProfile) != 32;
+    printf("section_v08=%ld windup=%ld/%ld/%ld/%ld/%ld range=%.2f/%.2f/%.2f/%.2f/%.2f pressure=%d\n",
+        failures, windupPixels[0], windupPixels[1], windupPixels[2],
+        windupPixels[3], windupPixels[4],
+        EnemyAttackRangeScale(patrollerEnemyRole),
+        EnemyAttackRangeScale(watcherEnemyRole),
+        EnemyAttackRangeScale(hunterEnemyRole),
+        EnemyAttackRangeScale(listenerEnemyRole),
+        EnemyAttackRangeScale(spinnerEnemyRole), PressureIsEnraged(2));
 
 #ifdef DEAD_SIGNAL_B101_SOAK_VALIDATION
     ULONGLONG soakStart = GetTickCount64();
