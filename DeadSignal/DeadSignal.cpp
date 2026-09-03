@@ -2,7 +2,8 @@
 #include <timeapi.h>
 #include <math.h>
 #if defined(DEAD_SIGNAL_B01_VALIDATION) || defined(DEAD_SIGNAL_B02_VALIDATION) \
-    || defined(DEAD_SIGNAL_B03_VALIDATION) || defined(DEAD_SIGNAL_B101_VALIDATION)
+    || defined(DEAD_SIGNAL_B03_VALIDATION) || defined(DEAD_SIGNAL_B101_VALIDATION) \
+    || defined(DEAD_SIGNAL_STEP2_PRESENT_VALIDATION)
 #include <stdio.h>
 #endif
 
@@ -1623,6 +1624,38 @@ bool loadGameRequested = false;
 bool v12AdvanceRoomRequested = false;
 bool v12PlayerDeathRequested = false;
 #endif
+#ifdef DEAD_SIGNAL_STEP2_PRESENT_VALIDATION
+constexpr LONG step2PresentCategoryCount = 7;
+constexpr LONG step2RoomSampleCapacity = 16;
+struct Step2RoomSample
+{
+    LONG room;
+    LONGLONG generationTicks;
+    LONGLONG spawnTicks;
+    LONGLONG postSetupTicks;
+    LONGLONG renderReadyTicks;
+    LONGLONG firstPresentTicks;
+};
+Step2RoomSample step2RoomSamples[step2RoomSampleCapacity]{};
+LONG step2RoomSampleCount = 0;
+LONG step2ActiveRoomSample = -1;
+bool step2FirstRoomPresentPending = false;
+LARGE_INTEGER step2TransitionStart{};
+LARGE_INTEGER step2SetupStart{};
+LARGE_INTEGER step2GeometryEnd{};
+LARGE_INTEGER step2PaintStart{};
+LONGLONG step2Frequency = 1;
+LONGLONG step2CategoryRenderTicks[step2PresentCategoryCount]{};
+LONGLONG step2CategoryMaximumTicks[step2PresentCategoryCount]{};
+LONG step2CategoryFrames[step2PresentCategoryCount]{};
+LONG step2CurrentPaintPresents = 0;
+LONG step2CurrentPaintCategory = 0;
+LONG step2PaintCount = 0;
+LONG step2WindowPresentCount = 0;
+LONG step2BadPresentPaints = 0;
+LONG step2MaximumPresents = 0;
+bool step2PaintActive = false;
+#endif
 LONG currentRoom = 0;
 DWORD runSeed = 0;
 LONG runKillCount = 0;
@@ -1709,6 +1742,28 @@ bool cPressed = false;
 bool executeRequested = false;
 bool spacePressed = false;
 
+enum DoorTransitionPhase : BYTE
+{
+    doorTransitionInactive,
+    doorTransitionClosing,
+    doorTransitionOpening
+};
+
+enum DoorTransitionTarget : BYTE
+{
+    doorTransitionNextRoom,
+    doorTransitionUpgrade,
+    doorTransitionRunStart
+};
+
+constexpr float doorTransitionCloseDuration = 0.60f;
+constexpr float doorTransitionOpenDuration = 0.60f;
+BYTE doorTransitionPhase = doorTransitionInactive;
+BYTE doorTransitionTarget = doorTransitionNextRoom;
+float doorTransitionElapsed = 0.0f;
+bool doorOpenAfterRoomSetup = false;
+bool doorClosedBehindUpgrade = false;
+
 enum SfxId : BYTE
 {
     sfxSlashBasic,
@@ -1760,6 +1815,11 @@ enum SfxId : BYTE
     sfxUpgradeIgnitionHigh,
     sfxUpgradeCross,
     sfxUpgradeReady,
+    sfxDoorTransitionClose,
+    sfxDoorTransitionOpen,
+    sfxDoorTransitionUnlock,
+    sfxDoorTransitionStop,
+    sfxDoorTransitionLock,
     sfxCount
 };
 
@@ -1845,7 +1905,12 @@ constexpr SfxSpec sfxSpecs[sfxCount]
     { 70, 460, 820, 58, 45, sfxTriangleWave, 0, 2 },
     { 65, 760, 1160, 60, 30, sfxMetalWave, 0, 2 },
     { 500, 360, 1320, 82, 30, sfxTriangleWave, 0, 3 },
-    { 85, 680, 280, 62, 35, sfxMetalWave, 0, 2 }
+    { 85, 680, 280, 62, 35, sfxMetalWave, 0, 2 },
+    { 580, 520, 92, 88, 135, sfxMetalWave, 0, 3 },
+    { 580, 105, 760, 82, 105, sfxMetalWave, 0, 3 },
+    { 135, 170, 72, 92, 80, sfxMetalWave, sfxDoublePulse, 3 },
+    { 145, 190, 76, 98, 125, sfxMetalWave, 0, 3 },
+    { 230, 260, 58, 108, 155, sfxMetalWave, sfxDoublePulse, 3 }
 };
 
 SfxVoice sfxVoices[sfxVoiceCount]{};
@@ -2025,6 +2090,63 @@ bool PlaySfx(BYTE sound)
         bgmState.duckHold = audioSampleRate / 5;
     }
     ++sfxStartCount[sound];
+    return true;
+}
+
+void HoldDoorClosed(BYTE target)
+{
+    doorTransitionPhase = doorTransitionOpening;
+    doorTransitionTarget = target;
+    doorTransitionElapsed = 0.0f;
+    doorClosedBehindUpgrade = false;
+    gameplayInputBlocked = true;
+}
+
+void BeginDoorTransition(BYTE phase, BYTE target)
+{
+    doorTransitionPhase = phase;
+    doorTransitionTarget = target;
+    doorTransitionElapsed = 0.0f;
+    slashRequested = false;
+    dashRequested = false;
+    executeRequested = false;
+    gameplayInputBlocked = true;
+    if (phase == doorTransitionClosing)
+    {
+        PlaySfx(sfxDoorTransitionClose);
+    }
+    else
+    {
+        doorClosedBehindUpgrade = false;
+        PlaySfx(sfxDoorTransitionUnlock);
+        PlaySfx(sfxDoorTransitionOpen);
+    }
+}
+
+bool UpdateDoorTransition(float deltaTime)
+{
+    if (doorTransitionPhase == doorTransitionInactive)
+    {
+        return false;
+    }
+    float duration = doorTransitionPhase == doorTransitionClosing
+        ? doorTransitionCloseDuration : doorTransitionOpenDuration;
+    if (doorTransitionElapsed >= duration)
+    {
+        return true;
+    }
+    if (deltaTime > 0.05f)
+    {
+        deltaTime = 0.05f;
+    }
+    doorTransitionElapsed += deltaTime;
+    if (doorTransitionElapsed < duration)
+    {
+        return false;
+    }
+    doorTransitionElapsed = duration;
+    PlaySfx(doorTransitionPhase == doorTransitionClosing
+        ? sfxDoorTransitionLock : sfxDoorTransitionStop);
     return true;
 }
 
@@ -4551,6 +4673,12 @@ bool GenerateMazeLayout(DWORD& state)
 
 void SetupCurrentRoom()
 {
+#ifdef DEAD_SIGNAL_STEP2_PRESENT_VALIDATION
+    if (step2ActiveRoomSample >= 0)
+    {
+        QueryPerformanceCounter(&step2SetupStart);
+    }
+#endif
     DWORD state = RoomRandom(runSeed, currentRoom);
     currentRoomType = NextRoomRandom(state) % 5;
     currentEnemyCount = 2 + currentRoom * 2;
@@ -4685,6 +4813,14 @@ void SetupCurrentRoom()
                 = static_cast<float>(NextRoomRandom(state) % 501) / 1000.0f;
         }
     }
+#ifdef DEAD_SIGNAL_STEP2_PRESENT_VALIDATION
+    if (step2ActiveRoomSample >= 0)
+    {
+        QueryPerformanceCounter(&step2GeometryEnd);
+        step2RoomSamples[step2ActiveRoomSample].generationTicks
+            = step2GeometryEnd.QuadPart - step2SetupStart.QuadPart;
+    }
+#endif
 
     for (LONG enemy = 0; enemy < currentEnemyCount; ++enemy)
     {
@@ -4840,6 +4976,15 @@ void SetupCurrentRoom()
             currentPressureActive = true;
         }
     }
+#ifdef DEAD_SIGNAL_STEP2_PRESENT_VALIDATION
+    if (step2ActiveRoomSample >= 0)
+    {
+        LARGE_INTEGER spawnEnd{};
+        QueryPerformanceCounter(&spawnEnd);
+        step2RoomSamples[step2ActiveRoomSample].spawnTicks
+            = spawnEnd.QuadPart - step2GeometryEnd.QuadPart;
+    }
+#endif
 }
 
 bool SingleWallBlocksSegment(LONG wall, float startX, float startY, float endX, float endY)
@@ -5573,6 +5718,85 @@ bool EnsureLogicalFrameSize(HDC destinationContext, LONG width, LONG height)
     return true;
 }
 
+#ifdef DEAD_SIGNAL_STEP2_PRESENT_VALIDATION
+LONG Step2CurrentPresentCategory()
+{
+    if (fullscreenEnabled) return 6;
+    if (step2FirstRoomPresentPending) return 2;
+    if (applicationState != gameplayState) return 0;
+    if (runEndState) return 5;
+    if (upgradeMenuActive) return 3;
+    if (gameplayMenuActive || settingsActive || helpActive) return 4;
+    return 1;
+}
+
+void Step2ValidatePreviousPaint()
+{
+    if (!step2PaintActive)
+    {
+        return;
+    }
+    if (step2CurrentPaintPresents != 1)
+    {
+        ++step2BadPresentPaints;
+    }
+    if (step2CurrentPaintPresents > step2MaximumPresents)
+    {
+        step2MaximumPresents = step2CurrentPaintPresents;
+    }
+    step2PaintActive = false;
+}
+
+double Step2Milliseconds(LONGLONG ticks)
+{
+    return static_cast<double>(ticks) * 1000.0
+        / static_cast<double>(step2Frequency);
+}
+
+void WriteStep2PresentReport()
+{
+    Step2ValidatePreviousPaint();
+    FILE* output = nullptr;
+    if (fopen_s(&output, "Step2PresentValidation.txt", "w") != 0
+        || !output)
+    {
+        return;
+    }
+    fprintf(output, "paints=%ld presents=%ld bad=%ld max=%ld\n",
+        step2PaintCount, step2WindowPresentCount,
+        step2BadPresentPaints, step2MaximumPresents);
+    const char* categoryNames[step2PresentCategoryCount]{
+        "title", "gameplay", "transition", "upgrade",
+        "pause", "result", "fullscreen" };
+    for (LONG category = 0; category < step2PresentCategoryCount; ++category)
+    {
+        double averageMilliseconds = step2CategoryFrames[category] > 0
+            ? Step2Milliseconds(step2CategoryRenderTicks[category])
+                / static_cast<double>(step2CategoryFrames[category])
+            : 0.0;
+        fprintf(output, "%s frames=%ld average_ms=%.3f maximum_ms=%.3f\n",
+            categoryNames[category], step2CategoryFrames[category],
+            averageMilliseconds,
+            Step2Milliseconds(step2CategoryMaximumTicks[category]));
+    }
+    fprintf(output, "room_samples=%ld\n", step2RoomSampleCount);
+    for (LONG index = 0; index < step2RoomSampleCount; ++index)
+    {
+        const Step2RoomSample& sample = step2RoomSamples[index];
+        fprintf(output,
+            "room=%ld generation_ms=%.3f spawn_ms=%.3f post_setup_ms=%.3f "
+            "render_ready_ms=%.3f first_present_ms=%.3f\n",
+            sample.room,
+            Step2Milliseconds(sample.generationTicks),
+            Step2Milliseconds(sample.spawnTicks),
+            Step2Milliseconds(sample.postSetupTicks),
+            Step2Milliseconds(sample.renderReadyTicks),
+            Step2Milliseconds(sample.firstPresentTicks));
+    }
+    fclose(output);
+}
+#endif
+
 void PresentLogicalFrame(HDC destinationContext, const RECT& clientArea)
 {
     RECT destination = LogicalPresentRectangle(
@@ -5582,6 +5806,42 @@ void PresentLogicalFrame(HDC destinationContext, const RECT& clientArea)
         destination.right - destination.left,
         destination.bottom - destination.top,
         logicalFrameContext, 0, 0, SRCCOPY);
+    HBRUSH black = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+    RECT bar{ clientArea.left, clientArea.top,
+        clientArea.right, destination.top };
+    if (bar.top < bar.bottom) FillRect(destinationContext, &bar, black);
+    bar = { clientArea.left, destination.bottom,
+        clientArea.right, clientArea.bottom };
+    if (bar.top < bar.bottom) FillRect(destinationContext, &bar, black);
+    bar = { clientArea.left, destination.top,
+        destination.left, destination.bottom };
+    if (bar.left < bar.right) FillRect(destinationContext, &bar, black);
+    bar = { destination.right, destination.top,
+        clientArea.right, destination.bottom };
+    if (bar.left < bar.right) FillRect(destinationContext, &bar, black);
+#ifdef DEAD_SIGNAL_STEP2_PRESENT_VALIDATION
+    ++step2CurrentPaintPresents;
+    ++step2WindowPresentCount;
+    LARGE_INTEGER presentEnd{};
+    QueryPerformanceCounter(&presentEnd);
+    if (step2CurrentPaintPresents == 1)
+    {
+        LONGLONG renderTicks = presentEnd.QuadPart - step2PaintStart.QuadPart;
+        ++step2CategoryFrames[step2CurrentPaintCategory];
+        step2CategoryRenderTicks[step2CurrentPaintCategory] += renderTicks;
+        if (renderTicks > step2CategoryMaximumTicks[step2CurrentPaintCategory])
+        {
+            step2CategoryMaximumTicks[step2CurrentPaintCategory] = renderTicks;
+        }
+        if (step2FirstRoomPresentPending && step2ActiveRoomSample >= 0)
+        {
+            step2RoomSamples[step2ActiveRoomSample].firstPresentTicks
+                = presentEnd.QuadPart - step2TransitionStart.QuadPart;
+            step2FirstRoomPresentPending = false;
+            step2ActiveRoomSample = -1;
+        }
+    }
+#endif
 }
 
 void ConfirmGameplayMenu(HWND window)
@@ -5617,6 +5877,95 @@ void FillUiRectangle(HDC deviceContext, const RECT& rectangle, COLORREF color)
     SetDCBrushColor(deviceContext, color);
     FillRect(deviceContext, &rectangle,
         reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+}
+
+void DrawDoorTransitionPanel(HDC deviceContext, const RECT& panel,
+    bool leftPanel, LONG unit)
+{
+    FillUiRectangle(deviceContext, panel, RGB(22, 25, 28));
+    RECT inset{ panel.left + unit * 4, panel.top + unit * 5,
+        panel.right - unit * 4, panel.bottom - unit * 5 };
+    FillUiRectangle(deviceContext, inset, RGB(31, 35, 38));
+    for (LONG division = 1; division < 4; ++division)
+    {
+        LONG y = panel.top + (panel.bottom - panel.top) * division / 4;
+        RECT groove{ panel.left + unit * 3, y - unit,
+            panel.right - unit * 3, y + unit };
+        FillUiRectangle(deviceContext, groove, RGB(11, 13, 15));
+        groove.top = y;
+        groove.bottom = y + unit;
+        FillUiRectangle(deviceContext, groove, RGB(55, 59, 60));
+    }
+    LONG seam = leftPanel ? panel.right : panel.left;
+    RECT rail{ leftPanel ? seam - unit * 7 : seam + unit * 2,
+        panel.top, leftPanel ? seam - unit * 2 : seam + unit * 7,
+        panel.bottom };
+    FillUiRectangle(deviceContext, rail, RGB(65, 29, 24));
+    LONG stripeLeft = leftPanel ? seam - unit * 13 : seam + unit * 7;
+    for (LONG stripe = 0; stripe < 12; ++stripe)
+    {
+        RECT warning{ stripeLeft,
+            panel.top + stripe * (panel.bottom - panel.top) / 12,
+            stripeLeft + unit * 5,
+            panel.top + (stripe * 2 + 1) * (panel.bottom - panel.top) / 24 };
+        FillUiRectangle(deviceContext, warning,
+            stripe & 1 ? RGB(79, 34, 24) : RGB(177, 80, 28));
+    }
+    RECT edge{ leftPanel ? seam - unit * 2 : seam,
+        panel.top, leftPanel ? seam : seam + unit * 2, panel.bottom };
+    FillUiRectangle(deviceContext, edge, RGB(119, 48, 24));
+    constexpr LONG boltY[4]{ 12, 62, 118, 168 };
+    for (LONG bolt = 0; bolt < 4; ++bolt)
+    {
+        LONG x = leftPanel ? panel.left + unit * 9 : panel.right - unit * 11;
+        LONG y = panel.top + boltY[bolt] * unit;
+        RECT rivet{ x, y, x + unit * 2, y + unit * 2 };
+        FillUiRectangle(deviceContext, rivet, RGB(100, 105, 103));
+    }
+}
+
+void DrawDoorPanels(HDC deviceContext, LONG clientWidth, LONG clientHeight,
+    float closed)
+{
+    LONG doorWidth = clientWidth / 2 + 1;
+    LONG travel = static_cast<LONG>(doorWidth * closed);
+    if (travel <= 0)
+    {
+        return;
+    }
+    LONG unitX = clientWidth / 320;
+    LONG unitY = clientHeight / 180;
+    LONG unit = unitX < unitY ? unitX : unitY;
+    if (unit < 1) unit = 1;
+    RECT leftPanel{ travel - doorWidth, 0, travel, clientHeight };
+    RECT rightPanel{ clientWidth - travel, 0,
+        clientWidth - travel + doorWidth, clientHeight };
+    DrawDoorTransitionPanel(deviceContext, leftPanel, true, unit);
+    DrawDoorTransitionPanel(deviceContext, rightPanel, false, unit);
+}
+
+void DrawDoorTransition(HDC deviceContext, LONG clientWidth, LONG clientHeight)
+{
+    if (doorTransitionPhase == doorTransitionInactive)
+    {
+        return;
+    }
+    float duration = doorTransitionPhase == doorTransitionClosing
+        ? doorTransitionCloseDuration : doorTransitionOpenDuration;
+    float progress = doorTransitionElapsed / duration;
+    if (progress < 0.0f) progress = 0.0f;
+    if (progress > 1.0f) progress = 1.0f;
+    float closed = 0.0f;
+    if (doorTransitionPhase == doorTransitionClosing)
+    {
+        float open = 1.0f - progress;
+        closed = 1.0f - open * open;
+    }
+    else
+    {
+        closed = 1.0f - progress * progress;
+    }
+    DrawDoorPanels(deviceContext, clientWidth, clientHeight, closed);
 }
 
 LONG CenteredUiTextLeft(HDC deviceContext, const RECT& rectangle,
@@ -5895,6 +6244,18 @@ void FillUpgradeLogicalRectangle(HDC deviceContext, LONG clientWidth,
     FillUiRectangle(deviceContext, rectangle, color);
 }
 
+void FillUpgradeCardRectangle(HDC deviceContext, LONG clientWidth,
+    LONG clientHeight, const RECT& card, LONG left, LONG top,
+    LONG right, LONG bottom, COLORREF color)
+{
+    if (left < card.left) left = card.left;
+    if (top < card.top) top = card.top;
+    if (right > card.right) right = card.right;
+    if (bottom > card.bottom) bottom = card.bottom;
+    FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
+        left, top, right, bottom, color);
+}
+
 void DrawRunUpgradeCardReveal(HDC deviceContext, LONG clientWidth,
     LONG clientHeight, LONG item, float progress, LONG frame)
 {
@@ -5911,6 +6272,7 @@ void DrawRunUpgradeCardReveal(HDC deviceContext, LONG clientWidth,
     constexpr LONG centerX = 160;
     LONG top = 64 + item * 23;
     LONG bottom = 83 + item * 23;
+    RECT card{ left, top, right, bottom };
     LONG centerY = (top + bottom) / 2;
     LONG topHeight = centerY - top;
     LONG bottomHeight = bottom - centerY;
@@ -5945,16 +6307,16 @@ void DrawRunUpgradeCardReveal(HDC deviceContext, LONG clientWidth,
         if (leftInner < left) leftInner = left;
         if (rightInner > right) rightInner = right;
         COLORREF cover = (y + item) & 1 ? coverA : coverB;
-        FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
-            left, y, leftInner, y + 1, cover);
-        FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
-            rightInner, y, right, y + 1, cover);
+        FillUpgradeCardRectangle(deviceContext, clientWidth, clientHeight,
+            card, left, y, leftInner, y + 1, cover);
+        FillUpgradeCardRectangle(deviceContext, clientWidth, clientHeight,
+            card, rightInner, y, right, y + 1, cover);
         if (progress > 0.0f && leftInner > left && rightInner < right)
         {
-            FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
-                leftInner - 1, y, leftInner, y + 1, curlColor);
-            FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
-                rightInner, y, rightInner + 1, y + 1, curlColor);
+            FillUpgradeCardRectangle(deviceContext, clientWidth, clientHeight,
+                card, leftInner - 1, y, leftInner, y + 1, curlColor);
+            FillUpgradeCardRectangle(deviceContext, clientWidth, clientHeight,
+                card, rightInner, y, rightInner + 1, y + 1, curlColor);
         }
     }
     for (LONG y = bottomInner; y < bottom; ++y)
@@ -5967,16 +6329,16 @@ void DrawRunUpgradeCardReveal(HDC deviceContext, LONG clientWidth,
         if (leftInner < left) leftInner = left;
         if (rightInner > right) rightInner = right;
         COLORREF cover = (y + item) & 1 ? coverA : coverB;
-        FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
-            left, y, leftInner, y + 1, cover);
-        FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
-            rightInner, y, right, y + 1, cover);
+        FillUpgradeCardRectangle(deviceContext, clientWidth, clientHeight,
+            card, left, y, leftInner, y + 1, cover);
+        FillUpgradeCardRectangle(deviceContext, clientWidth, clientHeight,
+            card, rightInner, y, right, y + 1, cover);
         if (progress > 0.0f && leftInner > left && rightInner < right)
         {
-            FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
-                leftInner - 1, y, leftInner, y + 1, curlColor);
-            FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
-                rightInner, y, rightInner + 1, y + 1, curlColor);
+            FillUpgradeCardRectangle(deviceContext, clientWidth, clientHeight,
+                card, leftInner - 1, y, leftInner, y + 1, curlColor);
+            FillUpgradeCardRectangle(deviceContext, clientWidth, clientHeight,
+                card, rightInner, y, rightInner + 1, y + 1, curlColor);
         }
     }
 
@@ -5988,32 +6350,32 @@ void DrawRunUpgradeCardReveal(HDC deviceContext, LONG clientWidth,
         if (rightBoundary > right) rightBoundary = right;
         if (topInner > top)
         {
-            FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
-                left, topInner - 1, leftBoundary, topInner, curlColor);
-            FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
-                rightBoundary, topInner - 1, right, topInner, curlColor);
+            FillUpgradeCardRectangle(deviceContext, clientWidth, clientHeight,
+                card, left, topInner - 1, leftBoundary, topInner, curlColor);
+            FillUpgradeCardRectangle(deviceContext, clientWidth, clientHeight,
+                card, rightBoundary, topInner - 1, right, topInner, curlColor);
         }
         if (bottomInner < bottom)
         {
-            FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
-                left, bottomInner, leftBoundary, bottomInner + 1, curlColor);
-            FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
-                rightBoundary, bottomInner, right, bottomInner + 1, curlColor);
+            FillUpgradeCardRectangle(deviceContext, clientWidth, clientHeight,
+                card, left, bottomInner, leftBoundary, bottomInner + 1, curlColor);
+            FillUpgradeCardRectangle(deviceContext, clientWidth, clientHeight,
+                card, rightBoundary, bottomInner, right, bottomInner + 1, curlColor);
         }
     }
     else
     {
-        FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
-            centerX - 1, centerY - 1, centerX + 2, centerY + 2,
+        FillUpgradeCardRectangle(deviceContext, clientWidth, clientHeight,
+            card, centerX - 1, centerY - 1, centerX + 2, centerY + 2,
             RGB(255, 244, 210));
     }
     if (progress > 0.12f && progress < 0.92f && ((frame + item) & 1))
     {
-        FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
-            centerX - openX - 1, topInner,
+        FillUpgradeCardRectangle(deviceContext, clientWidth, clientHeight,
+            card, centerX - openX - 1, topInner,
             centerX - openX, topInner + 1, RGB(255, 210, 64));
-        FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
-            centerX + openX, bottomInner - 1,
+        FillUpgradeCardRectangle(deviceContext, clientWidth, clientHeight,
+            card, centerX + openX, bottomInner - 1,
             centerX + openX + 1, bottomInner, RGB(224, 112, 35));
     }
     RestoreDC(deviceContext, savedContext);
@@ -6028,12 +6390,6 @@ void DrawRunUpgradePresentation(HDC deviceContext, LONG clientWidth,
         return;
     }
 
-    for (LONG y = 0; y < 180; y += 2)
-    {
-        RECT shade{ 0, clientHeight * y / 180,
-            clientWidth, clientHeight * (y + 1) / 180 };
-        FillUiRectangle(deviceContext, shade, RGB(0, 0, 0));
-    }
     LONG frame = static_cast<LONG>(upgradeRevealElapsed * 60.0f);
 
     if (upgradeRevealElapsed < upgradePanelRiseDuration)
@@ -6091,17 +6447,38 @@ void DrawRunUpgradePresentation(HDC deviceContext, LONG clientWidth,
 
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    if (doorTransitionPhase != doorTransitionInactive
+        && (message == WM_KEYDOWN || message == WM_KEYUP))
+    {
+        bool pressed = message == WM_KEYDOWN;
+        if (wParam == VK_UP) upPressed = pressed;
+        else if (wParam == VK_DOWN) downPressed = pressed;
+        else if (wParam == VK_LEFT) leftPressed = pressed;
+        else if (wParam == VK_RIGHT) rightPressed = pressed;
+        else if (wParam == 'Z') zPressed = pressed;
+        else if (wParam == 'X') xPressed = pressed;
+        else if (wParam == 'C') cPressed = pressed;
+        else if (wParam == VK_SPACE) spacePressed = pressed;
+        else if (wParam == VK_ESCAPE) escapePressed = pressed;
+        else return DefWindowProcW(window, message, wParam, lParam);
+        slashRequested = false;
+        dashRequested = false;
+        executeRequested = false;
+        return 0;
+    }
 #ifdef DEAD_SIGNAL_V12_FULL_RUN_VALIDATION
     if (message == WM_KEYDOWN && wParam == VK_F9
         && applicationState == gameplayState && !runEndState
-        && !upgradeMenuActive && !gameplayMenuActive)
+        && !upgradeMenuActive && !gameplayMenuActive
+        && doorTransitionPhase == doorTransitionInactive)
     {
         v12PlayerDeathRequested = true;
         return 0;
     }
     if (message == WM_KEYDOWN && wParam == VK_F10
         && applicationState == gameplayState && !runEndState
-        && !upgradeMenuActive && !gameplayMenuActive)
+        && !upgradeMenuActive && !gameplayMenuActive
+        && doorTransitionPhase == doorTransitionInactive)
     {
         v12AdvanceRoomRequested = true;
         return 0;
@@ -6162,7 +6539,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     }
 
     if (message == WM_LBUTTONDOWN && applicationState == gameplayState
-        && !runEndState && !upgradeMenuActive && !settingsActive && !helpActive)
+        && !runEndState && !upgradeMenuActive && !settingsActive && !helpActive
+        && doorTransitionPhase == doorTransitionInactive)
     {
         RECT client{};
         GetClientRect(window, &client);
@@ -6294,6 +6672,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     if (runEndSelection == 0)
                     {
                         newGameRequested = true;
+                        HoldDoorClosed(doorTransitionRunStart);
                         PlaySfx(sfxUiConfirm);
                     }
                     else
@@ -6362,6 +6741,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 {
                     applicationState = gameplayState;
                     newGameRequested = true;
+                    HoldDoorClosed(doorTransitionRunStart);
                     PlaySfx(sfxUiConfirm);
                 }
                 else
@@ -6400,6 +6780,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     {
                         applicationState = gameplayState;
                         newGameRequested = true;
+                        HoldDoorClosed(doorTransitionRunStart);
                         PlaySfx(sfxUiConfirm);
                     }
                     else
@@ -6680,12 +7061,18 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
     if (message == WM_PAINT)
     {
+#ifdef DEAD_SIGNAL_STEP2_PRESENT_VALIDATION
+        Step2ValidatePreviousPaint();
+        step2PaintActive = true;
+        step2CurrentPaintPresents = 0;
+        step2CurrentPaintCategory = Step2CurrentPresentCategory();
+        ++step2PaintCount;
+        QueryPerformanceCounter(&step2PaintStart);
+#endif
         PAINTSTRUCT paint{};
         HDC paintContext = BeginPaint(window, &paint);
         RECT windowClientArea{};
         GetClientRect(window, &windowClientArea);
-        FillRect(paintContext, &windowClientArea,
-            reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
         RECT contentArea = LogicalPresentRectangle(
             windowClientArea.right - windowClientArea.left,
             windowClientArea.bottom - windowClientArea.top);
@@ -7447,6 +7834,11 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
         }
 
+        if (doorClosedBehindUpgrade)
+        {
+            DrawDoorPanels(deviceContext, clientWidth, clientHeight, 1.0f);
+        }
+
         if (gameplayMenuActive)
         {
             RECT panel
@@ -7613,6 +8005,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     item == runEndSelection);
             }
         }
+        DrawDoorTransition(deviceContext, clientWidth, clientHeight);
         PresentLogicalFrame(paintContext, windowClientArea);
         EndPaint(window, &paint);
         return 0;
@@ -7620,6 +8013,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
     if (message == WM_DESTROY)
     {
+#ifdef DEAD_SIGNAL_STEP2_PRESENT_VALIDATION
+        Step2ValidatePreviousPaint();
+#endif
         PostQuitMessage(0);
         return 0;
     }
@@ -7639,7 +8035,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
     windowClass.style = CS_HREDRAW | CS_VREDRAW;
     windowClass.lpfnWndProc = WindowProcedure;
     windowClass.hInstance = instance;
-    windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    windowClass.hbrBackground = nullptr;
     windowClass.lpszClassName = windowClassName;
 
     if (!RegisterClassW(&windowClass))
@@ -7818,6 +8214,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
     timeBeginPeriod(1);
     LARGE_INTEGER performanceFrequency{};
     QueryPerformanceFrequency(&performanceFrequency);
+#ifdef DEAD_SIGNAL_STEP2_PRESENT_VALIDATION
+    step2Frequency = performanceFrequency.QuadPart;
+#endif
     LARGE_INTEGER previousUpdate{};
     QueryPerformanceCounter(&previousUpdate);
     constexpr LONGLONG updatesPerSecond = 60;
@@ -7930,6 +8329,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                 upgradeOptionB = 1;
                 titleStatus = 0;
                 checkpointLoaded = true;
+                HoldDoorClosed(doorTransitionRunStart);
             }
             else
             {
@@ -7942,6 +8342,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
         if (newGameRequested || checkpointLoaded
             || (roomComplete && currentRoom < roomCount - 1))
         {
+            bool openDoorAfterSetup = newGameRequested || checkpointLoaded
+                || doorOpenAfterRoomSetup;
+            BYTE openDoorTarget = newGameRequested || checkpointLoaded
+                ? doorTransitionRunStart : doorTransitionNextRoom;
+#ifdef DEAD_SIGNAL_STEP2_PRESENT_VALIDATION
+            LARGE_INTEGER step2LocalSetupEnd{};
+            if (!newGameRequested && !checkpointLoaded
+                && !step2FirstRoomPresentPending
+                && step2RoomSampleCount < step2RoomSampleCapacity)
+            {
+                step2ActiveRoomSample = step2RoomSampleCount++;
+                step2RoomSamples[step2ActiveRoomSample].room = currentRoom + 2;
+                QueryPerformanceCounter(&step2TransitionStart);
+            }
+#endif
             if (newGameRequested)
             {
                 LARGE_INTEGER seedTime{};
@@ -7981,6 +8396,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                 ++currentRoom;
             }
             SetupCurrentRoom();
+#ifdef DEAD_SIGNAL_STEP2_PRESENT_VALIDATION
+            if (step2ActiveRoomSample >= 0)
+            {
+                QueryPerformanceCounter(&step2LocalSetupEnd);
+            }
+#endif
             alertEventActive = false;
             sequenceComplete = false;
             runEndState = 0;
@@ -8065,6 +8486,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             {
                 WriteCheckpoint(runSeed, currentRoom, playerHP, runKillCount);
             }
+#ifdef DEAD_SIGNAL_STEP2_PRESENT_VALIDATION
+            if (step2ActiveRoomSample >= 0)
+            {
+                LARGE_INTEGER renderReady{};
+                QueryPerformanceCounter(&renderReady);
+                Step2RoomSample& sample
+                    = step2RoomSamples[step2ActiveRoomSample];
+                sample.postSetupTicks = renderReady.QuadPart
+                    - step2LocalSetupEnd.QuadPart;
+                sample.renderReadyTicks = renderReady.QuadPart
+                    - step2TransitionStart.QuadPart;
+                step2FirstRoomPresentPending = true;
+            }
+#endif
+            doorOpenAfterRoomSetup = false;
+            if (openDoorAfterSetup)
+            {
+                BeginDoorTransition(doorTransitionOpening, openDoorTarget);
+            }
             newGameRequested = false;
             QueryPerformanceCounter(&previousUpdate);
             InvalidateRect(window, nullptr, FALSE);
@@ -8083,6 +8523,45 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             saveAndTitleRequested = false;
             QueryPerformanceCounter(&previousUpdate);
             InvalidateRect(window, nullptr, FALSE);
+        }
+
+        if (doorTransitionPhase == doorTransitionClosing)
+        {
+            LARGE_INTEGER transitionTime{};
+            QueryPerformanceCounter(&transitionTime);
+            if (transitionTime.QuadPart - previousUpdate.QuadPart >= updateInterval)
+            {
+                float transitionDelta = static_cast<float>(
+                    transitionTime.QuadPart - previousUpdate.QuadPart)
+                    / static_cast<float>(performanceFrequency.QuadPart);
+                previousUpdate = transitionTime;
+                if (UpdateDoorTransition(transitionDelta))
+                {
+                    if (doorTransitionTarget == doorTransitionUpgrade)
+                    {
+                        doorTransitionPhase = doorTransitionInactive;
+                        doorClosedBehindUpgrade = true;
+                        GenerateUpgradeOffer(false);
+                        upgradeMenuActive = true;
+                        upgradeSelection = 0;
+                        upgradeConfirmRequested = false;
+                        BeginUpgradeReveal();
+                        gameplayInputBlocked = upPressed || downPressed
+                            || leftPressed || rightPressed || zPressed
+                            || xPressed || cPressed || spacePressed;
+                    }
+                    else
+                    {
+                        doorOpenAfterRoomSetup = true;
+                        roomComplete = true;
+                        doorTransitionPhase = doorTransitionOpening;
+                        doorTransitionElapsed = 0.0f;
+                    }
+                }
+                InvalidateRect(window, nullptr, FALSE);
+            }
+            Sleep(1);
+            continue;
         }
 
         if (settingsActive || helpActive)
@@ -8184,6 +8663,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                     }
                     else
                     {
+                        doorOpenAfterRoomSetup = true;
+                        doorTransitionPhase = doorTransitionOpening;
+                        doorTransitionTarget = doorTransitionNextRoom;
+                        doorTransitionElapsed = 0.0f;
                         roomComplete = true;
                     }
                     gameplayInputBlocked = upPressed || downPressed || leftPressed
@@ -8203,6 +8686,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             float deltaTime = static_cast<float>(currentTime.QuadPart - previousUpdate.QuadPart)
                 / static_cast<float>(performanceFrequency.QuadPart);
             previousUpdate = currentTime;
+            bool doorOpeningFrame
+                = doorTransitionPhase == doorTransitionOpening;
+            if (doorOpeningFrame && UpdateDoorTransition(deltaTime))
+            {
+                doorTransitionPhase = doorTransitionInactive;
+                doorTransitionElapsed = 0.0f;
+                gameplayInputBlocked = upPressed || downPressed
+                    || leftPressed || rightPressed || zPressed
+                    || xPressed || cPressed || spacePressed;
+            }
 #ifdef DEAD_SIGNAL_V12_FULL_RUN_VALIDATION
             if (v12AdvanceRoomRequested)
             {
@@ -8418,7 +8911,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             bool playerAudibleThisUpdate = PlayerMovementIsAudible(
                 playerMovedThisUpdate, playerDashingThisUpdate);
 
-            if (currentTrapCount && playerAlive
+            if (!doorOpeningFrame && currentTrapCount && playerAlive
                 && trapDamageCooldownRemaining <= 0.0f)
             {
                 for (LONG trap = 0; trap < currentTrapCount; ++trap)
@@ -9423,12 +9916,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                 ++enemyIndex)
             {
                 EnemyRuntime& enemy = enemies[enemyIndex];
-                UpdateEnemyAttack(enemy, enemy.alert, playerX, playerY,
+                UpdateEnemyAttack(enemy, !doorOpeningFrame && enemy.alert,
+                    playerX, playerY,
                     deltaTime, pendingPlayerDamage);
             }
             if (pressureEnemy.alive && playerAlive)
             {
-                UpdateEnemyAttack(pressureEnemy, true, playerX, playerY,
+                UpdateEnemyAttack(pressureEnemy, !doorOpeningFrame,
+                    playerX, playerY,
                     deltaTime, pendingPlayerDamage,
                     PressureIsEnraged(currentEnemyRemaining));
             }
@@ -9480,19 +9975,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                 {
                     sequenceComplete = true;
                 }
-                else if (!RoomClearsToUpgrade(currentRoom))
-                {
-                    roomComplete = true;
-                }
                 else
                 {
-                    GenerateUpgradeOffer(false);
-                    upgradeMenuActive = true;
-                    upgradeSelection = 0;
-                    upgradeConfirmRequested = false;
-                    BeginUpgradeReveal();
-                    gameplayInputBlocked = upPressed || downPressed || leftPressed
-                        || rightPressed || zPressed || xPressed || cPressed || spacePressed;
+                    BeginDoorTransition(doorTransitionClosing,
+                        RoomClearsToUpgrade(currentRoom)
+                            ? doorTransitionUpgrade : doorTransitionNextRoom);
                 }
                 dashActive = false;
                 dashDistanceRemaining = 0.0f;
@@ -10387,6 +10874,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
     }
 
     timeEndPeriod(1);
+#ifdef DEAD_SIGNAL_STEP2_PRESENT_VALIDATION
+    WriteStep2PresentReport();
+#endif
     waveOutReset(audioOutput);
     for (BYTE buffer = 0; buffer < audioBufferCount; ++buffer)
     {
@@ -12522,7 +13012,7 @@ int main()
     {
         const SfxSpec& spec = sfxSpecs[sound];
         v10AudioFailures += spec.durationMilliseconds < 40
-            || spec.durationMilliseconds > 500
+            || spec.durationMilliseconds > 600
             || !spec.startFrequency || spec.startFrequency >= audioSampleRate / 2
             || !spec.endFrequency || spec.endFrequency >= audioSampleRate / 2
             || !spec.amplitude || spec.amplitude > 127
@@ -13445,6 +13935,7 @@ int main()
     failures += applicationState != gameplayState || !newGameRequested
         || selectedCharacter != basicCharacter;
     newGameRequested = false;
+    doorTransitionPhase = doorTransitionInactive;
     printf("section_ui=%ld\n", failures);
 
     LONG v12Failures = 0;
@@ -13614,7 +14105,7 @@ int main()
     v121Failures += upgradeRevealElapsed != revealBeforeReroll
         || RoomClearsToUpgrade(roomCount - 1)
         || DesiredBgmMode() != bgmRunMode
-        || sfxCount != 49
+        || sfxCount != 54
         || !(sfxSpecs[sfxUpgradeCross].amplitude
             > sfxSpecs[sfxUiConfirm].amplitude)
         || !(sfxSpecs[sfxUpgradeCross].amplitude
@@ -13746,6 +14237,9 @@ int main()
     LONG coverCounts[2][3]{};
     LONG outsideCoverCount = 0;
     LONG readyCoverCount = 0;
+    LONG effectOutsideCount = 0;
+    LONG effectInsideCount = 0;
+    LONG effectResidueCount = 0;
     float revealSamples[3]{ 0.6f, 0.95f, upgradeRevealDuration };
     if (!revealDc || !revealBitmap || !revealPixels)
     {
@@ -13802,6 +14296,73 @@ int main()
                 || coverCounts[1][item] <= 0;
         }
         cardClipFailures += outsideCoverCount != 0 || readyCoverCount != 0;
+        constexpr float isolatedProgress[3]{ 0.0f, 0.45f, 0.82f };
+        for (LONG item = 0; item < 3; ++item)
+        {
+            LONG top = 64 + item * 23;
+            LONG bottom = 83 + item * 23;
+            for (LONG sample = 0; sample < 3; ++sample)
+            {
+                PatBlt(revealDc, 0, 0, 320, 180, WHITENESS);
+                DrawRunUpgradeCardReveal(revealDc, 320, 180, item,
+                    isolatedProgress[sample], sample);
+                LONG changedInside = 0;
+                for (LONG y = 0; y < 180; ++y)
+                {
+                    for (LONG x = 0; x < 320; ++x)
+                    {
+                        if (GetPixel(revealDc, x, y) == RGB(255, 255, 255))
+                        {
+                            continue;
+                        }
+                        if (x >= 81 && x < 239 && y >= top && y < bottom)
+                        {
+                            ++changedInside;
+                        }
+                        else
+                        {
+                            ++effectOutsideCount;
+                        }
+                    }
+                }
+                effectInsideCount += changedInside;
+                cardClipFailures += sample < 2 && changedInside == 0;
+            }
+        }
+        PatBlt(revealDc, 0, 0, 320, 180, WHITENESS);
+        for (LONG item = 0; item < 3; ++item)
+        {
+            DrawRunUpgradeCardReveal(revealDc, 320, 180, item, 0.55f, item);
+        }
+        for (LONG y = 0; y < 180; ++y)
+        {
+            for (LONG x = 0; x < 320; ++x)
+            {
+                if (GetPixel(revealDc, x, y) == RGB(255, 255, 255))
+                {
+                    continue;
+                }
+                bool inCard = x >= 81 && x < 239
+                    && ((y >= 64 && y < 83) || (y >= 87 && y < 106)
+                        || (y >= 110 && y < 129));
+                effectOutsideCount += !inCard;
+            }
+        }
+        PatBlt(revealDc, 0, 0, 320, 180, WHITENESS);
+        for (LONG item = 0; item < 3; ++item)
+        {
+            DrawRunUpgradeCardReveal(revealDc, 320, 180, item, 1.0f, item);
+        }
+        for (LONG y = 0; y < 180; ++y)
+        {
+            for (LONG x = 0; x < 320; ++x)
+            {
+                effectResidueCount += GetPixel(revealDc, x, y)
+                    != RGB(255, 255, 255);
+            }
+        }
+        cardClipFailures += effectOutsideCount != 0
+            || effectInsideCount == 0 || effectResidueCount != 0;
     }
     if (oldRevealBitmap) SelectObject(revealDc, oldRevealBitmap);
     if (revealBitmap) DeleteObject(revealBitmap);
@@ -13809,15 +14370,136 @@ int main()
     upgradeRevealElapsed = upgradeRevealDuration;
     v121Failures += cardClipFailures;
     failures += v121Failures;
-    printf("section_v121=%ld reveal=%.2f sfx=%u events=%lu/%lu/%lu/%lu/%lu/%lu peak=%ld clip=%ld cardclip=%ld duck=%u mode=%u\n",
+    printf("section_v121=%ld reveal=%.2f sfx=%u events=%lu/%lu/%lu/%lu/%lu/%lu peak=%ld clip=%ld cardclip=%ld outside=%ld residue=%ld duck=%u mode=%u\n",
         v121Failures, upgradeRevealDuration, static_cast<UINT>(sfxCount),
         revealEventCounts[0], revealEventCounts[1], revealEventCounts[2],
         revealEventCounts[3], revealEventCounts[4], revealEventCounts[5],
-        revealPeak, revealClipped, cardClipFailures,
+        revealPeak, revealClipped, cardClipFailures, effectOutsideCount,
+        effectResidueCount,
         static_cast<UINT>(bgmState.revealGain),
         static_cast<UINT>(DesiredBgmMode()));
     upgradeMenuActive = false;
     upgradeRevealElapsed = upgradeRevealDuration;
+    applicationState = titleMainState;
+    upPressed = false;
+    zPressed = false;
+
+    LONG doorTransitionFailures = 0;
+    LONG doorTransitionClipped = 0;
+    LONG doorTransitionPeak = 0;
+    applicationState = gameplayState;
+    runEndState = 0;
+    upgradeMenuActive = false;
+    gameplayMenuActive = false;
+    upPressed = false;
+    zPressed = false;
+    slashRequested = true;
+    ResetSfxVoices();
+    for (BYTE sound = sfxDoorTransitionClose;
+        sound <= sfxDoorTransitionLock; ++sound)
+    {
+        sfxStartCount[sound] = 0;
+    }
+    BeginDoorTransition(doorTransitionClosing, doorTransitionUpgrade);
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_UP, 0);
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    doorTransitionFailures += doorTransitionPhase != doorTransitionClosing
+        || doorTransitionTarget != doorTransitionUpgrade
+        || doorTransitionElapsed != 0.0f || slashRequested
+        || !upPressed || !zPressed;
+    WindowProcedure(nullptr, WM_KEYUP, VK_UP, 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    for (LONG update = 0; update < 11; ++update)
+    {
+        doorTransitionFailures += UpdateDoorTransition(0.05f);
+    }
+    doorTransitionFailures += !UpdateDoorTransition(0.05f)
+        || doorTransitionElapsed != doorTransitionCloseDuration
+        || sfxStartCount[sfxDoorTransitionLock] != 1;
+    UpdateDoorTransition(0.05f);
+    doorTransitionFailures += sfxStartCount[sfxDoorTransitionLock] != 1;
+    BeginDoorTransition(doorTransitionOpening, doorTransitionRunStart);
+    for (LONG update = 0; update < 11; ++update)
+    {
+        doorTransitionFailures += UpdateDoorTransition(0.05f);
+    }
+    doorTransitionFailures += !UpdateDoorTransition(0.05f)
+        || doorTransitionElapsed != doorTransitionOpenDuration
+        || sfxStartCount[sfxDoorTransitionClose] != 1
+        || sfxStartCount[sfxDoorTransitionOpen] != 1
+        || sfxStartCount[sfxDoorTransitionUnlock] != 1
+        || sfxStartCount[sfxDoorTransitionStop] != 1;
+    UpdateDoorTransition(0.05f);
+    doorTransitionFailures += sfxStartCount[sfxDoorTransitionStop] != 1;
+    for (BYTE sound = sfxDoorTransitionClose;
+        sound <= sfxDoorTransitionLock; ++sound)
+    {
+        ResetSfxVoices();
+        PlaySfx(sound);
+        DWORD duration = sfxSpecs[sound].durationMilliseconds
+            * audioSampleRate / 1000;
+        for (DWORD sample = 0; sample < duration; ++sample)
+        {
+            short mixed = MixAudioSample();
+            LONG magnitude = mixed < 0 ? -static_cast<LONG>(mixed) : mixed;
+            if (magnitude > doorTransitionPeak) doorTransitionPeak = magnitude;
+            doorTransitionClipped += mixed == 32767 || mixed == -32768;
+        }
+    }
+    BITMAPINFO doorBitmapInfo{};
+    doorBitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    doorBitmapInfo.bmiHeader.biWidth = 320;
+    doorBitmapInfo.bmiHeader.biHeight = -180;
+    doorBitmapInfo.bmiHeader.biPlanes = 1;
+    doorBitmapInfo.bmiHeader.biBitCount = 32;
+    doorBitmapInfo.bmiHeader.biCompression = BI_RGB;
+    void* doorPixels = nullptr;
+    HDC doorDc = CreateCompatibleDC(nullptr);
+    HBITMAP doorBitmap = CreateDIBSection(doorDc, &doorBitmapInfo,
+        DIB_RGB_COLORS, &doorPixels, nullptr, 0);
+    HGDIOBJ oldDoorBitmap = doorBitmap
+        ? SelectObject(doorDc, doorBitmap) : nullptr;
+    if (!doorDc || !doorBitmap || !doorPixels)
+    {
+        ++doorTransitionFailures;
+    }
+    else
+    {
+        PatBlt(doorDc, 0, 0, 320, 180, WHITENESS);
+        doorTransitionPhase = doorTransitionClosing;
+        doorTransitionElapsed = 0.0f;
+        DrawDoorTransition(doorDc, 320, 180);
+        doorTransitionFailures += GetPixel(doorDc, 160, 90)
+            != RGB(255, 255, 255);
+        doorTransitionElapsed = doorTransitionCloseDuration;
+        DrawDoorTransition(doorDc, 320, 180);
+        doorTransitionFailures += GetPixel(doorDc, 160, 90)
+            == RGB(255, 255, 255)
+            || GetPixel(doorDc, 10, 90) == RGB(255, 255, 255);
+        PatBlt(doorDc, 0, 0, 320, 180, WHITENESS);
+        doorTransitionPhase = doorTransitionOpening;
+        doorTransitionElapsed = doorTransitionOpenDuration;
+        DrawDoorTransition(doorDc, 320, 180);
+        doorTransitionFailures += GetPixel(doorDc, 160, 90)
+            != RGB(255, 255, 255);
+    }
+    if (oldDoorBitmap) SelectObject(doorDc, oldDoorBitmap);
+    if (doorBitmap) DeleteObject(doorBitmap);
+    if (doorDc) DeleteDC(doorDc);
+    doorTransitionFailures += doorTransitionClipped || doorTransitionPeak <= 0
+        || doorTransitionCloseDuration < 0.45f
+        || doorTransitionCloseDuration > 0.60f
+        || doorTransitionOpenDuration < 0.45f
+        || doorTransitionOpenDuration > 0.60f;
+    failures += doorTransitionFailures;
+    printf("section_door_transition=%ld close=%.2f open=%.2f sfx=%lu/%lu peak=%ld clip=%ld\n",
+        doorTransitionFailures, doorTransitionCloseDuration,
+        doorTransitionOpenDuration,
+        sfxStartCount[sfxDoorTransitionClose],
+        sfxStartCount[sfxDoorTransitionOpen], doorTransitionPeak,
+        doorTransitionClipped);
+    doorTransitionPhase = doorTransitionInactive;
+    doorTransitionElapsed = 0.0f;
     applicationState = titleMainState;
     upPressed = false;
     zPressed = false;
@@ -14040,6 +14722,7 @@ int main()
     WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
     failures += !newGameRequested || runEndState != runClearEndState;
     newGameRequested = false;
+    doorTransitionPhase = doorTransitionInactive;
     runEndState = 0;
     printf("section_result_input=%ld\n", failures);
 
