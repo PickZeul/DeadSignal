@@ -94,6 +94,23 @@ constexpr float slashLocalAlertRangeSquared = 70.0f * 70.0f;
 constexpr float listenerAlertRangeSquared = 80.0f * 80.0f;
 constexpr float spinnerRotationSpeed = 1.04719755f;
 constexpr float enemyFacingTurnSpeed = 2.0943951f;
+constexpr float watcherCalmScanDuration = 5.0f;
+constexpr float watcherTurnVisualDuration = 0.16f;
+constexpr float eightDirectionAngle[8]
+{
+    0.0f, 0.78539816f, 1.57079633f, 2.35619449f,
+    3.14159265f, -2.35619449f, -1.57079633f, -0.78539816f
+};
+constexpr float eightDirectionX[8]
+{
+    1.0f, 0.70710678f, 0.0f, -0.70710678f,
+    -1.0f, -0.70710678f, 0.0f, 0.70710678f
+};
+constexpr float eightDirectionY[8]
+{
+    0.0f, 0.70710678f, 1.0f, 0.70710678f,
+    0.0f, -0.70710678f, -1.0f, -0.70710678f
+};
 constexpr float enemyScanAngle = 0.47996554f;
 constexpr float enemyAlertSearchDuration = 10.0f;
 constexpr float hunterAlertSearchDuration = 15.0f;
@@ -527,11 +544,17 @@ constexpr DWORD PlayerSpriteColor(BYTE character, BYTE frame, LONG x, LONG y)
     return spritePalette[PlayerSpritePaletteIndex(character, frame, x, y)];
 }
 
-constexpr DWORD PlayerSpriteFeedbackColor(DWORD color, bool alive, bool hit,
-    bool dash)
+constexpr DWORD PlayerSpriteFeedbackColor(BYTE character, DWORD color,
+    bool alive, bool hit, bool dash)
 {
     return !alive ? 0x00404050
-        : (hit ? 0x00FFFFFF : (dash ? 0x0080FFFF : color));
+        : (hit ? 0x00FFFFFF : (dash
+            ? (character == mobilityCharacter ? 0x0068F8FF
+                : (character == piercerCharacter ? 0x00C878E8
+                    : (character == heavyCharacter ? 0x00E09050
+                        : (character == rapidCharacter ? 0x00FFF080
+                            : 0x0080D8FF))))
+            : color));
 }
 
 constexpr BYTE PlayerAnimationFrame(bool alive, bool dashing,
@@ -604,11 +627,15 @@ static_assert(playerFrameCount == 8
     && PlayerSpritePaletteIndex(rapidCharacter, playerIdleFrame, 0, 5) == 0
     && PlayerSpritePaletteIndex(rapidCharacter, playerIdleFrame, 0, 6) == 0x09
     && PlayerSpritePaletteIndex(rapidCharacter, playerIdleFrame, 7, 6) == 0);
-static_assert(PlayerSpriteFeedbackColor(0x00123456, false, true, true)
+static_assert(PlayerSpriteFeedbackColor(basicCharacter, 0x00123456,
+        false, true, true)
         == 0x00404050
-    && PlayerSpriteFeedbackColor(0x00123456, true, true, true) == 0x00FFFFFF
-    && PlayerSpriteFeedbackColor(0x00123456, true, false, true) == 0x0080FFFF
-    && PlayerSpriteFeedbackColor(0x00123456, true, false, false) == 0x00123456);
+    && PlayerSpriteFeedbackColor(mobilityCharacter, 0x00123456,
+        true, true, true) == 0x00FFFFFF
+    && PlayerSpriteFeedbackColor(piercerCharacter, 0x00123456,
+        true, false, true) == 0x00C878E8
+    && PlayerSpriteFeedbackColor(heavyCharacter, 0x00123456,
+        true, false, false) == 0x00123456);
 static_assert(PlayerAnimationFrame(false, true, 1.0f, 1.0f, 1.0f, true, 1.0f)
         == playerIdleFrame
     && PlayerAnimationFrame(true, true, 0.6f, 1.0f, 0.14f, true, 0.15f)
@@ -627,6 +654,164 @@ static_assert(PlayerAnimationFrame(false, true, 1.0f, 1.0f, 1.0f, true, 1.0f)
         == playerWalkBFrame
     && PlayerAnimationFrame(true, false, 0.0f, 1.0f, 0.0f, false, 0.15f)
         == playerIdleFrame);
+
+LONG VisualRound(float value)
+{
+    return static_cast<LONG>(value + (value < 0.0f ? -0.5f : 0.5f));
+}
+
+void PlayerPoseOffset(BYTE character, BYTE frame, bool executing,
+    BYTE executePhase, LONG facingX, LONG facingY, LONG& offsetX, LONG& offsetY)
+{
+    LONG forward = 0;
+    LONG lateral = 0;
+    if (executing)
+    {
+        if (executePhase == 0)
+        {
+            forward = character == heavyCharacter ? -1 : 0;
+        }
+        else if (executePhase == 1)
+        {
+            constexpr LONG executeLean[characterCount] = { 2, 3, 2, 2, 2 };
+            forward = executeLean[character];
+            lateral = character == heavyCharacter ? 1 : 0;
+        }
+        else if (executePhase == 2)
+        {
+            forward = character == mobilityCharacter ? 2
+                : (character == heavyCharacter ? 1 : 0);
+        }
+    }
+    else if (frame == playerWalkAFrame || frame == playerWalkBFrame)
+    {
+        lateral = frame == playerWalkAFrame ? -1 : 1;
+        if (character == piercerCharacter)
+        {
+            lateral = 0;
+        }
+        forward = character == mobilityCharacter
+            || character == rapidCharacter ? 1 : 0;
+    }
+    else if (frame >= playerSlashAnticipationFrame
+        && frame <= playerSlashRecoveryFrame)
+    {
+        if (frame == playerSlashAnticipationFrame)
+        {
+            forward = -1;
+        }
+        else if (frame == playerSlashStrikeFrame)
+        {
+            constexpr LONG slashLean[characterCount] = { 1, 2, 2, 1, 1 };
+            forward = slashLean[character];
+            lateral = character == heavyCharacter ? 1 : 0;
+        }
+    }
+    else if (frame == playerDashLeanFrame || frame == playerDashStreakFrame)
+    {
+        constexpr LONG dashLean[characterCount][2]
+        {
+            { 1, 2 }, { 2, 3 }, { 2, 3 }, { 1, 2 }, { 2, 2 }
+        };
+        forward = dashLean[character][frame == playerDashStreakFrame];
+        lateral = character == rapidCharacter && frame == playerDashStreakFrame
+            ? 1 : 0;
+    }
+
+    float scale = facingX && facingY ? 0.70710678f : 1.0f;
+    float directionX = facingX * scale;
+    float directionY = facingY * scale;
+    offsetX = VisualRound(directionX * forward)
+        + lateral * (facingX < 0 ? -1 : 1);
+    offsetY = VisualRound(directionY * forward);
+}
+
+DWORD PlayerDashEffectPixel(BYTE character, BYTE frame, float centerX,
+    float centerY, LONG facingX, LONG facingY, float pointX, float pointY)
+{
+    if (!facingX && !facingY)
+    {
+        return 0;
+    }
+    float scale = facingX && facingY ? 0.70710678f : 1.0f;
+    float directionX = facingX * scale;
+    float directionY = facingY * scale;
+    float differenceX = pointX - centerX;
+    float differenceY = pointY - centerY;
+    float forward = differenceX * directionX + differenceY * directionY;
+    float lateral = differenceX * -directionY + differenceY * directionX;
+    float absoluteLateral = lateral < 0.0f ? -lateral : lateral;
+    bool streakFrame = frame == playerDashStreakFrame;
+
+    if (character == mobilityCharacter)
+    {
+        if (forward >= -9.0f && forward <= -1.5f)
+        {
+            if (absoluteLateral < 0.65f)
+            {
+                return 0x0078F8FF;
+            }
+            float secondary = absoluteLateral - 1.8f;
+            if (secondary < 0.0f) secondary = -secondary;
+            if (secondary < 0.55f && forward < -3.0f)
+            {
+                return 0x00387888;
+            }
+            if (streakFrame && forward > -7.0f && forward < -5.5f
+                && absoluteLateral < 3.2f)
+            {
+                return 0x00285060;
+            }
+        }
+        return 0;
+    }
+    if (character == piercerCharacter)
+    {
+        if (forward >= -8.0f && forward <= -2.0f
+            && absoluteLateral < (streakFrame ? 0.7f : 0.5f))
+        {
+            return streakFrame ? 0x00C878E8 : 0x00683888;
+        }
+        return 0;
+    }
+    if (character == heavyCharacter)
+    {
+        if (forward >= -6.5f && forward <= -3.0f)
+        {
+            float groundBurst = absoluteLateral - (-forward - 2.5f) * 0.55f;
+            if (groundBurst < 0.0f) groundBurst = -groundBurst;
+            return groundBurst < 0.65f ? 0x00D07038
+                : (absoluteLateral < 0.8f ? 0x00704830 : 0);
+        }
+        return 0;
+    }
+    if (character == rapidCharacter)
+    {
+        if (absoluteLateral < 0.7f
+            && ((forward > -7.5f && forward < -6.0f)
+                || (forward > -5.0f && forward < -3.8f)
+                || (streakFrame && forward > -2.8f && forward < -1.7f)))
+        {
+            return 0x00FFE878;
+        }
+        return 0;
+    }
+
+    if (forward >= -7.0f && forward <= -2.5f)
+    {
+        if (absoluteLateral < 0.65f)
+        {
+            return 0x0070C8E8;
+        }
+        float secondary = lateral - 1.5f;
+        if (secondary < 0.0f) secondary = -secondary;
+        if (streakFrame && secondary < 0.55f && forward < -4.0f)
+        {
+            return 0x00385868;
+        }
+    }
+    return 0;
+}
 static_assert(ExecuteVisualPhase(0.18f) == 0
     && ExecuteVisualPhase(0.13f) == 1
     && ExecuteVisualPhase(0.08f) == 2
@@ -1065,6 +1250,141 @@ static_assert(pressureVisualWidth == 10 && pressureVisualHeight == 12
     && PressureAnimationFrame(0.0f, 0.0f, true, 0.0f) == pressureMoveAFrame
     && PressureAnimationFrame(0.0f, 0.0f, false, 1.0f) == pressureIdleFrame);
 
+void EnemyPoseOffset(BYTE role, BYTE frame, float facingAngle,
+    LONG& offsetX, LONG& offsetY)
+{
+    LONG forward = 0;
+    LONG lateral = 0;
+    if (frame == enemyMoveAFrame || frame == enemyMoveBFrame)
+    {
+        lateral = frame == enemyMoveAFrame ? -1 : 1;
+        forward = role == hunterEnemyRole ? 1 : 0;
+    }
+    else if (frame == enemyAttackWindupFrame)
+    {
+        forward = -1;
+    }
+    else if (frame == enemyAttackStrikeFrame)
+    {
+        constexpr LONG attackLean[enemyRoleCount] = { 1, 2, 2, 1, 0 };
+        forward = attackLean[role];
+        lateral = role == hunterEnemyRole ? 1 : 0;
+    }
+    float directionX = cosf(facingAngle);
+    float directionY = sinf(facingAngle);
+    offsetX = VisualRound(directionX * forward)
+        + lateral * (directionX < 0.0f ? -1 : 1);
+    offsetY = VisualRound(directionY * forward);
+}
+
+DWORD EnemyAttackEffectPixel(BYTE role, BYTE frame, float centerX,
+    float centerY, float facingAngle, float pointX, float pointY)
+{
+    if (frame != enemyAttackWindupFrame && frame != enemyAttackStrikeFrame)
+    {
+        return 0;
+    }
+    float directionX = cosf(facingAngle);
+    float directionY = sinf(facingAngle);
+    float differenceX = pointX - centerX;
+    float differenceY = pointY - centerY;
+    float forward = differenceX * directionX + differenceY * directionY;
+    float lateral = differenceX * -directionY + differenceY * directionX;
+    float absoluteLateral = lateral < 0.0f ? -lateral : lateral;
+    if (frame == enemyAttackWindupFrame)
+    {
+        return forward > 3.0f && forward < 5.0f && absoluteLateral < 0.65f
+            ? 0x00806030 : 0;
+    }
+
+    if (role == watcherEnemyRole)
+    {
+        if (forward >= 3.0f && forward <= 10.0f && absoluteLateral < 0.7f)
+        {
+            return forward > 8.0f ? 0x00FFF4C8 : 0x00D07038;
+        }
+        return 0;
+    }
+    if (role == hunterEnemyRole)
+    {
+        float slash = lateral + (forward - 6.0f) * 0.48f;
+        if (slash < 0.0f) slash = -slash;
+        return forward >= 2.0f && forward <= 10.0f && slash < 0.85f
+            ? 0x00F0B050 : 0;
+    }
+    if (role == listenerEnemyRole)
+    {
+        return forward >= 3.0f && forward <= 7.0f && absoluteLateral < 0.9f
+            ? (forward > 6.0f ? 0x00FFF0A0 : 0x00C07838) : 0;
+    }
+    if (role == spinnerEnemyRole)
+    {
+        float radius = sqrtf(forward * forward + lateral * lateral);
+        bool sweptHalf = lateral >= -1.0f || forward < 0.0f;
+        return sweptHalf && radius >= 5.5f && radius <= 8.0f
+            ? (radius < 6.5f ? 0x00F0D070 : 0x009A48BE) : 0;
+    }
+
+    if (forward >= 2.5f && forward <= 9.0f && absoluteLateral <= 4.5f)
+    {
+        float arc = forward - (8.0f - lateral * lateral * 0.25f);
+        if (arc < 0.0f) arc = -arc;
+        return arc < 0.9f ? 0x00FFE0A0
+            : (arc < 1.6f ? 0x00A85030 : 0);
+    }
+    return 0;
+}
+
+void PressurePoseOffset(BYTE frame, float facingAngle,
+    LONG& offsetX, LONG& offsetY)
+{
+    LONG forward = 0;
+    LONG lateral = 0;
+    if (frame == pressureMoveAFrame || frame == pressureMoveBFrame)
+    {
+        offsetX = frame == pressureMoveAFrame ? -1 : 1;
+        offsetY = frame == pressureMoveAFrame ? -1 : 1;
+        return;
+    }
+    else
+    {
+        offsetY = frame == pressureAttackCrushFrame ? 1 : 0;
+        forward = frame == pressureAttackBraceFrame ? -1
+            : (frame == pressureAttackCrushFrame ? 1 : 0);
+    }
+    float directionX = cosf(facingAngle);
+    float directionY = sinf(facingAngle);
+    offsetX = VisualRound(directionX * forward)
+        + lateral * (directionX < 0.0f ? -1 : 1);
+    offsetY += VisualRound(directionY * forward);
+}
+
+DWORD PressureAttackEffectPixel(BYTE frame, float centerX, float centerY,
+    float facingAngle, float pointX, float pointY)
+{
+    if (frame != pressureAttackCrushFrame)
+    {
+        return 0;
+    }
+    float directionX = cosf(facingAngle);
+    float directionY = sinf(facingAngle);
+    float differenceX = pointX - centerX;
+    float differenceY = pointY - centerY;
+    float forward = differenceX * directionX + differenceY * directionY;
+    float lateral = differenceX * -directionY + differenceY * directionX;
+    float absoluteLateral = lateral < 0.0f ? -lateral : lateral;
+    if (forward >= 4.0f && forward <= 8.0f && absoluteLateral <= 5.5f)
+    {
+        float shock = forward - (7.5f - absoluteLateral * 0.35f);
+        if (shock < 0.0f) shock = -shock;
+        if (shock < 0.9f)
+        {
+            return absoluteLateral < 2.0f ? 0x00FFF0A0 : 0x00D06030;
+        }
+    }
+    return 0;
+}
+
 constexpr LONG characterUnlockCosts[characterCount]{ 0, 100, 100, 100, 100 };
 constexpr BYTE characterDashCaps[characterCount]{ 3, 4, 2, 1, 2 };
 constexpr BYTE commonUpgradeCount = 3;
@@ -1260,6 +1580,9 @@ struct EnemyRuntime
     float patrolTurnX;
     float patrolTurnY;
     DWORD searchRandomState;
+    DWORD watcherScanRandomState;
+    float watcherScanRemaining;
+    float watcherTurnVisualRemaining;
     LONG searchPathCount;
     LONG searchPathIndex;
     LONG hp;
@@ -1274,6 +1597,59 @@ struct EnemyRuntime
     bool alert;
     bool alive;
 };
+
+LONG EightDirectionIndex(float angle)
+{
+    float directionX = cosf(angle);
+    float directionY = sinf(angle);
+    LONG bestDirection = 0;
+    float bestDot = -2.0f;
+    for (LONG direction = 0; direction < 8; ++direction)
+    {
+        float dot = directionX * eightDirectionX[direction]
+            + directionY * eightDirectionY[direction];
+        if (dot > bestDot)
+        {
+            bestDot = dot;
+            bestDirection = direction;
+        }
+    }
+    return bestDirection;
+}
+
+bool WatcherCalmScanActive(const EnemyRuntime& enemy)
+{
+    return enemy.alive && enemy.role == watcherEnemyRole && !enemy.alert
+        && enemy.detectionProgress <= 0.0f && !enemy.returningToPatrol;
+}
+
+LONG UpdateWatcherCalmScan(EnemyRuntime& enemy, float deltaTime)
+{
+    enemy.watcherScanRemaining -= deltaTime;
+    if (enemy.watcherScanRemaining > 0.0f)
+    {
+        enemy.facingAngle = enemy.surveillanceFacingAngle;
+        return EightDirectionIndex(enemy.surveillanceFacingAngle);
+    }
+
+    enemy.watcherScanRandomState
+        = enemy.watcherScanRandomState * 1664525u + 1013904223u;
+    LONG currentDirection = EightDirectionIndex(enemy.surveillanceFacingAngle);
+    LONG nextDirection = (currentDirection + 1
+        + static_cast<LONG>(enemy.watcherScanRandomState % 7)) & 7;
+    enemy.surveillanceFacingAngle = eightDirectionAngle[nextDirection];
+    enemy.facingAngle = enemy.surveillanceFacingAngle;
+    enemy.watcherScanRemaining = watcherCalmScanDuration;
+    enemy.watcherTurnVisualRemaining = watcherTurnVisualDuration;
+    return nextDirection;
+}
+
+void RestartWatcherCalmScan(EnemyRuntime& enemy)
+{
+    enemy.facingAngle = enemy.surveillanceFacingAngle;
+    enemy.watcherScanRemaining = watcherCalmScanDuration;
+    enemy.watcherTurnVisualRemaining = 0.0f;
+}
 
 bool EnemyVisibleInViewport(const EnemyRuntime& enemy, LONG cameraX, LONG cameraY)
 {
@@ -2361,8 +2737,11 @@ BYTE SlashVisualPixel(BYTE character, float originX, float originY,
     float start = absoluteForwardX * playerHalfWidth
         + absoluteForwardY * playerHalfHeight;
     float depth = forward - start;
-    float reach = static_cast<float>(CharacterSlashReach(character));
-    float halfWidth = CharacterSlashWidth(character) * 0.5f;
+    float reach = static_cast<float>(CharacterSlashReach(character))
+        + (character == mobilityCharacter || character == piercerCharacter
+            ? 2.0f : 1.0f);
+    float halfWidth = CharacterSlashWidth(character) * 0.5f
+        + (character == heavyCharacter ? 1.5f : 1.0f);
     float absoluteLateral = lateral < 0.0f ? -lateral : lateral;
     if (depth < 0.0f || depth > reach || absoluteLateral > halfWidth)
     {
@@ -2371,7 +2750,7 @@ BYTE SlashVisualPixel(BYTE character, float originX, float originY,
 
     if (character == piercerCharacter)
     {
-        if (lateral >= -0.5f && lateral < 0.5f)
+        if (lateral >= -0.65f && lateral < 0.65f)
         {
             return 2;
         }
@@ -2380,7 +2759,7 @@ BYTE SlashVisualPixel(BYTE character, float originX, float originY,
         {
             return 2;
         }
-        return depth < 4.0f && absoluteLateral < halfWidth ? 1 : 0;
+        return depth < 5.0f && absoluteLateral < halfWidth ? 1 : 0;
     }
 
     float widthSquared = halfWidth * halfWidth;
@@ -2390,8 +2769,8 @@ BYTE SlashVisualPixel(BYTE character, float originX, float originY,
         float trailStroke = depth - reach * 0.15f + lateral * 0.8f;
         float absoluteMain = mainStroke < 0.0f ? -mainStroke : mainStroke;
         float absoluteTrail = trailStroke < 0.0f ? -trailStroke : trailStroke;
-        return absoluteMain < 0.70f ? 2
-            : (absoluteTrail < 0.55f && depth < reach * 0.65f ? 1 : 0);
+        return absoluteMain < 0.80f ? 2
+            : (absoluteTrail < 0.65f && depth < reach * 0.72f ? 1 : 0);
     }
 
     float curvature = lateral * lateral * reach / widthSquared;
@@ -2402,8 +2781,8 @@ BYTE SlashVisualPixel(BYTE character, float originX, float originY,
         float trailDistance = depth - (arc - 2.0f);
         if (mainDistance < 0.0f) mainDistance = -mainDistance;
         if (trailDistance < 0.0f) trailDistance = -trailDistance;
-        return mainDistance < 0.65f ? 2
-            : (lateral > 0.0f && trailDistance < 0.55f ? 1 : 0);
+        return mainDistance < 0.75f ? 2
+            : (lateral > 0.0f && trailDistance < 0.65f ? 1 : 0);
     }
 
     float arc = reach - curvature
@@ -2412,11 +2791,11 @@ BYTE SlashVisualPixel(BYTE character, float originX, float originY,
     if (arcDistance < 0.0f) arcDistance = -arcDistance;
     if (character == heavyCharacter)
     {
-        return arcDistance <= 1.55f ? 2
-            : (arcDistance <= 2.35f ? 1 : 0);
+        return arcDistance <= 1.80f ? 2
+            : (arcDistance <= 2.70f ? 1 : 0);
     }
-    return arcDistance < 0.85f ? 2
-        : (arcDistance < 1.75f ? 1 : 0);
+    return arcDistance < 1.0f ? 2
+        : (arcDistance < 2.0f ? 1 : 0);
 }
 
 DWORD ExecuteEffectPixel(BYTE character, BYTE phase, float originX,
@@ -2443,38 +2822,47 @@ DWORD ExecuteEffectPixel(BYTE character, BYTE phase, float originX,
 
     if (character == basicCharacter)
     {
-        if (phase == 1 && absoluteLateral <= 5.0f)
+        if (phase == 1 && absoluteLateral <= 6.5f)
         {
-            float arc = distance - lateral * lateral * 0.18f;
+            float arc = distance + 1.0f - lateral * lateral * 0.14f;
             float arcDistance = forward - arc;
             if (arcDistance < 0.0f) arcDistance = -arcDistance;
-            return arcDistance < 0.85f ? 0x00FFFFE0
-                : (arcDistance < 1.65f ? 0x00A84838 : 0);
+            float afterimageDistance = forward - (arc - 3.0f);
+            if (afterimageDistance < 0.0f) afterimageDistance = -afterimageDistance;
+            return arcDistance < 1.0f ? 0x00FFFFE0
+                : (arcDistance < 2.0f ? 0x00C85038
+                    : (lateral > 0.0f && afterimageDistance < 0.7f
+                        ? 0x00683030 : 0));
         }
         if (phase == 2)
         {
             float impactDistance = absoluteTargetX + absoluteTargetY;
-            return impactDistance < 1.25f ? 0x00FFFFFF
-                : (impactDistance < 3.0f ? 0x00C03830 : 0);
+            return impactDistance < 1.5f ? 0x00FFFFFF
+                : (impactDistance < 4.0f ? 0x00D04838 : 0);
         }
         return 0;
     }
 
     if (character == mobilityCharacter)
     {
-        if (phase == 1 && forward >= 0.0f && forward <= distance + 3.0f)
+        if (phase == 1 && forward >= -2.0f && forward <= distance + 4.0f)
         {
-            if (absoluteLateral < 0.65f)
+            if (absoluteLateral < 0.8f)
             {
                 return 0x0088FFFF;
             }
-            float streakDistance = lateral - 1.5f;
+            float streakDistance = lateral - 2.0f;
             if (streakDistance < 0.0f) streakDistance = -streakDistance;
-            return streakDistance < 0.55f && forward < distance * 0.7f
-                ? 0x00387888 : 0;
+            if (streakDistance < 0.65f && forward < distance * 0.75f)
+            {
+                return 0x00387888;
+            }
+            return forward > -1.5f && forward < 1.0f
+                && absoluteLateral >= 3.0f && absoluteLateral < 4.0f
+                ? 0x00285060 : 0;
         }
-        if (phase == 2 && forward > distance && forward <= distance + 6.0f
-            && absoluteLateral < 0.65f)
+        if (phase == 2 && forward > distance && forward <= distance + 7.0f
+            && absoluteLateral < 0.8f)
         {
             return 0x0040B8C8;
         }
@@ -2483,56 +2871,63 @@ DWORD ExecuteEffectPixel(BYTE character, BYTE phase, float originX,
 
     if (character == piercerCharacter)
     {
-        if (phase == 1 && forward >= 1.0f && forward <= distance
-            && absoluteLateral < 0.65f)
+        if (phase == 1 && forward >= 0.0f && forward <= distance + 1.0f
+            && absoluteLateral < 0.75f)
         {
             return 0x00FFF8FF;
         }
+        if (phase == 1 && forward >= 2.0f && forward <= distance
+            && absoluteLateral >= 0.75f && absoluteLateral < 1.6f)
+        {
+            return 0x00583078;
+        }
         if (phase == 1 && forward >= distance - 2.0f && forward <= distance
-            && absoluteLateral <= distance - forward + 0.5f)
+            && absoluteLateral <= distance - forward + 1.0f)
         {
             return 0x00C878E8;
         }
         if (phase == 2)
         {
-            if (forward > distance && forward <= distance + 3.0f
-                && absoluteLateral < 0.65f)
+            if (forward > distance && forward <= distance + 5.0f
+                && absoluteLateral < 0.8f)
             {
                 return 0x009A48BE;
             }
             float sparkDistance = absoluteTargetX + absoluteTargetY;
-            return sparkDistance < 1.25f ? 0x00FFFFFF
-                : (sparkDistance < 2.25f ? 0x009A48BE : 0);
+            return sparkDistance < 1.5f ? 0x00FFFFFF
+                : (sparkDistance < 3.5f ? 0x00B858D0 : 0);
         }
         return 0;
     }
 
     if (character == heavyCharacter)
     {
-        if (phase == 1 && targetLocalY >= -9.0f && targetLocalY <= 4.0f)
+        if (phase == 1 && targetLocalY >= -12.0f && targetLocalY <= 5.0f)
         {
             float cleave = targetLocalX + targetLocalY * 0.22f;
             if (cleave < 0.0f) cleave = -cleave;
-            return cleave < 0.75f ? 0x00FFFFD0
-                : (cleave < 1.8f ? 0x00D06028 : 0);
+            return cleave < 1.0f ? 0x00FFFFD0
+                : (cleave < 2.4f ? 0x00D06028 : 0);
         }
         if (phase == 2)
         {
-            if (absoluteTargetX <= 4.0f && targetLocalY >= 3.0f
-                && targetLocalY < 4.5f)
+            if (absoluteTargetX <= 6.0f && targetLocalY >= 3.0f
+                && targetLocalY < 5.0f)
             {
-                return absoluteTargetX < 1.5f ? 0x00FFFFFF : 0x00C04828;
+                return absoluteTargetX < 2.0f ? 0x00FFFFFF : 0x00C04828;
             }
             bool fragment = (absoluteTargetX >= 2.5f && absoluteTargetX < 3.5f
-                    && absoluteTargetY >= 4.5f && absoluteTargetY < 5.5f)
+                    && absoluteTargetY >= 5.5f && absoluteTargetY < 6.5f)
                 || (absoluteTargetX >= 4.5f && absoluteTargetX < 5.5f
-                    && absoluteTargetY >= 1.5f && absoluteTargetY < 2.5f);
+                    && absoluteTargetY >= 2.5f && absoluteTargetY < 3.5f)
+                || (absoluteTargetX >= 6.5f && absoluteTargetX < 7.5f
+                    && absoluteTargetY >= 0.5f && absoluteTargetY < 1.5f);
             return fragment ? 0x00D07030 : 0;
         }
         return 0;
     }
 
-    if (absoluteTargetX > 4.0f || absoluteTargetY > 4.0f)
+    if (absoluteTargetX > 6.0f || absoluteTargetY > 6.0f)
     {
         return 0;
     }
@@ -2542,10 +2937,12 @@ DWORD ExecuteEffectPixel(BYTE character, BYTE phase, float originX,
     if (secondCut < 0.0f) secondCut = -secondCut;
     if (phase == 1)
     {
-        return firstCut < 0.75f ? 0x00FFF080 : 0;
+        return firstCut < 0.9f ? 0x00FFF080 : 0;
     }
-    return secondCut < 0.75f ? 0x00FFFFFF
-        : (firstCut < 0.75f ? 0x00C89838 : 0);
+    float impactDistance = absoluteTargetX + absoluteTargetY;
+    return impactDistance < 1.25f ? 0x00FFFFFF
+        : (secondCut < 0.9f ? 0x00FFFFFF
+            : (firstCut < 0.9f ? 0x00C89838 : 0));
 }
 
 bool RectangleOverlapsRoomWall(float left, float top, float right, float bottom);
@@ -3166,30 +3563,26 @@ void SetupCurrentRoom()
         currentPatrolStartsRight[enemy] = (NextRoomRandom(state) >> 31) != 0;
     }
 
-    constexpr float watcherFacingAngle[4]
-        = { 0.0f, 1.57079633f, 3.14159265f, -1.57079633f };
-    constexpr LONG watcherFacingX[4] = { 1, 0, -1, 0 };
-    constexpr LONG watcherFacingY[4] = { 0, 1, 0, -1 };
     for (LONG enemy = 0; enemy < currentEnemyCount; ++enemy)
     {
         currentEnemyStartFacing[enemy] = 0.0f;
         if (currentEnemyRole[enemy] == watcherEnemyRole)
         {
-            LONG firstFacing = NextRoomRandom(state) & 3;
-            currentEnemyStartFacing[enemy] = watcherFacingAngle[firstFacing];
-            for (LONG attempt = 0; attempt < 4; ++attempt)
+            LONG firstFacing = NextRoomRandom(state) & 7;
+            currentEnemyStartFacing[enemy] = eightDirectionAngle[firstFacing];
+            for (LONG attempt = 0; attempt < 8; ++attempt)
             {
-                LONG facing = (firstFacing + attempt) & 3;
+                LONG facing = (firstFacing + attempt) & 7;
                 float targetX = currentEnemyStartX[enemy]
-                    + watcherFacingX[facing] * enemyWidth * 3;
+                    + eightDirectionX[facing] * enemyWidth * 3;
                 float targetY = currentEnemyStartY[enemy]
-                    + watcherFacingY[facing] * enemyWidth * 3;
+                    + eightDirectionY[facing] * enemyWidth * 3;
                 if (targetX >= 0.0f && targetX <= worldWidth
                     && targetY >= 0.0f && targetY <= worldHeight
                     && !WallBlocksSegment(currentEnemyStartX[enemy],
                         currentEnemyStartY[enemy], targetX, targetY))
                 {
-                    currentEnemyStartFacing[enemy] = watcherFacingAngle[facing];
+                    currentEnemyStartFacing[enemy] = eightDirectionAngle[facing];
                     break;
                 }
             }
@@ -3197,7 +3590,7 @@ void SetupCurrentRoom()
         else if (currentEnemyRole[enemy] == spinnerEnemyRole)
         {
             currentEnemyStartFacing[enemy]
-                = watcherFacingAngle[NextRoomRandom(state) & 3];
+                = eightDirectionAngle[(NextRoomRandom(state) & 3) * 2];
         }
     }
 
@@ -5678,6 +6071,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 enemy.patrolReturnX = enemy.x;
                 enemy.searchRandomState = RoomRandom(runSeed, currentRoom)
                     ^ (0x13579BDFu + 0x9E3779B9u * enemyIndex);
+                enemy.watcherScanRandomState = RoomRandom(runSeed, currentRoom)
+                    ^ (0xA511E9B3u + 0x85EBCA6Bu * enemyIndex);
+                enemy.watcherScanRemaining = watcherCalmScanDuration;
                 enemy.hp = enemyMaximumHP;
                 enemy.patrolRight = currentPatrolStartsRight[enemyIndex];
                 enemy.alive = true;
@@ -6065,6 +6461,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 bool& enemyAlive = enemy.alive;
 
                 playerInVision = false;
+            if (playerAlive && WatcherCalmScanActive(enemy))
+            {
+                UpdateWatcherCalmScan(enemy, deltaTime);
+            }
             if (enemyAlive && playerAlive && enemy.role == spinnerEnemyRole
                 && !enemyAlert && detectionProgress <= 0.0f
                 && !enemyReturningToPatrol)
@@ -6215,6 +6615,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                     NavigationRow(currentEnemyStartY[enemyIndex]),
                                     navigationPath[enemyIndex]);
                                 searchPathIndex = 0;
+                            }
+                            else if (enemy.role == watcherEnemyRole)
+                            {
+                                RestartWatcherCalmScan(enemy);
                             }
                         }
                     }
@@ -6603,7 +7007,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                     enemyReturningToPatrol = false;
                                     if (enemy.role == watcherEnemyRole)
                                     {
-                                        enemyFacingAngle = enemy.surveillanceFacingAngle;
+                                        RestartWatcherCalmScan(enemy);
                                     }
                                 }
                                 else
@@ -6763,6 +7167,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 if (enemy.executeFeedbackRemaining > 0.0f)
                 {
                     enemy.executeFeedbackRemaining -= deltaTime;
+                }
+                if (enemy.watcherTurnVisualRemaining > 0.0f)
+                {
+                    enemy.watcherTurnVisualRemaining -= deltaTime;
                 }
             }
             if (pressureEnemy.attackCooldownRemaining > 0.0f)
@@ -7275,9 +7683,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
             if (slashVisualRemaining > 0.0f)
             {
-                for (LONG y = slashTop; y < slashBottom; ++y)
+                for (LONG y = slashTop - 3; y < slashBottom + 3; ++y)
                 {
-                    for (LONG x = slashLeft; x < slashRight; ++x)
+                    for (LONG x = slashLeft - 3; x < slashRight + 3; ++x)
                     {
                         LONG screenX = x - cameraX;
                         LONG screenY = y - cameraY;
@@ -7295,6 +7703,31 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
             }
 
+            if (playerDashingThisUpdate)
+            {
+                BYTE dashFrame = dashDistanceRemaining > dashDistanceCurrent * 0.5f
+                    ? playerDashLeanFrame : playerDashStreakFrame;
+                LONG dashCenterX = static_cast<LONG>(playerX);
+                LONG dashCenterY = static_cast<LONG>(playerY);
+                for (LONG y = dashCenterY - 12; y <= dashCenterY + 12; ++y)
+                {
+                    for (LONG x = dashCenterX - 12; x <= dashCenterX + 12; ++x)
+                    {
+                        DWORD color = PlayerDashEffectPixel(selectedCharacter,
+                            dashFrame, playerX, playerY, dashDirectionX,
+                            dashDirectionY, x + 0.5f, y + 0.5f);
+                        LONG screenX = x - cameraX;
+                        LONG screenY = y - cameraY;
+                        if (color && screenX >= 0 && screenX < framebufferWidth
+                            && screenY >= 0 && screenY < framebufferHeight)
+                        {
+                            framebuffer[screenY * framebufferWidth + screenX]
+                                = color;
+                        }
+                    }
+                }
+            }
+
             if (playerExecuteVisualRemaining > 0.0f)
             {
                 BYTE executePhase = ExecuteVisualPhase(
@@ -7307,10 +7740,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     ? executeVisualOriginY : executeVisualTargetY;
                 float maximumY = executeVisualOriginY > executeVisualTargetY
                     ? executeVisualOriginY : executeVisualTargetY;
-                LONG effectLeft = static_cast<LONG>(minimumX) - 10;
-                LONG effectRight = static_cast<LONG>(maximumX) + 11;
-                LONG effectTop = static_cast<LONG>(minimumY) - 10;
-                LONG effectBottom = static_cast<LONG>(maximumY) + 11;
+                LONG effectLeft = static_cast<LONG>(minimumX) - 14;
+                LONG effectRight = static_cast<LONG>(maximumX) + 15;
+                LONG effectTop = static_cast<LONG>(minimumY) - 14;
+                LONG effectBottom = static_cast<LONG>(maximumY) + 15;
                 for (LONG y = effectTop; y < effectBottom; ++y)
                 {
                     for (LONG x = effectLeft; x < effectRight; ++x)
@@ -7387,6 +7820,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     }
                     bool mirrorEnemy = !spinnerOrientation
                         && cosf(enemy.facingAngle) < 0.0f;
+                    LONG enemyVisualOffsetX = 0;
+                    LONG enemyVisualOffsetY = 0;
+                    EnemyPoseOffset(enemy.role, enemyFrame, enemy.facingAngle,
+                        enemyVisualOffsetX, enemyVisualOffsetY);
                     for (LONG y = 0; y < enemyHeight; ++y)
                     {
                         for (LONG x = 0; x < enemyWidth; ++x)
@@ -7394,8 +7831,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                             LONG sourceX = mirrorEnemy ? enemyWidth - 1 - x : x;
                             DWORD color = EnemySpriteColor(enemy.role,
                                 enemyFrame, sourceX, y);
-                            LONG pixelX = enemyLeft + x - cameraX;
-                            LONG pixelY = enemyTop + y - cameraY;
+                            LONG pixelX = enemyLeft + x + enemyVisualOffsetX
+                                - cameraX;
+                            LONG pixelY = enemyTop + y + enemyVisualOffsetY
+                                - cameraY;
                             if (color
                                 && pixelX >= 0 && pixelX < framebufferWidth
                                 && pixelY >= 0 && pixelY < framebufferHeight)
@@ -7407,6 +7846,57 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                                             ? (((x + y) & 1)
                                                 ? 0x00FFF060 : 0x00FF8020)
                                             : color);
+                            }
+                        }
+                    }
+
+                    if (enemyFrame == enemyAttackWindupFrame
+                        || enemyFrame == enemyAttackStrikeFrame)
+                    {
+                        for (LONG y = enemyCenterY - 11;
+                            y <= enemyCenterY + 11; ++y)
+                        {
+                            for (LONG x = enemyCenterX - 11;
+                                x <= enemyCenterX + 11; ++x)
+                            {
+                                DWORD color = EnemyAttackEffectPixel(enemy.role,
+                                    enemyFrame, enemy.x, enemy.y,
+                                    enemy.facingAngle, x + 0.5f, y + 0.5f);
+                                LONG screenX = x - cameraX;
+                                LONG screenY = y - cameraY;
+                                if (color && screenX >= 0
+                                    && screenX < framebufferWidth
+                                    && screenY >= 0
+                                    && screenY < framebufferHeight)
+                                {
+                                    framebuffer[screenY * framebufferWidth
+                                        + screenX] = color;
+                                }
+                            }
+                        }
+                    }
+
+                    if (enemy.role == watcherEnemyRole)
+                    {
+                        float sensorDirectionX = cosf(enemy.facingAngle);
+                        float sensorDirectionY = sinf(enemy.facingAngle);
+                        DWORD sensorColor = enemy.watcherTurnVisualRemaining > 0.0f
+                            ? 0x00FFFFFF : (enemy.alert ? 0x00FF5040
+                                : (enemy.detectionProgress > 0.0f
+                                    ? 0x00FFD060 : 0x0068D8E8));
+                        for (LONG sensor = 0; sensor < 2; ++sensor)
+                        {
+                            float reach = 4.0f + sensor;
+                            LONG sensorX = enemyCenterX
+                                + VisualRound(sensorDirectionX * reach) - cameraX;
+                            LONG sensorY = enemyCenterY - 3
+                                + VisualRound(sensorDirectionY * reach * 0.6f)
+                                - cameraY;
+                            if (sensorX >= 0 && sensorX < framebufferWidth
+                                && sensorY >= 0 && sensorY < framebufferHeight)
+                            {
+                                framebuffer[sensorY * framebufferWidth + sensorX]
+                                    = sensorColor;
                             }
                         }
                     }
@@ -7462,9 +7952,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     }
                     else
                     {
-                        constexpr LONG fragmentX[4]{ -4, -2, 2, 4 };
-                        constexpr LONG fragmentY[4]{ 1, 4, 3, 0 };
-                        for (LONG fragment = 0; fragment < 4; ++fragment)
+                        constexpr LONG fragmentX[6]{ -6, -4, -2, 2, 4, 6 };
+                        constexpr LONG fragmentY[6]{ 2, 5, 7, 6, 4, 1 };
+                        for (LONG fragment = 0; fragment < 6; ++fragment)
                         {
                             LONG screenX = enemyCenterX + fragmentX[fragment]
                                 - cameraX;
@@ -7496,6 +7986,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     pressureEnemy.attackCooldownRemaining,
                     pressureMovedThisUpdate, enemyVisualTime);
                 bool mirrorPressure = cosf(pressureEnemy.facingAngle) < 0.0f;
+                LONG pressureVisualOffsetX = 0;
+                LONG pressureVisualOffsetY = 0;
+                PressurePoseOffset(pressureFrame, pressureEnemy.facingAngle,
+                    pressureVisualOffsetX, pressureVisualOffsetY);
+                pressureLeft += pressureVisualOffsetX;
+                pressureTop += pressureVisualOffsetY;
                 for (LONG y = 0; y < pressureVisualHeight; ++y)
                 {
                     for (LONG x = 0; x < pressureVisualWidth; ++x)
@@ -7527,6 +8023,31 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         }
                     }
                 }
+                if (pressureFrame == pressureAttackCrushFrame)
+                {
+                    LONG pressureCenterX = static_cast<LONG>(pressureEnemy.x);
+                    LONG pressureCenterY = static_cast<LONG>(pressureEnemy.y);
+                    for (LONG y = pressureCenterY - 12;
+                        y <= pressureCenterY + 12; ++y)
+                    {
+                        for (LONG x = pressureCenterX - 12;
+                            x <= pressureCenterX + 12; ++x)
+                        {
+                            DWORD color = PressureAttackEffectPixel(pressureFrame,
+                                pressureEnemy.x, pressureEnemy.y,
+                                pressureEnemy.facingAngle, x + 0.5f, y + 0.5f);
+                            LONG screenX = x - cameraX;
+                            LONG screenY = y - cameraY;
+                            if (color && screenX >= 0
+                                && screenX < framebufferWidth && screenY >= 0
+                                && screenY < framebufferHeight)
+                            {
+                                framebuffer[screenY * framebufferWidth + screenX]
+                                    = color;
+                            }
+                        }
+                    }
+                }
             }
 
             LONG drawingLeft = static_cast<LONG>(playerX) - playerWidth / 2 - cameraX;
@@ -7550,14 +8071,28 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     }
                 }
             }
-            BYTE playerFrame = playerAlive && playerExecuteVisualRemaining > 0.0f
-                ? PlayerExecuteAnimationFrame(selectedCharacter,
-                    ExecuteVisualPhase(playerExecuteVisualRemaining))
+            bool playerExecuting = playerAlive
+                && playerExecuteVisualRemaining > 0.0f;
+            BYTE playerExecutePhase = playerExecuting
+                ? ExecuteVisualPhase(playerExecuteVisualRemaining) : 3;
+            BYTE playerFrame = playerExecuting
+                ? PlayerExecuteAnimationFrame(selectedCharacter, playerExecutePhase)
                 : PlayerAnimationFrame(playerAlive, playerDashingThisUpdate,
                     dashDistanceRemaining, dashDistanceCurrent,
                     playerSlashVisualRemaining, playerMovedThisUpdate,
                     playerWalkAnimTime);
-            bool mirrorPlayer = playerExecuteVisualRemaining > 0.0f
+            LONG playerVisualOffsetX = 0;
+            LONG playerVisualOffsetY = 0;
+            LONG playerPoseFacingX = playerDashingThisUpdate
+                ? dashDirectionX : facingX;
+            LONG playerPoseFacingY = playerDashingThisUpdate
+                ? dashDirectionY : facingY;
+            PlayerPoseOffset(selectedCharacter, playerFrame, playerExecuting,
+                playerExecutePhase, playerPoseFacingX, playerPoseFacingY,
+                playerVisualOffsetX, playerVisualOffsetY);
+            drawingLeft += playerVisualOffsetX;
+            drawingTop += playerVisualOffsetY;
+            bool mirrorPlayer = playerExecuting
                 ? executeVisualTargetX < executeVisualOriginX
                 : (playerDashingThisUpdate ? dashDirectionX < 0
                     : (playerSlashVisualRemaining > 0.0f
@@ -7576,8 +8111,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         && pixelY >= 0 && pixelY < framebufferHeight)
                     {
                         framebuffer[pixelY * framebufferWidth + pixelX]
-                            = PlayerSpriteFeedbackColor(color, playerAlive,
-                                playerHitRemaining > 0.0f,
+                            = PlayerSpriteFeedbackColor(selectedCharacter,
+                                color, playerAlive, playerHitRemaining > 0.0f,
                                 playerDashingThisUpdate);
                     }
                 }
@@ -8401,6 +8936,45 @@ int main()
     failures += PointInsideExecuteFacing(0.0f, 0.0f, 1.0f, 0.0f,
         -1.0f, 0.0f);
 
+    EnemyRuntime watcherScan{};
+    watcherScan.alive = true;
+    watcherScan.role = watcherEnemyRole;
+    watcherScan.x = 80.0f;
+    watcherScan.y = 90.0f;
+    watcherScan.facingAngle = eightDirectionAngle[0];
+    watcherScan.surveillanceFacingAngle = watcherScan.facingAngle;
+    watcherScan.watcherScanRandomState = 0x12345678u;
+    watcherScan.watcherScanRemaining = watcherCalmScanDuration;
+    EnemyRuntime watcherReplay = watcherScan;
+    LONG scanA0 = UpdateWatcherCalmScan(watcherScan, 4.90f);
+    LONG scanA1 = UpdateWatcherCalmScan(watcherScan, 0.11f);
+    LONG scanA2 = UpdateWatcherCalmScan(watcherScan, 5.01f);
+    LONG scanB0 = UpdateWatcherCalmScan(watcherReplay, 4.90f);
+    LONG scanB1 = UpdateWatcherCalmScan(watcherReplay, 0.11f);
+    LONG scanB2 = UpdateWatcherCalmScan(watcherReplay, 5.01f);
+    failures += scanA0 != 0 || scanA1 == scanA0 || scanA2 == scanA1
+        || scanA0 != scanB0 || scanA1 != scanB1 || scanA2 != scanB2
+        || watcherScan.facingAngle != watcherReplay.facingAngle
+        || watcherScan.watcherScanRandomState
+            != watcherReplay.watcherScanRandomState
+        || watcherScan.x != 80.0f || watcherScan.y != 90.0f
+        || watcherScan.watcherTurnVisualRemaining
+            != watcherTurnVisualDuration
+        || watcherCalmScanDuration != 5.0f;
+    watcherScan.detectionProgress = 0.1f;
+    failures += WatcherCalmScanActive(watcherScan);
+    watcherScan.detectionProgress = 0.0f;
+    watcherScan.alert = true;
+    failures += WatcherCalmScanActive(watcherScan);
+    watcherScan.alert = false;
+    watcherScan.returningToPatrol = true;
+    failures += WatcherCalmScanActive(watcherScan);
+    watcherScan.returningToPatrol = false;
+    RestartWatcherCalmScan(watcherScan);
+    failures += !WatcherCalmScanActive(watcherScan)
+        || watcherScan.watcherScanRemaining != watcherCalmScanDuration
+        || watcherScan.facingAngle != watcherScan.surveillanceFacingAngle;
+
     EnemyRuntime witness[7]{};
     witness[0].alive = true;
     witness[0].role = patrollerEnemyRole;
@@ -8640,10 +9214,11 @@ int main()
         GetTickCount64() - soakStart, soakUpdates, soakFailures);
 #endif
 
-    printf("b03_failures=%ld slash70=%d sector=%d wall_clip=%d execute170=%d highest=%ld windup=%d capacity=%ld\n",
+    printf("b03_failures=%ld slash70=%d sector=%d wall_clip=%d execute170=%d watcher=%ld/%ld/%ld deterministic=%d windup=%d capacity=%ld\n",
         failures, local[0].alert, rawSector, !clippedSector,
         !PointInsideExecuteFacing(0.0f, 0.0f, 1.0f, 0.0f, -1.0f, 0.0f),
-        pendingDamage, windupDamage, maxEnemyCount);
+        scanA0, scanA1, scanA2, scanA1 == scanB1 && scanA2 == scanB2,
+        windupDamage, maxEnemyCount);
     return failures;
 }
 
@@ -10185,7 +10760,7 @@ int main()
 
     ResetMetaProfile();
     constexpr LONG slashVisualMinimum[characterCount]{ 20, 7, 18, 35, 8 };
-    constexpr LONG slashVisualMaximum[characterCount]{ 36, 20, 40, 64, 24 };
+    constexpr LONG slashVisualMaximum[characterCount]{ 64, 48, 64, 128, 48 };
     constexpr LONG visualDirectionX[8]{ 1, 1, 0, -1, -1, -1, 0, 1 };
     constexpr LONG visualDirectionY[8]{ 0, 1, 1, 1, 0, -1, -1, -1 };
     for (BYTE character = 0; character < characterCount; ++character)
@@ -10342,6 +10917,102 @@ int main()
     printf("section_v06=%ld execute=%ld/%ld/%ld/%ld/%ld\n", failures,
         executeVisualPixels[0], executeVisualPixels[1], executeVisualPixels[2],
         executeVisualPixels[3], executeVisualPixels[4]);
+
+    DWORD dashVisualHash[characterCount]{};
+    LONG dashVisualPixels[characterCount]{};
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        DWORD hash = 2166136261u;
+        for (BYTE frame = playerDashLeanFrame;
+            frame <= playerDashStreakFrame; ++frame)
+        {
+            for (LONG y = 88; y <= 112; ++y)
+            {
+                for (LONG x = 88; x <= 112; ++x)
+                {
+                    DWORD color = PlayerDashEffectPixel(character, frame,
+                        100.0f, 100.0f, 1, 0, x + 0.5f, y + 0.5f);
+                    if (color)
+                    {
+                        ++dashVisualPixels[character];
+                        hash = (hash ^ color ^ static_cast<DWORD>(x)
+                            ^ (static_cast<DWORD>(y) << 8)
+                            ^ (static_cast<DWORD>(frame) << 24)) * 16777619u;
+                    }
+                }
+            }
+        }
+        dashVisualHash[character] = hash;
+        failures += !dashVisualPixels[character];
+    }
+    for (BYTE first = 0; first < characterCount; ++first)
+    {
+        for (BYTE second = first + 1; second < characterCount; ++second)
+        {
+            failures += dashVisualHash[first] == dashVisualHash[second];
+        }
+    }
+
+    DWORD enemyAttackHash[enemyRoleCount]{};
+    LONG enemyAttackPixels[enemyRoleCount]{};
+    for (BYTE role = 0; role < enemyRoleCount; ++role)
+    {
+        DWORD hash = 2166136261u;
+        for (LONG y = 88; y <= 112; ++y)
+        {
+            for (LONG x = 88; x <= 112; ++x)
+            {
+                DWORD color = EnemyAttackEffectPixel(role,
+                    enemyAttackStrikeFrame, 100.0f, 100.0f, 0.0f,
+                    x + 0.5f, y + 0.5f);
+                if (color)
+                {
+                    ++enemyAttackPixels[role];
+                    hash = (hash ^ color ^ static_cast<DWORD>(x)
+                        ^ (static_cast<DWORD>(y) << 8)) * 16777619u;
+                }
+            }
+        }
+        enemyAttackHash[role] = hash;
+        failures += !enemyAttackPixels[role];
+    }
+    for (BYTE first = 0; first < enemyRoleCount; ++first)
+    {
+        for (BYTE second = first + 1; second < enemyRoleCount; ++second)
+        {
+            failures += enemyAttackHash[first] == enemyAttackHash[second];
+        }
+    }
+    LONG poseX = 0;
+    LONG poseY = 0;
+    PlayerPoseOffset(mobilityCharacter, playerDashStreakFrame, false, 3,
+        1, 0, poseX, poseY);
+    LONG pressurePixels = 0;
+    for (LONG y = 88; y <= 112; ++y)
+    {
+        for (LONG x = 88; x <= 112; ++x)
+        {
+            pressurePixels += PressureAttackEffectPixel(
+                pressureAttackCrushFrame, 100.0f, 100.0f, 0.0f,
+                x + 0.5f, y + 0.5f) != 0;
+        }
+    }
+    failures += poseX != 3 || poseY
+        || executeVisualPixels[basicCharacter] <= 46
+        || executeVisualPixels[mobilityCharacter] <= 61
+        || executeVisualPixels[piercerCharacter] <= 46
+        || executeVisualPixels[heavyCharacter] <= 62
+        || executeVisualPixels[rapidCharacter] <= 24
+        || !SlashVisualPixel(basicCharacter, 100.0f, 100.0f,
+            1, 0, 112.5f, 100.5f)
+        || !pressurePixels || detectionFillDuration != 2.4f
+        || CharacterDashDistance(heavyCharacter) != dashDistance * 0.9f
+        || CharacterSlashReach(basicCharacter) != slashReach;
+    printf("section_v07=%ld dash=%ld/%ld/%ld/%ld/%ld attack=%ld/%ld/%ld/%ld/%ld pressure=%ld\n",
+        failures, dashVisualPixels[0], dashVisualPixels[1],
+        dashVisualPixels[2], dashVisualPixels[3], dashVisualPixels[4],
+        enemyAttackPixels[0], enemyAttackPixels[1], enemyAttackPixels[2],
+        enemyAttackPixels[3], enemyAttackPixels[4], pressurePixels);
 
 #ifdef DEAD_SIGNAL_B101_SOAK_VALIDATION
     ULONGLONG soakStart = GetTickCount64();
