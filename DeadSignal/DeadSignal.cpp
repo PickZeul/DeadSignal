@@ -1687,6 +1687,11 @@ BYTE rerollUsed = 0;
 bool characterUpgradeFocus = false;
 LONG characterUpgradeSelection = 0;
 bool upgradeConfirmRequested = false;
+constexpr float upgradePanelRiseDuration = 0.6f;
+constexpr float upgradeCardRevealDuration = 0.8f;
+constexpr float upgradeRevealDuration = upgradePanelRiseDuration
+    + upgradeCardRevealDuration;
+float upgradeRevealElapsed = upgradeRevealDuration;
 bool gameplayMenuActive = false;
 LONG gameplayMenuSelection = 0;
 bool saveAndTitleRequested = false;
@@ -1749,6 +1754,12 @@ enum SfxId : BYTE
     sfxUiBack,
     sfxRunClear,
     sfxGameOver,
+    sfxUpgradeRelay,
+    sfxUpgradeIgnitionLow,
+    sfxUpgradeIgnitionMid,
+    sfxUpgradeIgnitionHigh,
+    sfxUpgradeCross,
+    sfxUpgradeReady,
     sfxCount
 };
 
@@ -1828,7 +1839,13 @@ constexpr SfxSpec sfxSpecs[sfxCount]
     { 85, 310, 180, 42, 25, sfxMetalWave, 0, 1 },
     { 65, 620, 300, 38, 10, sfxSquareWave, 0, 1 },
     { 420, 280, 920, 90, 35, sfxTriangleWave, sfxDoublePulse, 3 },
-    { 480, 520, 72, 105, 160, sfxNoiseWave, sfxBrokenGate, 4 }
+    { 480, 520, 72, 105, 160, sfxNoiseWave, sfxBrokenGate, 4 },
+    { 480, 150, 520, 72, 45, sfxTriangleWave, 0, 2 },
+    { 75, 360, 190, 54, 60, sfxMetalWave, 0, 2 },
+    { 70, 460, 820, 58, 45, sfxTriangleWave, 0, 2 },
+    { 65, 760, 1160, 60, 30, sfxMetalWave, 0, 2 },
+    { 500, 360, 1320, 82, 30, sfxTriangleWave, 0, 3 },
+    { 85, 680, 280, 62, 35, sfxMetalWave, 0, 2 }
 };
 
 SfxVoice sfxVoices[sfxVoiceCount]{};
@@ -1880,6 +1897,7 @@ struct BgmState
     LONG rhythmStep;
     LONG signalStep;
     WORD duckGain;
+    WORD revealGain;
     BYTE currentMode;
     BYTE targetMode;
     BYTE pulseIndex;
@@ -2010,6 +2028,50 @@ bool PlaySfx(BYTE sound)
     return true;
 }
 
+void BeginUpgradeReveal()
+{
+    upgradeRevealElapsed = 0.0f;
+    PlaySfx(sfxUpgradeRelay);
+}
+
+void UpdateUpgradeReveal(float deltaTime)
+{
+    if (upgradeRevealElapsed >= upgradeRevealDuration)
+    {
+        return;
+    }
+    if (deltaTime > 0.05f)
+    {
+        deltaTime = 0.05f;
+    }
+    float previous = upgradeRevealElapsed;
+    upgradeRevealElapsed += deltaTime;
+    if (upgradeRevealElapsed > upgradeRevealDuration)
+    {
+        upgradeRevealElapsed = upgradeRevealDuration;
+    }
+    if (previous < 0.61f && upgradeRevealElapsed >= 0.61f)
+    {
+        PlaySfx(sfxUpgradeIgnitionLow);
+    }
+    if (previous < 0.66f && upgradeRevealElapsed >= 0.66f)
+    {
+        PlaySfx(sfxUpgradeIgnitionMid);
+    }
+    if (previous < 0.70f && upgradeRevealElapsed >= 0.70f)
+    {
+        PlaySfx(sfxUpgradeCross);
+    }
+    if (previous < 0.96f && upgradeRevealElapsed >= 0.96f)
+    {
+        PlaySfx(sfxUpgradeIgnitionHigh);
+    }
+    if (previous < 1.34f && upgradeRevealElapsed >= 1.34f)
+    {
+        PlaySfx(sfxUpgradeReady);
+    }
+}
+
 LONG SfxVoiceSample(SfxVoice& voice)
 {
     if (!voice.active || voice.sample >= voice.duration)
@@ -2083,7 +2145,7 @@ LONG SfxVoiceSample(SfxVoice& voice)
 
 BYTE DesiredBgmMode()
 {
-    if (applicationState != gameplayState || upgradeMenuActive)
+    if (applicationState != gameplayState)
     {
         return bgmMenuMode;
     }
@@ -2097,9 +2159,9 @@ void ScheduleBgmPulse()
     DWORD baseInterval = audioSampleRate * 4;
     if (bgmState.currentMode == bgmRunMode)
     {
-        baseInterval = bgmTensionLevel >= 2 ? audioSampleRate * 2
-            : (bgmTensionLevel ? audioSampleRate * 5 / 2
-                : audioSampleRate * 3);
+        baseInterval = bgmTensionLevel >= 2 ? audioSampleRate * 5 / 3
+            : (bgmTensionLevel ? audioSampleRate * 25 / 12
+                : audioSampleRate * 5 / 2);
     }
     bgmState.nextPulseSample = bgmState.modeSample + baseInterval + variation;
     bgmState.pulseDuration = audioSampleRate
@@ -2123,18 +2185,22 @@ void ScheduleBgmRhythm()
     bgmState.noiseState = bgmState.noiseState * 1664525u + 1013904223u;
     DWORD interval = bgmState.currentMode == bgmMenuMode
         ? audioSampleRate / 3 : (bgmState.currentMode == bgmRunMode
-            ? (bgmTensionLevel >= 2 ? audioSampleRate * 4 / 5
-                : (bgmTensionLevel ? audioSampleRate * 19 / 20
-                    : audioSampleRate * 11 / 10))
+            ? (bgmTensionLevel >= 2 ? audioSampleRate * 2 / 3
+                : (bgmTensionLevel ? audioSampleRate * 19 / 24
+                    : audioSampleRate * 11 / 12))
             : audioSampleRate * 2 / 3);
     bgmState.nextRhythmSample = bgmState.modeSample + interval;
     BYTE step = bgmState.rhythmIndex;
     if (bgmState.currentMode == bgmMenuMode)
     {
         BYTE thumpMask = bgmState.rhythmPattern == 0 ? 0x11
-            : (bgmState.rhythmPattern == 1 ? 0x21 : 0x41);
-        BYTE tickMask = bgmState.rhythmPattern == 0 ? 0x44
+            : (bgmState.rhythmPattern == 1 ? 0x21 : 0x45);
+        BYTE tickMask = bgmState.rhythmPattern == 0 ? 0x4C
             : (bgmState.rhythmPattern == 1 ? 0x8A : 0x48);
+        if (bgmState.rhythmPattern == 1 && (bgmState.pulseIndex & 1))
+        {
+            tickMask |= 0x10;
+        }
         if (thumpMask & (1 << step))
         {
             bgmState.pulseDuration = audioSampleRate * 150 / 1000;
@@ -2183,7 +2249,7 @@ void ScheduleBgmRhythm()
         {
             bgmState.rhythmPattern = static_cast<BYTE>(
                 (bgmState.rhythmPattern + 1) % 3);
-            if ((++bgmState.pulseIndex & 3) == 3)
+            if (0x9224u & (1u << (++bgmState.pulseIndex & 15)))
             {
                 bgmState.phraseIndex = 0;
                 bgmState.phraseRemaining = 4;
@@ -2237,6 +2303,7 @@ void ResetBgmState()
     ResetBgmPattern(bgmState.targetMode);
     bgmState.startupRemaining = audioSampleRate * 150 / 1000;
     bgmState.duckGain = 256;
+    bgmState.revealGain = 256;
 }
 
 LONG BgmSample()
@@ -2275,7 +2342,7 @@ LONG BgmSample()
         --bgmState.startupRemaining;
     }
 
-    WORD droneFrequency = bgmState.currentMode == bgmMenuMode ? 41
+    WORD droneFrequency = bgmState.currentMode == bgmMenuMode ? 37
         : (bgmState.currentMode == bgmRunMode ? 47 : 38);
     bgmState.dronePhase += droneFrequency * sfxPhaseUnit;
     bgmState.harmonicPhase += (droneFrequency * 2 + 1) * sfxPhaseUnit;
@@ -2293,7 +2360,8 @@ LONG BgmSample()
     bgmState.bodyPhase += bodyFrequency * sfxPhaseUnit;
     LONG phase = static_cast<LONG>(bgmState.dronePhase >> 24);
     LONG triangle = phase < 128 ? phase * 2 - 127 : 383 - phase * 2;
-    LONG mixed = triangle * (bgmState.currentMode == bgmRunMode ? 4 : 3) / 127;
+    LONG droneAmplitude = bgmState.currentMode == bgmRunMode ? 68 : 75;
+    LONG mixed = triangle * droneAmplitude / (127 * 25);
     phase = static_cast<LONG>(bgmState.harmonicPhase >> 24);
     triangle = phase < 128 ? phase * 2 - 127 : 383 - phase * 2;
     mixed += triangle / 127;
@@ -2302,7 +2370,8 @@ LONG BgmSample()
     LONG bodyAmplitude = bgmState.currentMode == bgmMenuMode ? 4
         : (bgmState.currentMode == bgmRunMode
             ? 3 + (bgmTensionLevel ? 1 : 0) : 2);
-    mixed += triangle * bodyAmplitude / 127;
+    LONG bodyGain = bgmState.currentMode == bgmRunMode ? 7 : 8;
+    mixed += triangle * bodyAmplitude * bodyGain / (127 * 8);
 
     if (bgmState.modeSample >= bgmState.nextPulseSample)
     {
@@ -2320,13 +2389,13 @@ LONG BgmSample()
         }
         phase = static_cast<LONG>(bgmState.pulsePhase >> 24);
         LONG pulse = phase < 128 ? phase * 2 - 127 : 383 - phase * 2;
-        LONG pulseAmplitude = bgmState.currentMode == bgmRunMode ? 5 : 7;
+        LONG pulseAmplitude = bgmState.currentMode == bgmRunMode ? 30 : 35;
         if (bgmState.currentMode == bgmRunMode && bgmTensionLevel >= 2)
         {
-            ++pulseAmplitude;
+            pulseAmplitude = 36;
         }
         mixed += pulse * pulseAmplitude * envelope * 56
-            / (127 * 256 * 25);
+            / (127 * 256 * 25 * 5);
         --bgmState.pulseRemaining;
     }
     if (bgmState.modeSample >= bgmState.nextRhythmSample)
@@ -2345,21 +2414,21 @@ LONG BgmSample()
         }
         phase = static_cast<LONG>(bgmState.rhythmPhase >> 24);
         triangle = phase < 128 ? phase * 2 - 127 : 383 - phase * 2;
-        LONG rhythmAmplitude = bgmState.currentMode == bgmMenuMode ? 3
+        LONG rhythmAmplitude = bgmState.currentMode == bgmMenuMode ? 15
             : (bgmState.currentMode == bgmRunMode
-                ? 1 + (bgmTensionLevel >= 2 ? 1 : 0) : 1);
+                ? (bgmTensionLevel >= 2 ? 12 : 6) : 5);
         mixed += triangle * rhythmAmplitude * envelope * 8
-            / (127 * 256 * 5);
+            / (127 * 256 * 5 * 5);
         --bgmState.rhythmRemaining;
     }
     if (bgmState.signalRemaining)
     {
         bgmState.signalPhase += static_cast<DWORD>(bgmState.signalStep);
         LONG signal = bgmState.signalPhase & 0x80000000u ? 1 : -1;
-        LONG signalAmplitude = bgmState.currentMode == bgmMenuMode ? 2 : 1;
+        LONG signalAmplitude = bgmState.currentMode == bgmMenuMode ? 5 : 2;
         mixed += signal * signalAmplitude
             * static_cast<LONG>(bgmState.signalRemaining) * 7
-            / (static_cast<LONG>(bgmState.signalDuration) * 5);
+            / (static_cast<LONG>(bgmState.signalDuration) * 10);
         --bgmState.signalRemaining;
     }
     if (bgmState.modeSample >= bgmState.nextStaticSample)
@@ -2377,8 +2446,8 @@ LONG BgmSample()
         {
             envelope = static_cast<LONG>(elapsed * envelope / 16);
         }
-        LONG staticAmplitude = bgmState.currentMode == bgmRunMode ? 2 : 1;
-        mixed += noise * staticAmplitude * envelope / (128 * 256);
+        LONG staticAmplitude = bgmState.currentMode == bgmRunMode ? 48 : 25;
+        mixed += noise * staticAmplitude * envelope / (128 * 256 * 25);
         --bgmState.staticRemaining;
     }
     ++bgmState.modeSample;
@@ -2394,7 +2463,18 @@ LONG BgmSample()
     {
         ++bgmState.duckGain;
     }
-    return mixed * transitionGain / 256 * bgmState.duckGain / 256;
+    WORD revealTarget = upgradeMenuActive
+        && upgradeRevealElapsed < upgradeRevealDuration ? 179 : 256;
+    if (bgmState.revealGain > revealTarget)
+    {
+        --bgmState.revealGain;
+    }
+    else if (bgmState.revealGain < revealTarget)
+    {
+        ++bgmState.revealGain;
+    }
+    return mixed * transitionGain / 256 * bgmState.duckGain / 256
+        * bgmState.revealGain / 256;
 }
 
 LONG ApplyCategoryVolume(LONG mixed, AudioCategory category)
@@ -2421,8 +2501,8 @@ short MixAudioSample()
     }
     LONG bgmMixed = BgmSample();
     LONG bgmGain = bgmState.currentMode == bgmResultMode ? 256 : 333;
-    LONG mixed = ApplyCategoryVolume(sfxMixed * 256, audioCategorySfx)
-        + ApplyCategoryVolume(bgmMixed * bgmGain, audioCategoryBgm);
+    LONG mixed = ApplyCategoryVolume(sfxMixed * 256 * 4 / 5, audioCategorySfx)
+        + ApplyCategoryVolume(bgmMixed * bgmGain * 7 / 5, audioCategoryBgm);
     return ApplyMasterVolume(mixed, masterVolumeStep);
 }
 
@@ -5707,6 +5787,308 @@ void DrawVolumeOption(HDC deviceContext, LONG clientWidth, LONG clientHeight,
     DrawCenteredUiText(deviceContext, L">", line);
 }
 
+void DrawRunUpgradeFrame(HDC deviceContext, LONG clientWidth,
+    LONG clientHeight)
+{
+    RECT panel
+    {
+        clientWidth * 65 / 320, clientHeight * 36 / 180,
+        clientWidth * 255 / 320, clientHeight * 144 / 180
+    };
+    DrawTerminalPanel(deviceContext, panel, false);
+}
+
+void DrawRunUpgradeCards(HDC deviceContext, LONG clientWidth,
+    LONG clientHeight, bool focusEnabled)
+{
+    RECT divider
+    {
+        clientWidth * 97 / 320, clientHeight * 55 / 180,
+        clientWidth * 223 / 320, clientHeight * 56 / 180
+    };
+    FillUiRectangle(deviceContext, divider, RGB(91, 29, 30));
+    for (LONG item = 0; item < 3; ++item)
+    {
+        RECT option
+        {
+            clientWidth * 81 / 320,
+            clientHeight * (64 + item * 23) / 180,
+            clientWidth * 239 / 320,
+            clientHeight * (83 + item * 23) / 180
+        };
+        DrawTerminalPanel(deviceContext, option,
+            focusEnabled && item == upgradeSelection);
+    }
+}
+
+void DrawRunUpgradeText(HDC deviceContext, LONG clientWidth,
+    LONG clientHeight, bool focusEnabled)
+{
+    SelectObject(deviceContext, uiFont
+        ? uiFont : GetStockObject(DEFAULT_GUI_FONT));
+    SetBkMode(deviceContext, TRANSPARENT);
+    RECT line{ 0, clientHeight * 39 / 180,
+        clientWidth, clientHeight * 55 / 180 };
+    SetTextColor(deviceContext, RGB(220, 220, 220));
+    DrawCenteredUiText(deviceContext, L"UPGRADE", line);
+    wchar_t upgradeText[32];
+    for (LONG item = 0; item < 3; ++item)
+    {
+        LONG upgrade = item ? upgradeOptionB : upgradeOptionA;
+        bool rerollExhausted = rerollUsed >= CurrentRunRerollCapacity();
+        bool focused = focusEnabled && item == upgradeSelection;
+        RECT option
+        {
+            clientWidth * 81 / 320,
+            clientHeight * (64 + item * 23) / 180,
+            clientWidth * 239 / 320,
+            clientHeight * (83 + item * 23) / 180
+        };
+        const wchar_t* text = upgradeText;
+        wsprintfW(upgradeText, L"REROLL %u/%u",
+            static_cast<UINT>(rerollUsed),
+            static_cast<UINT>(CurrentRunRerollCapacity()));
+        if (item != 2)
+        {
+            const wchar_t* name = upgrade == moveUpgrade ? L"MOVE+"
+                : (upgrade == slashUpgrade ? L"SLASH+"
+                    : (upgrade == dashUpgrade ? L"DASH+"
+                        : (upgrade == silentDashUpgrade ? L"SILENT DASH"
+                            : (upgrade == executeReachUpgrade
+                                ? L"EXECUTE REACH" : L"FIELD MEDIC"))));
+            wsprintfW(upgradeText, L"[%s] %s %u/%u",
+                upgrade <= dashUpgrade ? L"A" : L"F", name,
+                static_cast<UINT>(CurrentUpgradeStack(upgrade)),
+                static_cast<UINT>(upgrade <= dashUpgrade ? 2 : 1));
+        }
+        line = option;
+        SetTextColor(deviceContext, focused
+            ? (item == 2 && rerollExhausted ? RGB(96, 96, 96)
+                : RGB(255, 216, 0))
+            : (item == 2 && rerollExhausted ? RGB(64, 64, 64)
+                : RGB(160, 160, 160)));
+        DrawCenteredUiText(deviceContext, text, line, focused);
+    }
+}
+
+void DrawRunUpgradePanel(HDC deviceContext, LONG clientWidth,
+    LONG clientHeight, bool focusEnabled)
+{
+    DrawRunUpgradeFrame(deviceContext, clientWidth, clientHeight);
+    DrawRunUpgradeCards(deviceContext, clientWidth, clientHeight, focusEnabled);
+    DrawRunUpgradeText(deviceContext, clientWidth, clientHeight, focusEnabled);
+}
+
+void FillUpgradeLogicalRectangle(HDC deviceContext, LONG clientWidth,
+    LONG clientHeight, LONG left, LONG top, LONG right, LONG bottom,
+    COLORREF color)
+{
+    if (left >= right || top >= bottom)
+    {
+        return;
+    }
+    RECT rectangle
+    {
+        clientWidth * left / 320, clientHeight * top / 180,
+        clientWidth * right / 320, clientHeight * bottom / 180
+    };
+    FillUiRectangle(deviceContext, rectangle, color);
+}
+
+void DrawRunUpgradeCardReveal(HDC deviceContext, LONG clientWidth,
+    LONG clientHeight, LONG item, float progress, LONG frame)
+{
+    if (progress < 0.0f)
+    {
+        progress = 0.0f;
+    }
+    if (progress > 1.0f)
+    {
+        progress = 1.0f;
+    }
+    constexpr LONG left = 81;
+    constexpr LONG right = 239;
+    constexpr LONG centerX = 160;
+    LONG top = 64 + item * 23;
+    LONG bottom = 83 + item * 23;
+    LONG centerY = (top + bottom) / 2;
+    LONG topHeight = centerY - top;
+    LONG bottomHeight = bottom - centerY;
+    float revealProgress = progress * progress * (3.0f - 2.0f * progress);
+    LONG openX = progress > 0.0f
+        ? 1 + static_cast<LONG>((centerX - left - 1) * revealProgress) : 0;
+    LONG openTop = progress > 0.0f
+        ? 1 + static_cast<LONG>((topHeight - 1) * revealProgress) : 0;
+    LONG openBottom = progress > 0.0f
+        ? 1 + static_cast<LONG>((bottomHeight - 1) * revealProgress) : 0;
+    LONG curlRadius = progress > 0.0f
+        ? 1 + static_cast<LONG>((topHeight - 1) * revealProgress) : 0;
+    LONG topInner = centerY - openTop;
+    LONG bottomInner = centerY + openBottom;
+    COLORREF coverA = RGB(25, 18, 19);
+    COLORREF coverB = RGB(32, 14, 16);
+    COLORREF curlColor = revealProgress < 0.18f ? RGB(255, 244, 210)
+        : (revealProgress < 0.48f ? RGB(255, 210, 64)
+            : (revealProgress < 0.78f ? RGB(224, 112, 35)
+                : RGB(130, 38, 30)));
+    int savedContext = SaveDC(deviceContext);
+    IntersectClipRect(deviceContext, clientWidth * left / 320,
+        clientHeight * top / 180, clientWidth * right / 320,
+        clientHeight * bottom / 180);
+    for (LONG y = top; y < topInner; ++y)
+    {
+        LONG distance = topInner - 1 - y;
+        LONG curl = curlRadius && distance < curlRadius
+            ? curlRadius - distance * distance / curlRadius : 0;
+        LONG leftInner = centerX - openX - curl;
+        LONG rightInner = centerX + openX + curl;
+        if (leftInner < left) leftInner = left;
+        if (rightInner > right) rightInner = right;
+        COLORREF cover = (y + item) & 1 ? coverA : coverB;
+        FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
+            left, y, leftInner, y + 1, cover);
+        FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
+            rightInner, y, right, y + 1, cover);
+        if (progress > 0.0f && leftInner > left && rightInner < right)
+        {
+            FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
+                leftInner - 1, y, leftInner, y + 1, curlColor);
+            FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
+                rightInner, y, rightInner + 1, y + 1, curlColor);
+        }
+    }
+    for (LONG y = bottomInner; y < bottom; ++y)
+    {
+        LONG distance = y - bottomInner;
+        LONG curl = curlRadius && distance < curlRadius
+            ? curlRadius - distance * distance / curlRadius : 0;
+        LONG leftInner = centerX - openX - curl;
+        LONG rightInner = centerX + openX + curl;
+        if (leftInner < left) leftInner = left;
+        if (rightInner > right) rightInner = right;
+        COLORREF cover = (y + item) & 1 ? coverA : coverB;
+        FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
+            left, y, leftInner, y + 1, cover);
+        FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
+            rightInner, y, right, y + 1, cover);
+        if (progress > 0.0f && leftInner > left && rightInner < right)
+        {
+            FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
+                leftInner - 1, y, leftInner, y + 1, curlColor);
+            FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
+                rightInner, y, rightInner + 1, y + 1, curlColor);
+        }
+    }
+
+    if (progress > 0.0f)
+    {
+        LONG leftBoundary = centerX - openX - curlRadius;
+        LONG rightBoundary = centerX + openX + curlRadius;
+        if (leftBoundary < left) leftBoundary = left;
+        if (rightBoundary > right) rightBoundary = right;
+        if (topInner > top)
+        {
+            FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
+                left, topInner - 1, leftBoundary, topInner, curlColor);
+            FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
+                rightBoundary, topInner - 1, right, topInner, curlColor);
+        }
+        if (bottomInner < bottom)
+        {
+            FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
+                left, bottomInner, leftBoundary, bottomInner + 1, curlColor);
+            FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
+                rightBoundary, bottomInner, right, bottomInner + 1, curlColor);
+        }
+    }
+    else
+    {
+        FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
+            centerX - 1, centerY - 1, centerX + 2, centerY + 2,
+            RGB(255, 244, 210));
+    }
+    if (progress > 0.12f && progress < 0.92f && ((frame + item) & 1))
+    {
+        FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
+            centerX - openX - 1, topInner,
+            centerX - openX, topInner + 1, RGB(255, 210, 64));
+        FillUpgradeLogicalRectangle(deviceContext, clientWidth, clientHeight,
+            centerX + openX, bottomInner - 1,
+            centerX + openX + 1, bottomInner, RGB(224, 112, 35));
+    }
+    RestoreDC(deviceContext, savedContext);
+}
+
+void DrawRunUpgradePresentation(HDC deviceContext, LONG clientWidth,
+    LONG clientHeight)
+{
+    if (upgradeRevealElapsed >= upgradeRevealDuration)
+    {
+        DrawRunUpgradePanel(deviceContext, clientWidth, clientHeight, true);
+        return;
+    }
+
+    for (LONG y = 0; y < 180; y += 2)
+    {
+        RECT shade{ 0, clientHeight * y / 180,
+            clientWidth, clientHeight * (y + 1) / 180 };
+        FillUiRectangle(deviceContext, shade, RGB(0, 0, 0));
+    }
+    LONG frame = static_cast<LONG>(upgradeRevealElapsed * 60.0f);
+
+    if (upgradeRevealElapsed < upgradePanelRiseDuration)
+    {
+        float progress = upgradeRevealElapsed / upgradePanelRiseDuration;
+        progress = progress * progress * (3.0f - 2.0f * progress);
+        LONG centerY = 154 - static_cast<LONG>(64.0f * progress);
+        LONG halfWidth = 1 + static_cast<LONG>(94.0f * progress);
+        LONG halfHeight = 1 + static_cast<LONG>(53.0f * progress);
+        RECT panel
+        {
+            clientWidth * (160 - halfWidth) / 320,
+            clientHeight * (centerY - halfHeight) / 180,
+            clientWidth * (160 + halfWidth) / 320,
+            clientHeight * (centerY + halfHeight) / 180
+        };
+        DrawTerminalPanel(deviceContext, panel, false);
+        for (LONG spark = 0; spark < 5; ++spark)
+        {
+            LONG side = spark & 1 ? 1 : -1;
+            LONG x = 160 + side * halfWidth
+                + ((frame + spark * 5) % 5) - 2;
+            LONG y = centerY - halfHeight
+                + ((frame * 3 + spark * 17) % (halfHeight * 2 + 1));
+            RECT pixel
+            {
+                clientWidth * x / 320, clientHeight * y / 180,
+                clientWidth * (x + 1 + (spark == 2)) / 320,
+                clientHeight * (y + 1) / 180
+            };
+            FillUiRectangle(deviceContext, pixel, spark == 2
+                ? RGB(255, 207, 70) : RGB(190, 55, 30));
+        }
+        RECT core
+        {
+            clientWidth * 159 / 320, clientHeight * (centerY - 1) / 180,
+            clientWidth * 161 / 320, clientHeight * (centerY + 1) / 180
+        };
+        FillUiRectangle(deviceContext, core, frame & 1
+            ? RGB(255, 212, 72) : RGB(232, 104, 34));
+        return;
+    }
+
+    DrawRunUpgradePanel(deviceContext, clientWidth, clientHeight, false);
+    float phaseTime = upgradeRevealElapsed - upgradePanelRiseDuration;
+    for (LONG item = 0; item < 3; ++item)
+    {
+        float stagger = item * 0.04f;
+        float progress = (phaseTime - stagger)
+            / (upgradeCardRevealDuration - stagger);
+        DrawRunUpgradeCardReveal(deviceContext, clientWidth, clientHeight,
+            item, progress, frame);
+    }
+}
+
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
 #ifdef DEAD_SIGNAL_V12_FULL_RUN_VALIDATION
@@ -5902,7 +6284,10 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 }
                 else if (upgradeMenuActive)
                 {
-                    upgradeConfirmRequested = true;
+                    if (upgradeRevealElapsed >= upgradeRevealDuration)
+                    {
+                        upgradeConfirmRequested = true;
+                    }
                 }
                 else if (runEndState)
                 {
@@ -6045,8 +6430,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == VK_SPACE)
     {
         bool pressed = message == WM_KEYDOWN;
-        if (applicationState == gameplayState && !runEndState && !gameplayMenuActive
-            && !gameplayInputBlocked && pressed && !spacePressed)
+        if (applicationState == gameplayState && !runEndState
+            && !upgradeMenuActive && !gameplayMenuActive && !gameplayInputBlocked
+            && pressed && !spacePressed)
         {
             PlaySfx(sfxUiConfirm);
         }
@@ -6178,7 +6564,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 InvalidateRect(window, nullptr, FALSE);
             }
         }
-        else if (upgradeMenuActive && newlyPressed
+        else if (upgradeMenuActive
+            && upgradeRevealElapsed >= upgradeRevealDuration && newlyPressed
             && (wParam == VK_UP || wParam == VK_DOWN))
         {
             LONG previousSelection = upgradeSelection;
@@ -7106,66 +7493,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         else if (upgradeMenuActive)
         {
-            SelectObject(deviceContext, uiFont
-                ? uiFont : GetStockObject(DEFAULT_GUI_FONT));
-            SetBkMode(deviceContext, TRANSPARENT);
-            RECT panel
-            {
-                clientWidth * 65 / 320, clientHeight * 36 / 180,
-                clientWidth * 255 / 320, clientHeight * 144 / 180
-            };
-            DrawTerminalPanel(deviceContext, panel, false);
-            RECT line = clientArea;
-            line.top = clientHeight * 39 / 180;
-            line.bottom = clientHeight * 55 / 180;
-            SetTextColor(deviceContext, RGB(220, 220, 220));
-            DrawCenteredUiText(deviceContext, L"UPGRADE", line);
-            RECT divider
-            {
-                clientWidth * 97 / 320, clientHeight * 55 / 180,
-                clientWidth * 223 / 320, clientHeight * 56 / 180
-            };
-            FillUiRectangle(deviceContext, divider, RGB(91, 29, 30));
-            for (LONG item = 0; item < 3; ++item)
-            {
-                LONG upgrade = item ? upgradeOptionB : upgradeOptionA;
-                bool rerollExhausted = rerollUsed >= CurrentRunRerollCapacity();
-                bool focused = item == upgradeSelection;
-                RECT option
-                {
-                    clientWidth * 81 / 320,
-                    clientHeight * (64 + item * 23) / 180,
-                    clientWidth * 239 / 320,
-                    clientHeight * (83 + item * 23) / 180
-                };
-                DrawTerminalPanel(deviceContext, option, focused);
-                const wchar_t* text = hudText;
-                wsprintfW(hudText, L"REROLL %u/%u",
-                    static_cast<UINT>(rerollUsed),
-                    static_cast<UINT>(CurrentRunRerollCapacity()));
-                if (item != 2)
-                {
-                    const wchar_t* name = upgrade == moveUpgrade ? L"MOVE+"
-                        : (upgrade == slashUpgrade ? L"SLASH+"
-                            : (upgrade == dashUpgrade ? L"DASH+"
-                                : (upgrade == silentDashUpgrade ? L"SILENT DASH"
-                                    : (upgrade == executeReachUpgrade
-                                        ? L"EXECUTE REACH" : L"FIELD MEDIC"))));
-                    wsprintfW(hudText, L"[%s] %s %u/%u",
-                        upgrade <= dashUpgrade ? L"A" : L"F", name,
-                        static_cast<UINT>(CurrentUpgradeStack(upgrade)),
-                        static_cast<UINT>(upgrade <= dashUpgrade ? 2 : 1));
-                    text = hudText;
-                }
-                line.left = option.left;
-                line.right = option.right;
-                line.top = option.top;
-                line.bottom = option.bottom;
-                SetTextColor(deviceContext, focused
-                    ? (item == 2 && rerollExhausted ? RGB(96, 96, 96) : RGB(255, 216, 0))
-                    : (item == 2 && rerollExhausted ? RGB(64, 64, 64) : RGB(160, 160, 160)));
-                DrawCenteredUiText(deviceContext, text, line, focused);
-            }
+            DrawRunUpgradePresentation(deviceContext, clientWidth, clientHeight);
         }
         else if (runEndState)
         {
@@ -7662,6 +7990,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             gameplayMenuSelection = 0;
             upgradeSelection = 0;
             upgradeConfirmRequested = false;
+            upgradeRevealElapsed = upgradeRevealDuration;
             playerX = currentPlayerStartX;
             playerY = currentPlayerStartY;
             facingX = 1;
@@ -7788,6 +8117,21 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
         QueryPerformanceCounter(&currentTime);
         if (upgradeMenuActive)
         {
+            if (upgradeRevealElapsed < upgradeRevealDuration)
+            {
+                if (currentTime.QuadPart - previousUpdate.QuadPart >= updateInterval)
+                {
+                    float revealDelta = static_cast<float>(
+                        currentTime.QuadPart - previousUpdate.QuadPart)
+                        / static_cast<float>(performanceFrequency.QuadPart);
+                    previousUpdate = currentTime;
+                    UpdateUpgradeReveal(revealDelta);
+                    upgradeConfirmRequested = false;
+                    InvalidateRect(window, nullptr, FALSE);
+                }
+                Sleep(1);
+                continue;
+            }
             previousUpdate = currentTime;
             if (upgradeConfirmRequested)
             {
@@ -9146,6 +9490,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                     upgradeMenuActive = true;
                     upgradeSelection = 0;
                     upgradeConfirmRequested = false;
+                    BeginUpgradeReveal();
                     gameplayInputBlocked = upPressed || downPressed || leftPressed
                         || rightPressed || zPressed || xPressed || cPressed || spacePressed;
                 }
@@ -12474,8 +12819,8 @@ int main()
     v111AudioFailures += !titleDensity.energy || !calmDensity.energy
         || titleDensity.maximumSilence > audioSampleRate / 10
         || calmDensity.maximumSilence > audioSampleRate / 10
-        || titleDensity.peak >= 8192 || calmDensity.peak >= 8192
-        || alertDensity.peak >= 8192
+        || titleDensity.peak >= 12288 || calmDensity.peak >= 12288
+        || alertDensity.peak >= 12288
         || suspicionDensity.energy <= calmDensity.energy
         || alertDensity.energy <= suspicionDensity.energy;
     for (BYTE first = 0; first < 6; ++first)
@@ -12523,7 +12868,7 @@ int main()
             if (magnitude > peak) peak = magnitude;
             clipped += mixed == 32767 || mixed == -32768;
         }
-        v111AudioFailures += peak <= alertDensity.peak * 2
+        v111AudioFailures += peak <= alertDensity.peak
             || clipped > static_cast<LONG>(duration / 20);
     }
     ResetBgmState();
@@ -12605,12 +12950,15 @@ int main()
     v112AudioFailures += bgmState.modeSample != pauseFlowSample + 1;
     gameplayMenuActive = false;
     upgradeMenuActive = true;
-    v112AudioFailures += DesiredBgmMode() != bgmMenuMode;
+    DWORD upgradeFlowSample = bgmState.modeSample;
+    v112AudioFailures += DesiredBgmMode() != bgmRunMode;
     for (DWORD sample = 0; sample < audioSampleRate; ++sample)
     {
         BgmSample();
     }
-    v112AudioFailures += bgmState.currentMode != bgmMenuMode;
+    v112AudioFailures += bgmState.currentMode != bgmRunMode
+        || bgmState.modeSample != upgradeFlowSample + audioSampleRate
+        || bgmState.transitionRemaining != 0;
     upgradeMenuActive = false;
     runEndState = gameOverEndState;
     v112AudioFailures += DesiredBgmMode() != bgmResultMode;
@@ -13192,6 +13540,287 @@ int main()
         sfxStartCount[sfxEnemyHit], sfxStartCount[sfxEnemyKill],
         static_cast<unsigned long>(sizeof(MetaProfile)),
         static_cast<unsigned long>(sizeof(SaveCheckpoint)));
+
+    LONG v121Failures = 0;
+    applicationState = gameplayState;
+    runEndState = 0;
+    gameplayMenuActive = false;
+    upgradeMenuActive = true;
+    upgradeSelection = 1;
+    upgradeConfirmRequested = false;
+    gameplayInputBlocked = false;
+    upPressed = false;
+    zPressed = false;
+    moveUpgradeStack = 0;
+    slashUpgradeStack = 0;
+    dashUpgradeStack = 0;
+    functionalUpgradeFlags = 0;
+    runSeed = 0x51A7C3D9u;
+    currentRoom = 1;
+    masterVolumeStep = masterVolumeMaximumStep;
+    bgmVolumeStep = defaultBgmVolumeStep;
+    sfxVolumeStep = defaultSfxVolumeStep;
+    ResetSfxVoices();
+    for (BYTE sound = sfxUpgradeRelay; sound <= sfxUpgradeReady; ++sound)
+    {
+        sfxStartCount[sound] = 0;
+    }
+    BeginUpgradeReveal();
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_UP, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_UP, 0);
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    v121Failures += upgradeSelection != 1 || upgradeConfirmRequested;
+    for (LONG update = 0; update < 27; ++update)
+    {
+        UpdateUpgradeReveal(0.05f);
+    }
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_UP, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_UP, 0);
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    v121Failures += upgradeSelection != 1 || upgradeConfirmRequested
+        || upgradeRevealElapsed >= upgradeRevealDuration;
+    UpdateUpgradeReveal(0.05f);
+    UpdateUpgradeReveal(0.05f);
+    v121Failures += upgradeRevealElapsed != upgradeRevealDuration
+        || sfxStartCount[sfxUpgradeRelay] != 1
+        || sfxStartCount[sfxUpgradeIgnitionLow] != 1
+        || sfxStartCount[sfxUpgradeIgnitionMid] != 1
+        || sfxStartCount[sfxUpgradeIgnitionHigh] != 1
+        || sfxStartCount[sfxUpgradeCross] != 1
+        || sfxStartCount[sfxUpgradeReady] != 1
+        || upgradePanelRiseDuration != 0.6f
+        || upgradeCardRevealDuration != 0.8f
+        || upgradeRevealDuration < 1.39f
+        || upgradeRevealDuration > 1.41f;
+    DWORD revealEventCounts[6]
+    {
+        sfxStartCount[sfxUpgradeRelay],
+        sfxStartCount[sfxUpgradeIgnitionLow],
+        sfxStartCount[sfxUpgradeIgnitionMid],
+        sfxStartCount[sfxUpgradeIgnitionHigh],
+        sfxStartCount[sfxUpgradeCross],
+        sfxStartCount[sfxUpgradeReady]
+    };
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_UP, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_UP, 0);
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    v121Failures += upgradeSelection != 0 || !upgradeConfirmRequested;
+    upgradeConfirmRequested = false;
+    float revealBeforeReroll = upgradeRevealElapsed;
+    GenerateUpgradeOffer(true);
+    v121Failures += upgradeRevealElapsed != revealBeforeReroll
+        || RoomClearsToUpgrade(roomCount - 1)
+        || DesiredBgmMode() != bgmRunMode
+        || sfxCount != 49
+        || !(sfxSpecs[sfxUpgradeCross].amplitude
+            > sfxSpecs[sfxUiConfirm].amplitude)
+        || !(sfxSpecs[sfxUpgradeCross].amplitude
+            < sfxSpecs[sfxAlert].amplitude)
+        || sfxSpecs[sfxUpgradeCross].priority
+            >= sfxSpecs[sfxAlert].priority;
+
+    LONG revealPeak = 0;
+    LONG revealClipped = 0;
+    bgmVolumeStep = masterVolumeMaximumStep;
+    for (BYTE sound = sfxUpgradeRelay; sound <= sfxUpgradeReady; ++sound)
+    {
+        ResetSfxVoices();
+        ResetBgmState();
+        sfxStartCount[sound] = 0;
+        PlaySfx(sound);
+        DWORD duration = sfxSpecs[sound].durationMilliseconds
+            * audioSampleRate / 1000;
+        for (DWORD sample = 0; sample < duration; ++sample)
+        {
+            short mixed = MixAudioSample();
+            LONG magnitude = mixed < 0 ? -static_cast<LONG>(mixed) : mixed;
+            if (magnitude > revealPeak) revealPeak = magnitude;
+            revealClipped += mixed == 32767 || mixed == -32768;
+        }
+    }
+    upgradeRevealElapsed = 0.0f;
+    ResetBgmState();
+    for (LONG sample = 0; sample < 80; ++sample)
+    {
+        BgmSample();
+    }
+    v121Failures += bgmState.revealGain != 179;
+    upgradeRevealElapsed = upgradeRevealDuration;
+    for (LONG sample = 0; sample < 80; ++sample)
+    {
+        BgmSample();
+    }
+    v121Failures += bgmState.revealGain != 256 || revealClipped
+        || revealPeak <= 0;
+    for (LONG frame = 0; frame <= 36; ++frame)
+    {
+        float progress = frame / 36.0f;
+        progress = progress * progress * (3.0f - 2.0f * progress);
+        LONG centerY = 154 - static_cast<LONG>(64.0f * progress);
+        LONG halfWidth = 1 + static_cast<LONG>(94.0f * progress);
+        LONG halfHeight = 1 + static_cast<LONG>(53.0f * progress);
+        v121Failures += 160 - halfWidth < 0 || 160 + halfWidth > 320
+            || centerY - halfHeight < 0 || centerY + halfHeight > 180;
+    }
+    LONG cardClipFailures = 0;
+    for (LONG item = 0; item < 3; ++item)
+    {
+        LONG top = 64 + item * 23;
+        LONG bottom = 83 + item * 23;
+        LONG centerY = (top + bottom) / 2;
+        cardClipFailures += 160 - 81 != 79 || 239 - 160 != 79
+            || centerY - top != 9 || bottom - centerY != 10;
+        LONG previousOpenX = -1;
+        LONG previousOpenTop = -1;
+        LONG previousOpenBottom = -1;
+        LONG previousCurl = -1;
+        for (LONG frame = 0; frame <= 48; ++frame)
+        {
+            float phaseTime = frame / 60.0f;
+            float stagger = item * 0.04f;
+            float progress = (phaseTime - stagger)
+                / (upgradeCardRevealDuration - stagger);
+            if (progress < 0.0f) progress = 0.0f;
+            if (progress > 1.0f) progress = 1.0f;
+            float revealProgress = progress * progress
+                * (3.0f - 2.0f * progress);
+            LONG openX = progress > 0.0f
+                ? 1 + static_cast<LONG>(78.0f * revealProgress) : 0;
+            LONG openTop = progress > 0.0f
+                ? 1 + static_cast<LONG>(8.0f * revealProgress) : 0;
+            LONG openBottom = progress > 0.0f
+                ? 1 + static_cast<LONG>(9.0f * revealProgress) : 0;
+            LONG curlRadius = progress > 0.0f
+                ? 1 + static_cast<LONG>(8.0f * revealProgress) : 0;
+            LONG topInner = centerY - openTop;
+            LONG bottomInner = centerY + openBottom;
+            cardClipFailures += topInner < top || topInner > centerY
+                || bottomInner < centerY || bottomInner > bottom
+                || 160 - openX < 81 || 160 + openX > 239
+                || centerY - openTop < top
+                || centerY + openBottom > bottom
+                || openX < previousOpenX || openTop < previousOpenTop
+                || openBottom < previousOpenBottom || curlRadius < previousCurl;
+            previousOpenX = openX;
+            previousOpenTop = openTop;
+            previousOpenBottom = openBottom;
+            previousCurl = curlRadius;
+        }
+    }
+    constexpr LONG revealWidths[4]{ 640, 960, 1280, 1920 };
+    constexpr LONG revealHeights[4]{ 360, 540, 720, 1080 };
+    for (LONG resolution = 0; resolution < 4; ++resolution)
+    {
+        for (LONG item = 0; item < 3; ++item)
+        {
+            LONG top = 64 + item * 23;
+            LONG bottom = 83 + item * 23;
+            LONG leftPixel = revealWidths[resolution] * 81 / 320;
+            LONG centerPixel = revealWidths[resolution] * 160 / 320;
+            LONG rightPixel = revealWidths[resolution] * 239 / 320;
+            LONG topPixel = revealHeights[resolution] * top / 180;
+            LONG centerYPixel = revealHeights[resolution]
+                * ((top + bottom) / 2) / 180;
+            LONG bottomPixel = revealHeights[resolution] * bottom / 180;
+            cardClipFailures += leftPixel >= centerPixel
+                || centerPixel >= rightPixel || topPixel >= centerYPixel
+                || centerYPixel >= bottomPixel;
+        }
+    }
+    BITMAPINFO revealBitmapInfo{};
+    revealBitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    revealBitmapInfo.bmiHeader.biWidth = 320;
+    revealBitmapInfo.bmiHeader.biHeight = -180;
+    revealBitmapInfo.bmiHeader.biPlanes = 1;
+    revealBitmapInfo.bmiHeader.biBitCount = 32;
+    revealBitmapInfo.bmiHeader.biCompression = BI_RGB;
+    void* revealPixels = nullptr;
+    HDC revealDc = CreateCompatibleDC(nullptr);
+    HBITMAP revealBitmap = CreateDIBSection(revealDc, &revealBitmapInfo,
+        DIB_RGB_COLORS, &revealPixels, nullptr, 0);
+    HGDIOBJ oldRevealBitmap = revealBitmap
+        ? SelectObject(revealDc, revealBitmap) : nullptr;
+    LONG coverCounts[2][3]{};
+    LONG outsideCoverCount = 0;
+    LONG readyCoverCount = 0;
+    float revealSamples[3]{ 0.6f, 0.95f, upgradeRevealDuration };
+    if (!revealDc || !revealBitmap || !revealPixels)
+    {
+        ++cardClipFailures;
+    }
+    else
+    {
+        for (LONG sample = 0; sample < 3; ++sample)
+        {
+            PatBlt(revealDc, 0, 0, 320, 180, BLACKNESS);
+            upgradeRevealElapsed = revealSamples[sample];
+            DrawRunUpgradePresentation(revealDc, 320, 180);
+            for (LONG y = 0; y < 180; ++y)
+            {
+                for (LONG x = 0; x < 320; ++x)
+                {
+                    COLORREF color = GetPixel(revealDc, x, y);
+                    if (color != RGB(25, 18, 19)
+                        && color != RGB(32, 14, 16))
+                    {
+                        continue;
+                    }
+                    LONG card = y >= 64 && y < 83 ? 0
+                        : (y >= 87 && y < 106 ? 1
+                            : (y >= 110 && y < 129 ? 2 : -1));
+                    if (x < 81 || x >= 239) card = -1;
+                    if (card < 0)
+                    {
+                        ++outsideCoverCount;
+                    }
+                    else if (sample < 2)
+                    {
+                        ++coverCounts[sample][card];
+                    }
+                    else
+                    {
+                        ++readyCoverCount;
+                    }
+                }
+            }
+            if (!sample)
+            {
+                for (LONG item = 0; item < 3; ++item)
+                {
+                    LONG centerY = (64 + item * 23 + 83 + item * 23) / 2;
+                    cardClipFailures += GetPixel(revealDc, 160, centerY)
+                        != RGB(255, 244, 210);
+                }
+            }
+        }
+        for (LONG item = 0; item < 3; ++item)
+        {
+            cardClipFailures += coverCounts[0][item] <= coverCounts[1][item]
+                || coverCounts[1][item] <= 0;
+        }
+        cardClipFailures += outsideCoverCount != 0 || readyCoverCount != 0;
+    }
+    if (oldRevealBitmap) SelectObject(revealDc, oldRevealBitmap);
+    if (revealBitmap) DeleteObject(revealBitmap);
+    if (revealDc) DeleteDC(revealDc);
+    upgradeRevealElapsed = upgradeRevealDuration;
+    v121Failures += cardClipFailures;
+    failures += v121Failures;
+    printf("section_v121=%ld reveal=%.2f sfx=%u events=%lu/%lu/%lu/%lu/%lu/%lu peak=%ld clip=%ld cardclip=%ld duck=%u mode=%u\n",
+        v121Failures, upgradeRevealDuration, static_cast<UINT>(sfxCount),
+        revealEventCounts[0], revealEventCounts[1], revealEventCounts[2],
+        revealEventCounts[3], revealEventCounts[4], revealEventCounts[5],
+        revealPeak, revealClipped, cardClipFailures,
+        static_cast<UINT>(bgmState.revealGain),
+        static_cast<UINT>(DesiredBgmMode()));
+    upgradeMenuActive = false;
+    upgradeRevealElapsed = upgradeRevealDuration;
+    applicationState = titleMainState;
+    upPressed = false;
+    zPressed = false;
 
     constexpr LONG commonUpgradeTop[3]{ 42, 66, 90 };
     for (LONG item = 0; item < 3; ++item)
