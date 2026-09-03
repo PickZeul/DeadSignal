@@ -116,6 +116,7 @@ LONG navigationNodeCount = navigationColumns * navigationRows;
 constexpr LONG slashReach = 8;
 constexpr LONG slashWidth = 8;
 constexpr float slashVisualDuration = 0.10f;
+constexpr float executeVisualDuration = 0.18f;
 constexpr float slashCooldownDuration = 0.5f;
 constexpr float playerWalkFrameDuration = 0.10f;
 constexpr float playerSlashAnimationDuration = 0.15f;
@@ -563,6 +564,31 @@ constexpr BYTE PlayerAnimationFrame(bool alive, bool dashing,
     return playerIdleFrame;
 }
 
+constexpr BYTE ExecuteVisualPhase(float remaining)
+{
+    return remaining > 0.14f ? 0
+        : (remaining > 0.09f ? 1 : (remaining > 0.04f ? 2 : 3));
+}
+
+constexpr BYTE PlayerExecuteAnimationFrame(BYTE character, BYTE phase)
+{
+    if (phase == 0)
+    {
+        return character == mobilityCharacter
+            ? playerDashLeanFrame : playerSlashAnticipationFrame;
+    }
+    if (phase == 1)
+    {
+        return character == mobilityCharacter
+            ? playerDashStreakFrame : playerSlashStrikeFrame;
+    }
+    if (phase == 2)
+    {
+        return playerSlashRecoveryFrame;
+    }
+    return playerIdleFrame;
+}
+
 static_assert(playerWidth == 8 && playerHeight == 12
     && sizeof(spritePalette) / sizeof(spritePalette[0]) == 14);
 static_assert(playerFrameCount == 8
@@ -601,6 +627,17 @@ static_assert(PlayerAnimationFrame(false, true, 1.0f, 1.0f, 1.0f, true, 1.0f)
         == playerWalkBFrame
     && PlayerAnimationFrame(true, false, 0.0f, 1.0f, 0.0f, false, 0.15f)
         == playerIdleFrame);
+static_assert(ExecuteVisualPhase(0.18f) == 0
+    && ExecuteVisualPhase(0.13f) == 1
+    && ExecuteVisualPhase(0.08f) == 2
+    && ExecuteVisualPhase(0.03f) == 3
+    && PlayerExecuteAnimationFrame(basicCharacter, 0)
+        == playerSlashAnticipationFrame
+    && PlayerExecuteAnimationFrame(mobilityCharacter, 1)
+        == playerDashStreakFrame
+    && PlayerExecuteAnimationFrame(piercerCharacter, 1) == playerSlashStrikeFrame
+    && PlayerExecuteAnimationFrame(heavyCharacter, 2) == playerSlashRecoveryFrame
+    && PlayerExecuteAnimationFrame(rapidCharacter, 3) == playerIdleFrame);
 
 constexpr BYTE enemySprites[pressureEnemyRole][enemyFrameCount]
     [enemyHeight][enemyWidth / 2]
@@ -2382,6 +2419,135 @@ BYTE SlashVisualPixel(BYTE character, float originX, float originY,
         : (arcDistance < 1.75f ? 1 : 0);
 }
 
+DWORD ExecuteEffectPixel(BYTE character, BYTE phase, float originX,
+    float originY, float targetX, float targetY, float pointX, float pointY)
+{
+    float directionX = targetX - originX;
+    float directionY = targetY - originY;
+    float distance = sqrtf(directionX * directionX + directionY * directionY);
+    if (distance < 0.001f || phase == 0 || phase == 3)
+    {
+        return 0;
+    }
+    directionX /= distance;
+    directionY /= distance;
+    float differenceX = pointX - originX;
+    float differenceY = pointY - originY;
+    float forward = differenceX * directionX + differenceY * directionY;
+    float lateral = differenceX * -directionY + differenceY * directionX;
+    float absoluteLateral = lateral < 0.0f ? -lateral : lateral;
+    float targetLocalX = pointX - targetX;
+    float targetLocalY = pointY - targetY;
+    float absoluteTargetX = targetLocalX < 0.0f ? -targetLocalX : targetLocalX;
+    float absoluteTargetY = targetLocalY < 0.0f ? -targetLocalY : targetLocalY;
+
+    if (character == basicCharacter)
+    {
+        if (phase == 1 && absoluteLateral <= 5.0f)
+        {
+            float arc = distance - lateral * lateral * 0.18f;
+            float arcDistance = forward - arc;
+            if (arcDistance < 0.0f) arcDistance = -arcDistance;
+            return arcDistance < 0.85f ? 0x00FFFFE0
+                : (arcDistance < 1.65f ? 0x00A84838 : 0);
+        }
+        if (phase == 2)
+        {
+            float impactDistance = absoluteTargetX + absoluteTargetY;
+            return impactDistance < 1.25f ? 0x00FFFFFF
+                : (impactDistance < 3.0f ? 0x00C03830 : 0);
+        }
+        return 0;
+    }
+
+    if (character == mobilityCharacter)
+    {
+        if (phase == 1 && forward >= 0.0f && forward <= distance + 3.0f)
+        {
+            if (absoluteLateral < 0.65f)
+            {
+                return 0x0088FFFF;
+            }
+            float streakDistance = lateral - 1.5f;
+            if (streakDistance < 0.0f) streakDistance = -streakDistance;
+            return streakDistance < 0.55f && forward < distance * 0.7f
+                ? 0x00387888 : 0;
+        }
+        if (phase == 2 && forward > distance && forward <= distance + 6.0f
+            && absoluteLateral < 0.65f)
+        {
+            return 0x0040B8C8;
+        }
+        return 0;
+    }
+
+    if (character == piercerCharacter)
+    {
+        if (phase == 1 && forward >= 1.0f && forward <= distance
+            && absoluteLateral < 0.65f)
+        {
+            return 0x00FFF8FF;
+        }
+        if (phase == 1 && forward >= distance - 2.0f && forward <= distance
+            && absoluteLateral <= distance - forward + 0.5f)
+        {
+            return 0x00C878E8;
+        }
+        if (phase == 2)
+        {
+            if (forward > distance && forward <= distance + 3.0f
+                && absoluteLateral < 0.65f)
+            {
+                return 0x009A48BE;
+            }
+            float sparkDistance = absoluteTargetX + absoluteTargetY;
+            return sparkDistance < 1.25f ? 0x00FFFFFF
+                : (sparkDistance < 2.25f ? 0x009A48BE : 0);
+        }
+        return 0;
+    }
+
+    if (character == heavyCharacter)
+    {
+        if (phase == 1 && targetLocalY >= -9.0f && targetLocalY <= 4.0f)
+        {
+            float cleave = targetLocalX + targetLocalY * 0.22f;
+            if (cleave < 0.0f) cleave = -cleave;
+            return cleave < 0.75f ? 0x00FFFFD0
+                : (cleave < 1.8f ? 0x00D06028 : 0);
+        }
+        if (phase == 2)
+        {
+            if (absoluteTargetX <= 4.0f && targetLocalY >= 3.0f
+                && targetLocalY < 4.5f)
+            {
+                return absoluteTargetX < 1.5f ? 0x00FFFFFF : 0x00C04828;
+            }
+            bool fragment = (absoluteTargetX >= 2.5f && absoluteTargetX < 3.5f
+                    && absoluteTargetY >= 4.5f && absoluteTargetY < 5.5f)
+                || (absoluteTargetX >= 4.5f && absoluteTargetX < 5.5f
+                    && absoluteTargetY >= 1.5f && absoluteTargetY < 2.5f);
+            return fragment ? 0x00D07030 : 0;
+        }
+        return 0;
+    }
+
+    if (absoluteTargetX > 4.0f || absoluteTargetY > 4.0f)
+    {
+        return 0;
+    }
+    float firstCut = targetLocalX + targetLocalY;
+    float secondCut = targetLocalX - targetLocalY;
+    if (firstCut < 0.0f) firstCut = -firstCut;
+    if (secondCut < 0.0f) secondCut = -secondCut;
+    if (phase == 1)
+    {
+        return firstCut < 0.75f ? 0x00FFF080 : 0;
+    }
+    return secondCut < 0.75f ? 0x00FFFFFF
+        : (firstCut < 0.75f ? 0x00C89838 : 0);
+}
+
 bool RectangleOverlapsRoomWall(float left, float top, float right, float bottom);
 
 void AddRoomWall(LONG left, LONG top, LONG right, LONG bottom)
@@ -3181,6 +3347,33 @@ bool WallBlocksSegment(float startX, float startY, float endX, float endY)
         }
     }
     return false;
+}
+
+bool EnemyWitnessesPoint(const EnemyRuntime& enemy, float pointX, float pointY)
+{
+    float facingX = cosf(enemy.facingAngle);
+    float facingY = sinf(enemy.facingAngle);
+    return PointInsideVisionSector(enemy.x, enemy.y, facingX, facingY,
+        pointX, pointY)
+        && !WallBlocksSegment(enemy.x, enemy.y, pointX, pointY);
+}
+
+LONG AlertExecutionWitnesses(EnemyRuntime* enemies, LONG enemyCount,
+    LONG targetEnemy, float playerX, float playerY, float targetX, float targetY)
+{
+    LONG witnessed = 0;
+    for (LONG enemyIndex = 0; enemyIndex < enemyCount; ++enemyIndex)
+    {
+        EnemyRuntime& enemy = enemies[enemyIndex];
+        if (enemyIndex != targetEnemy && enemy.alive && enemy.role < enemyRoleCount
+            && (EnemyWitnessesPoint(enemy, playerX, playerY)
+                || EnemyWitnessesPoint(enemy, targetX, targetY)))
+        {
+            ++witnessed;
+            EnterEnemyAlert(enemies, enemyCount, enemyIndex);
+        }
+    }
+    return witnessed;
 }
 
 float TurnToward(float angle, float target, float amount)
@@ -5333,6 +5526,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     float slashVisualRemaining = 0.0f;
     float playerWalkAnimTime = 0.0f;
     float playerSlashVisualRemaining = 0.0f;
+    float playerExecuteVisualRemaining = 0.0f;
+    float executeVisualOriginX = 0.0f;
+    float executeVisualOriginY = 0.0f;
+    float executeVisualTargetX = 0.0f;
+    float executeVisualTargetY = 0.0f;
     float enemyVisualTime = 0.0f;
     float slashCooldownRemaining = 0.0f;
     float trapCycleElapsed = 0.0f;
@@ -5510,6 +5708,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             slashVisualRemaining = 0.0f;
             playerWalkAnimTime = 0.0f;
             playerSlashVisualRemaining = 0.0f;
+            playerExecuteVisualRemaining = 0.0f;
             enemyVisualTime = 0.0f;
             slashCooldownRemaining = 0.0f;
             trapCycleElapsed = 0.0f;
@@ -5692,6 +5891,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     dashDirectionY = facingY;
                     dashDistanceRemaining = dashDistanceCurrent;
                     dashActive = true;
+                    playerExecuteVisualRemaining = 0.0f;
                 }
                 dashRequested = false;
             }
@@ -6537,6 +6737,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
             {
                 playerSlashVisualRemaining -= deltaTime;
             }
+            if (playerExecuteVisualRemaining > 0.0f)
+            {
+                playerExecuteVisualRemaining -= deltaTime;
+            }
             if (slashCooldownRemaining > 0.0f)
             {
                 slashCooldownRemaining -= deltaTime;
@@ -6626,6 +6830,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
                     slashVisualRemaining = slashVisualDuration;
                     playerSlashVisualRemaining = playerSlashAnimationDuration;
+                    playerExecuteVisualRemaining = 0.0f;
                     slashCooldownRemaining = slashCooldownDurationCurrent;
                     LONG slashHitCount = 0;
                     for (LONG enemyIndex = 0; enemyIndex < currentEnemyCount;
@@ -6727,12 +6932,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     if (selectedEnemy >= 0)
                     {
                         EnemyRuntime& enemy = enemies[selectedEnemy];
+                        float targetX = enemy.x;
+                        float targetY = enemy.y;
+                        executeVisualOriginX = playerX;
+                        executeVisualOriginY = playerY;
+                        executeVisualTargetX = targetX;
+                        executeVisualTargetY = targetY;
+                        playerExecuteVisualRemaining = executeVisualDuration;
+                        playerSlashVisualRemaining = 0.0f;
                         enemy.hp = 0;
                         enemy.alive = false;
                         --currentEnemyRemaining;
                         ++runKillCount;
                         ApplyFieldMedic(playerHP);
-                        enemy.executeFeedbackRemaining = slashVisualDuration;
+                        enemy.executeFeedbackRemaining = executeVisualDuration;
                         slashCooldownRemaining = 0.0f;
                         ResetDashRecharge(dashCooldownRemaining,
                             dashCooldownDurationCurrent);
@@ -6742,6 +6955,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         enemy.searchPathIndex = 0;
                         enemy.scanning = false;
                         enemy.attackWindupRemaining = 0.0f;
+                        AlertExecutionWitnesses(enemies, currentEnemyCount,
+                            selectedEnemy, playerX, playerY, targetX, targetY);
                     }
                 }
                 executeRequested = false;
@@ -6774,6 +6989,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     playerAlive = false;
                     dashActive = false;
                     dashDistanceRemaining = 0.0f;
+                    playerExecuteVisualRemaining = 0.0f;
                     slashRequested = false;
                     dashRequested = false;
                     executeRequested = false;
@@ -7079,6 +7295,42 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
             }
 
+            if (playerExecuteVisualRemaining > 0.0f)
+            {
+                BYTE executePhase = ExecuteVisualPhase(
+                    playerExecuteVisualRemaining);
+                float minimumX = executeVisualOriginX < executeVisualTargetX
+                    ? executeVisualOriginX : executeVisualTargetX;
+                float maximumX = executeVisualOriginX > executeVisualTargetX
+                    ? executeVisualOriginX : executeVisualTargetX;
+                float minimumY = executeVisualOriginY < executeVisualTargetY
+                    ? executeVisualOriginY : executeVisualTargetY;
+                float maximumY = executeVisualOriginY > executeVisualTargetY
+                    ? executeVisualOriginY : executeVisualTargetY;
+                LONG effectLeft = static_cast<LONG>(minimumX) - 10;
+                LONG effectRight = static_cast<LONG>(maximumX) + 11;
+                LONG effectTop = static_cast<LONG>(minimumY) - 10;
+                LONG effectBottom = static_cast<LONG>(maximumY) + 11;
+                for (LONG y = effectTop; y < effectBottom; ++y)
+                {
+                    for (LONG x = effectLeft; x < effectRight; ++x)
+                    {
+                        DWORD color = ExecuteEffectPixel(selectedCharacter,
+                            executePhase, executeVisualOriginX,
+                            executeVisualOriginY, executeVisualTargetX,
+                            executeVisualTargetY, x + 0.5f, y + 0.5f);
+                        LONG screenX = x - cameraX;
+                        LONG screenY = y - cameraY;
+                        if (color && screenX >= 0 && screenX < framebufferWidth
+                            && screenY >= 0 && screenY < framebufferHeight)
+                        {
+                            framebuffer[screenY * framebufferWidth + screenX]
+                                = color;
+                        }
+                    }
+                }
+            }
+
             for (LONG enemyIndex = 0; enemyIndex < currentEnemyCount; ++enemyIndex)
             {
                 EnemyRuntime& enemy = enemies[enemyIndex];
@@ -7185,16 +7437,45 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 
                 if (enemy.executeFeedbackRemaining > 0.0f)
                 {
-                    for (LONG y = enemyCenterY - 1; y <= enemyCenterY + 1; ++y)
+                    BYTE feedbackPhase = ExecuteVisualPhase(
+                        enemy.executeFeedbackRemaining);
+                    if (feedbackPhase < 2)
                     {
-                        for (LONG x = enemyCenterX - 1; x <= enemyCenterX + 1; ++x)
+                        DWORD feedbackColor = feedbackPhase == 0
+                            ? 0x00FFFFFF : 0x00602028;
+                        for (LONG y = 0; y < enemyHeight; ++y)
                         {
-                            LONG screenX = x - cameraX;
-                            LONG screenY = y - cameraY;
+                            for (LONG x = 0; x < enemyWidth; ++x)
+                            {
+                                LONG screenX = enemyLeft + x - cameraX;
+                                LONG screenY = enemyTop + y - cameraY;
+                                if (EnemySpriteColor(enemy.role, enemyIdleAFrame,
+                                        x, y)
+                                    && screenX >= 0 && screenX < framebufferWidth
+                                    && screenY >= 0 && screenY < framebufferHeight)
+                                {
+                                    framebuffer[screenY * framebufferWidth
+                                        + screenX] = feedbackColor;
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        constexpr LONG fragmentX[4]{ -4, -2, 2, 4 };
+                        constexpr LONG fragmentY[4]{ 1, 4, 3, 0 };
+                        for (LONG fragment = 0; fragment < 4; ++fragment)
+                        {
+                            LONG screenX = enemyCenterX + fragmentX[fragment]
+                                - cameraX;
+                            LONG screenY = enemyCenterY + fragmentY[fragment]
+                                - cameraY;
                             if (screenX >= 0 && screenX < framebufferWidth
                                 && screenY >= 0 && screenY < framebufferHeight)
                             {
-                                framebuffer[screenY * framebufferWidth + screenX] = 0x00FFFF80;
+                                framebuffer[screenY * framebufferWidth + screenX]
+                                    = feedbackPhase == 2
+                                        ? 0x00D06038 : 0x00603030;
                             }
                         }
                     }
@@ -7269,14 +7550,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     }
                 }
             }
-            BYTE playerFrame = PlayerAnimationFrame(playerAlive,
-                playerDashingThisUpdate, dashDistanceRemaining,
-                dashDistanceCurrent, playerSlashVisualRemaining,
-                playerMovedThisUpdate, playerWalkAnimTime);
-            bool mirrorPlayer = playerDashingThisUpdate
-                ? dashDirectionX < 0
-                : (playerSlashVisualRemaining > 0.0f
-                    ? slashDirectionX < 0 : facingX < 0);
+            BYTE playerFrame = playerAlive && playerExecuteVisualRemaining > 0.0f
+                ? PlayerExecuteAnimationFrame(selectedCharacter,
+                    ExecuteVisualPhase(playerExecuteVisualRemaining))
+                : PlayerAnimationFrame(playerAlive, playerDashingThisUpdate,
+                    dashDistanceRemaining, dashDistanceCurrent,
+                    playerSlashVisualRemaining, playerMovedThisUpdate,
+                    playerWalkAnimTime);
+            bool mirrorPlayer = playerExecuteVisualRemaining > 0.0f
+                ? executeVisualTargetX < executeVisualOriginX
+                : (playerDashingThisUpdate ? dashDirectionX < 0
+                    : (playerSlashVisualRemaining > 0.0f
+                        ? slashDirectionX < 0 : facingX < 0));
             for (LONG y = 0; y < playerHeight; ++y)
             {
                 for (LONG x = 0; x < playerWidth; ++x)
@@ -8115,6 +8400,137 @@ int main()
         cosf(executeOutside) * 8.0f, sinf(executeOutside) * 8.0f);
     failures += PointInsideExecuteFacing(0.0f, 0.0f, 1.0f, 0.0f,
         -1.0f, 0.0f);
+
+    EnemyRuntime witness[7]{};
+    witness[0].alive = true;
+    witness[0].role = patrollerEnemyRole;
+    witness[0].x = 100.0f;
+    witness[0].y = 100.0f;
+    witness[1].alive = true;
+    witness[1].role = patrollerEnemyRole;
+    witness[1].x = 40.0f;
+    witness[1].y = 100.0f;
+    witness[1].facingAngle = 0.0f;
+    witness[1].detectionProgress = 0.5f;
+    currentWallCount = 0;
+    alertEventCount = 0;
+    alertEventActive = false;
+    failures += AlertExecutionWitnesses(witness, 2, 0, 100.0f, 140.0f,
+            100.0f, 100.0f) != 1
+        || !witness[1].alert || witness[0].alert || alertEventCount != 1;
+
+    witness[1] = {};
+    witness[1].alive = true;
+    witness[1].role = patrollerEnemyRole;
+    witness[1].x = 40.0f;
+    witness[1].y = 100.0f;
+    witness[1].facingAngle = 3.14159265f;
+    alertEventCount = 0;
+    alertEventActive = false;
+    failures += AlertExecutionWitnesses(witness, 2, 0, 100.0f, 100.0f,
+            100.0f, 100.0f) != 0
+        || witness[1].alert || alertEventCount;
+
+    witness[1].facingAngle = 0.0f;
+    currentWallCount = 1;
+    currentWallLeft[0] = 68;
+    currentWallTop[0] = 80;
+    currentWallRight[0] = 76;
+    currentWallBottom[0] = 120;
+    currentRoomType = mazeRoomType;
+    failures += AlertExecutionWitnesses(witness, 2, 0, 100.0f, 100.0f,
+            100.0f, 100.0f) != 0 || witness[1].alert;
+    currentRoomType = pillarRoomType;
+    failures += AlertExecutionWitnesses(witness, 2, 0, 100.0f, 100.0f,
+            100.0f, 100.0f) != 0 || witness[1].alert;
+
+    currentWallCount = 0;
+    currentTrapCount = 1;
+    currentTrapLeft[0] = 68;
+    currentTrapTop[0] = 80;
+    currentTrapRight[0] = 76;
+    currentTrapBottom[0] = 120;
+    failures += AlertExecutionWitnesses(witness, 2, 0, 100.0f, 100.0f,
+            100.0f, 100.0f) != 1 || !witness[1].alert;
+
+    for (LONG index = 0; index < 7; ++index)
+    {
+        witness[index] = {};
+        witness[index].alive = true;
+        witness[index].facingAngle = 3.14159265f;
+    }
+    witness[0].role = patrollerEnemyRole;
+    witness[0].x = 100.0f;
+    witness[1].role = listenerEnemyRole;
+    witness[1].x = 40.0f;
+    witness[1].facingAngle = 0.0f;
+    witness[2].role = patrollerEnemyRole;
+    witness[2].x = 40.0f;
+    witness[2].y = 60.0f;
+    witness[3].role = hunterEnemyRole;
+    witness[3].x = 40.0f;
+    witness[3].y = -60.0f;
+    witness[4].role = listenerEnemyRole;
+    witness[4].x = 40.0f;
+    witness[4].y = 70.0f;
+    witness[5].role = watcherEnemyRole;
+    witness[5].x = 40.0f;
+    witness[5].y = 50.0f;
+    witness[6].role = spinnerEnemyRole;
+    witness[6].x = 40.0f;
+    witness[6].y = -50.0f;
+    alertEventCount = 0;
+    alertEventActive = false;
+    failures += AlertExecutionWitnesses(witness, 7, 0, 100.0f, 40.0f,
+            100.0f, 0.0f) != 1
+        || !witness[1].alert || !witness[2].alert || !witness[3].alert
+        || !witness[4].alert || witness[5].alert || witness[6].alert
+        || alertEventCount != 1;
+
+    for (LONG index = 0; index < 6; ++index)
+    {
+        witness[index] = {};
+        witness[index].alive = true;
+        witness[index].role = static_cast<BYTE>(index % enemyRoleCount);
+    }
+    witness[0].x = 100.0f;
+    for (LONG index = 1; index < 6; ++index)
+    {
+        witness[index].x = 40.0f;
+        witness[index].y = (index - 3) * 5.0f;
+        witness[index].facingAngle = atan2f(-witness[index].y, 60.0f);
+    }
+    alertEventCount = 0;
+    alertEventActive = false;
+    failures += AlertExecutionWitnesses(witness, 6, 0, 100.0f, 0.0f,
+            100.0f, 0.0f) != 5 || alertEventCount != 1;
+    for (LONG index = 1; index < 6; ++index)
+    {
+        failures += !witness[index].alert;
+    }
+
+    witness[0] = {};
+    witness[0].alive = true;
+    witness[0].role = patrollerEnemyRole;
+    witness[0].x = 60.0f;
+    witness[0].y = 40.0f;
+    witness[1] = {};
+    witness[1].alive = true;
+    witness[1].role = watcherEnemyRole;
+    witness[1].facingAngle = 0.0f;
+    alertEventCount = 0;
+    alertEventActive = false;
+    failures += AlertExecutionWitnesses(witness, 2, 0, 60.0f, 0.0f,
+            60.0f, 40.0f) != 1 || !witness[1].alert;
+    witness[1] = {};
+    witness[1].alive = true;
+    witness[1].role = pressureEnemyRole;
+    witness[1].facingAngle = 0.0f;
+    alertEventCount = 0;
+    alertEventActive = false;
+    failures += AlertExecutionWitnesses(witness, 2, 0, 60.0f, 0.0f,
+            60.0f, 40.0f) != 0 || witness[1].alert || alertEventCount;
+    currentTrapCount = 0;
 
     LONG pendingDamage = 0;
     QueuePlayerDamage(10, pendingDamage);
@@ -9875,6 +10291,57 @@ int main()
     visionOverlay[0] = 0;
     printf("section_v05=%ld blue=%ld red=%ld purple=%ld\n", failures,
         v05BluePixels, v05RedPixels, v05PurplePixels);
+
+    DWORD executeVisualHash[characterCount]{};
+    LONG executeVisualPixels[characterCount]{};
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        DWORD hash = 2166136261u;
+        for (BYTE phase = 1; phase <= 2; ++phase)
+        {
+            for (LONG y = 80; y < 121; ++y)
+            {
+                for (LONG x = 90; x < 131; ++x)
+                {
+                    DWORD color = ExecuteEffectPixel(character, phase,
+                        100.0f, 100.0f, 116.0f, 100.0f,
+                        x + 0.5f, y + 0.5f);
+                    if (color)
+                    {
+                        ++executeVisualPixels[character];
+                        hash = (hash ^ color ^ static_cast<DWORD>(x)
+                            ^ (static_cast<DWORD>(y) << 8)
+                            ^ (static_cast<DWORD>(phase) << 24)) * 16777619u;
+                    }
+                }
+            }
+        }
+        executeVisualHash[character] = hash;
+        failures += !executeVisualPixels[character];
+    }
+    for (BYTE first = 0; first < characterCount; ++first)
+    {
+        for (BYTE second = first + 1; second < characterCount; ++second)
+        {
+            failures += executeVisualHash[first] == executeVisualHash[second];
+        }
+    }
+    failures += executeVisualDuration != 0.18f
+        || !ExecuteEffectPixel(piercerCharacter, 1, 100.0f, 100.0f,
+            116.0f, 100.0f, 108.5f, 100.5f)
+        || ExecuteEffectPixel(piercerCharacter, 1, 100.0f, 100.0f,
+            116.0f, 100.0f, 108.5f, 103.5f)
+        || !ExecuteEffectPixel(mobilityCharacter, 2, 100.0f, 100.0f,
+            116.0f, 100.0f, 119.5f, 100.5f)
+        || !ExecuteEffectPixel(heavyCharacter, 1, 100.0f, 100.0f,
+            116.0f, 100.0f, 116.5f, 94.5f)
+        || !ExecuteEffectPixel(rapidCharacter, 1, 100.0f, 100.0f,
+            116.0f, 100.0f, 117.5f, 98.5f)
+        || !ExecuteEffectPixel(rapidCharacter, 2, 100.0f, 100.0f,
+            116.0f, 100.0f, 117.5f, 101.5f);
+    printf("section_v06=%ld execute=%ld/%ld/%ld/%ld/%ld\n", failures,
+        executeVisualPixels[0], executeVisualPixels[1], executeVisualPixels[2],
+        executeVisualPixels[3], executeVisualPixels[4]);
 
 #ifdef DEAD_SIGNAL_B101_SOAK_VALIDATION
     ULONGLONG soakStart = GetTickCount64();
