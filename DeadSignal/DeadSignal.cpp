@@ -1587,10 +1587,12 @@ constexpr wchar_t saveFileName[] = L"DeadSignal.sav";
 constexpr DWORD metaMagic = 0x4154454D;
 constexpr DWORD metaVersion = 3;
 constexpr DWORD previousMetaVersion = 2;
-constexpr DWORD EncodeMetaVersion(BYTE bgmStep, BYTE sfxStep)
+constexpr DWORD EncodeMetaVersion(BYTE bgmStep, BYTE sfxStep,
+    BYTE character = basicCharacter)
 {
     return metaVersion | (static_cast<DWORD>(bgmStep
-        + (masterVolumeMaximumStep + 1) * sfxStep) << 8);
+        + (masterVolumeMaximumStep + 1) * sfxStep) << 8)
+        | (static_cast<DWORD>(character) << 16);
 }
 constexpr wchar_t metaFileName[] = L"DeadSignal.meta";
 LONG applicationState = titleMainState;
@@ -1617,6 +1619,10 @@ LONG titleFontRasterHeight = 34;
 LONG uiFontRasterHeight = 21;
 bool newGameRequested = false;
 bool loadGameRequested = false;
+#ifdef DEAD_SIGNAL_V12_FULL_RUN_VALIDATION
+bool v12AdvanceRoomRequested = false;
+bool v12PlayerDeathRequested = false;
+#endif
 LONG currentRoom = 0;
 DWORD runSeed = 0;
 LONG runKillCount = 0;
@@ -2515,6 +2521,18 @@ BYTE EnemyAttackSfx(BYTE role)
     return static_cast<BYTE>(sfxAttackPatroller + role);
 }
 
+void PlaySlashImpactFeedback(bool hitSurvivor, bool killedEnemy)
+{
+    if (hitSurvivor)
+    {
+        PlaySfx(sfxEnemyHit);
+    }
+    if (killedEnemy)
+    {
+        PlaySfx(sfxEnemyKill);
+    }
+}
+
 LONG EightDirectionIndex(float angle)
 {
     float directionX = cosf(angle);
@@ -3060,6 +3078,7 @@ void ResetMetaProfile()
 {
     globalCoin = 0;
     unlockedCharacterMask = 1 << basicCharacter;
+    selectedCharacter = basicCharacter;
     masterVolumeStep = masterVolumeMaximumStep;
     bgmVolumeStep = defaultBgmVolumeStep;
     sfxVolumeStep = defaultSfxVolumeStep;
@@ -3123,9 +3142,10 @@ bool ReadMetaProfile()
         && bytesRead == sizeof(profile);
     CloseHandle(file);
     bool previousVersion = profile.version == previousMetaVersion;
-    DWORD categoryValue = profile.version >> 8;
+    DWORD categoryValue = (profile.version >> 8) & 0xFF;
+    DWORD storedCharacter = profile.version >> 16;
     bool categoryEncoding = (profile.version & 0xFF) == metaVersion
-        && (profile.version >> 16) == 0
+        && storedCharacter < characterCount
         && categoryValue < (masterVolumeMaximumStep + 1)
             * (masterVolumeMaximumStep + 1);
     bool legacyAudioEncoding = profile.audioSetting <= 2;
@@ -3140,6 +3160,8 @@ bool ReadMetaProfile()
         && profile.coin >= 0
         && (profile.unlockedMask & (1 << basicCharacter)) != 0
         && (profile.unlockedMask & ~((1 << characterCount) - 1)) == 0
+        && (!categoryEncoding
+            || (profile.unlockedMask & (1 << storedCharacter)) != 0)
         && (legacyAudioEncoding || volumeOnlyEncoding || displayEncoding);
     for (BYTE upgrade = 0; valid && upgrade < commonUpgradeCount; ++upgrade)
     {
@@ -3177,6 +3199,8 @@ bool ReadMetaProfile()
     }
     globalCoin = profile.coin;
     unlockedCharacterMask = profile.unlockedMask;
+    selectedCharacter = categoryEncoding
+        ? static_cast<BYTE>(storedCharacter) : basicCharacter;
     if (categoryEncoding)
     {
         bgmVolumeStep = static_cast<BYTE>(categoryValue
@@ -3237,7 +3261,8 @@ void WriteMetaProfile()
 {
     MetaProfile profile{};
     profile.magic = metaMagic;
-    profile.version = EncodeMetaVersion(bgmVolumeStep, sfxVolumeStep);
+    profile.version = EncodeMetaVersion(bgmVolumeStep, sfxVolumeStep,
+        selectedCharacter);
     profile.coin = globalCoin;
     profile.unlockedMask = unlockedCharacterMask;
     profile.audioSetting = EncodeDisplaySetting(masterVolumeStep,
@@ -3445,6 +3470,7 @@ bool UnlockCharacter(BYTE character)
     {
         selectedCharacter = character;
         titleStatus = 4;
+        WriteMetaProfile();
         PlaySfx(sfxUiConfirm);
         return true;
     }
@@ -5683,6 +5709,23 @@ void DrawVolumeOption(HDC deviceContext, LONG clientWidth, LONG clientHeight,
 
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
+#ifdef DEAD_SIGNAL_V12_FULL_RUN_VALIDATION
+    if (message == WM_KEYDOWN && wParam == VK_F9
+        && applicationState == gameplayState && !runEndState
+        && !upgradeMenuActive && !gameplayMenuActive)
+    {
+        v12PlayerDeathRequested = true;
+        return 0;
+    }
+    if (message == WM_KEYDOWN && wParam == VK_F10
+        && applicationState == gameplayState && !runEndState
+        && !upgradeMenuActive && !gameplayMenuActive)
+    {
+        v12AdvanceRoomRequested = true;
+        return 0;
+    }
+#endif
+
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == VK_ESCAPE)
     {
         bool pressed = message == WM_KEYDOWN;
@@ -5725,6 +5768,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             {
                 gameplayMenuActive = true;
                 gameplayMenuSelection = 0;
+                slashRequested = false;
+                dashRequested = false;
+                executeRequested = false;
             }
             PlaySfx(sfxUiBack);
             InvalidateRect(window, nullptr, FALSE);
@@ -5756,6 +5802,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         {
             gameplayMenuActive = true;
             gameplayMenuSelection = 0;
+            slashRequested = false;
+            dashRequested = false;
+            executeRequested = false;
             InvalidateRect(window, nullptr, FALSE);
         }
         else if (gameplayMenuActive && mouseX >= clientWidth / 2 - 120
@@ -6216,6 +6265,24 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             gameplayInputBlocked = false;
         }
 
+        return 0;
+    }
+
+    if (message == WM_KILLFOCUS)
+    {
+        escapePressed = false;
+        upPressed = false;
+        downPressed = false;
+        leftPressed = false;
+        rightPressed = false;
+        zPressed = false;
+        xPressed = false;
+        cPressed = false;
+        spacePressed = false;
+        slashRequested = false;
+        dashRequested = false;
+        executeRequested = false;
+        gameplayInputBlocked = false;
         return 0;
     }
 
@@ -7658,6 +7725,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             doorOpenFeedbackRemaining = 0.0f;
             pressureEnragedPrevious = false;
             pressureEnrageFeedbackRemaining = 0.0f;
+            bgmTensionLevel = 0;
             roomComplete = false;
             slashRequested = false;
             dashRequested = false;
@@ -7791,7 +7859,33 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
             float deltaTime = static_cast<float>(currentTime.QuadPart - previousUpdate.QuadPart)
                 / static_cast<float>(performanceFrequency.QuadPart);
             previousUpdate = currentTime;
+#ifdef DEAD_SIGNAL_V12_FULL_RUN_VALIDATION
+            if (v12AdvanceRoomRequested)
+            {
+                for (LONG enemyIndex = 0; enemyIndex < currentEnemyCount;
+                    ++enemyIndex)
+                {
+                    if (enemies[enemyIndex].alive)
+                    {
+                        enemies[enemyIndex].alive = false;
+                        ++runKillCount;
+                    }
+                }
+                currentEnemyRemaining = 0;
+                playerX = (currentExitLeft + currentExitRight) * 0.5f;
+                playerY = (currentExitTop + currentExitBottom) * 0.5f;
+                v12AdvanceRoomRequested = false;
+            }
+#endif
             LONG pendingPlayerDamage = 0;
+#ifdef DEAD_SIGNAL_V12_FULL_RUN_VALIDATION
+            if (v12PlayerDeathRequested)
+            {
+                pendingPlayerDamage = playerHP;
+                playerInvulnerabilityRemaining = 0.0f;
+                v12PlayerDeathRequested = false;
+            }
+#endif
             enemyVisualTime += deltaTime;
             if (enemyVisualTime >= 1.2f)
             {
@@ -8843,6 +8937,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                     slashCooldownRemaining = slashCooldownDurationCurrent;
                     PlaySfx(CharacterSlashSfx(selectedCharacter));
                     LONG slashHitCount = 0;
+                    bool slashHitSurvivor = false;
                     bool slashKilledEnemy = false;
                     for (LONG enemyIndex = 0; enemyIndex < currentEnemyCount;
                         ++enemyIndex)
@@ -8884,20 +8979,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                             }
                             else
                             {
+                                slashHitSurvivor = true;
                                 EnterEnemyAlert(enemies, currentEnemyCount,
                                     enemyIndex);
                             }
                             AlertEnemiesNear(enemies, currentEnemyCount, hitX, hitY);
                         }
                     }
-                    if (slashHitCount)
-                    {
-                        PlaySfx(sfxEnemyHit);
-                    }
-                    if (slashKilledEnemy)
-                    {
-                        PlaySfx(sfxEnemyKill);
-                    }
+                    PlaySlashImpactFeedback(slashHitSurvivor,
+                        slashKilledEnemy);
                 }
                 slashRequested = false;
             }
@@ -11870,6 +11960,7 @@ int main()
     ResetMetaProfile();
     globalCoin = 123;
     unlockedCharacterMask = 0x1f;
+    selectedCharacter = heavyCharacter;
     masterVolumeStep = 0;
     windowResolutionIndex = 4;
     fullscreenEnabled = true;
@@ -11888,6 +11979,7 @@ int main()
     ResetMetaProfile();
     failures += !ReadMetaProfile() || globalCoin != 123
         || unlockedCharacterMask != 0x1f || masterVolumeStep != 0
+        || selectedCharacter != heavyCharacter
         || bgmVolumeStep != defaultBgmVolumeStep
         || sfxVolumeStep != defaultSfxVolumeStep
         || windowResolutionIndex != 4 || !fullscreenEnabled
@@ -13006,6 +13098,100 @@ int main()
         || selectedCharacter != basicCharacter;
     newGameRequested = false;
     printf("section_ui=%ld\n", failures);
+
+    LONG v12Failures = 0;
+    ResetMetaProfile();
+    unlockedCharacterMask = 0x1f;
+    selectedCharacter = rapidCharacter;
+    masterVolumeStep = 6;
+    bgmVolumeStep = 3;
+    sfxVolumeStep = 9;
+    windowResolutionIndex = 4;
+    fullscreenEnabled = true;
+    WriteMetaProfile();
+    ResetMetaProfile();
+    v12Failures += !ReadMetaProfile()
+        || selectedCharacter != rapidCharacter
+        || masterVolumeStep != 6 || bgmVolumeStep != 3 || sfxVolumeStep != 9
+        || windowResolutionIndex != 4 || !fullscreenEnabled
+        || sizeof(MetaProfile) != 32 || metaVersion != 3;
+
+    ResetMetaProfile();
+    unlockedCharacterMask = 0x1f;
+    applicationState = characterSelectState;
+    menuSelection = mobilityCharacter;
+    characterUpgradeFocus = false;
+    zPressed = false;
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    selectedCharacter = basicCharacter;
+    v12Failures += !ReadMetaProfile()
+        || selectedCharacter != mobilityCharacter;
+
+    applicationState = gameplayState;
+    runEndState = 0;
+    upgradeMenuActive = false;
+    gameplayMenuActive = false;
+    escapePressed = false;
+    slashRequested = true;
+    dashRequested = true;
+    executeRequested = true;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_ESCAPE, 0);
+    v12Failures += !gameplayMenuActive || slashRequested
+        || dashRequested || executeRequested;
+    WindowProcedure(nullptr, WM_KEYUP, VK_ESCAPE, 0);
+
+    escapePressed = true;
+    upPressed = true;
+    downPressed = true;
+    leftPressed = true;
+    rightPressed = true;
+    zPressed = true;
+    xPressed = true;
+    cPressed = true;
+    spacePressed = true;
+    slashRequested = true;
+    dashRequested = true;
+    executeRequested = true;
+    gameplayInputBlocked = true;
+    WindowProcedure(nullptr, WM_KILLFOCUS, 0, 0);
+    v12Failures += escapePressed || upPressed || downPressed || leftPressed
+        || rightPressed || zPressed || xPressed || cPressed || spacePressed
+        || slashRequested || dashRequested || executeRequested
+        || gameplayInputBlocked;
+
+    ResetSfxVoices();
+    masterVolumeStep = masterVolumeMaximumStep;
+    sfxVolumeStep = defaultSfxVolumeStep;
+    sfxStartCount[sfxEnemyHit] = 0;
+    sfxStartCount[sfxEnemyKill] = 0;
+    PlaySlashImpactFeedback(false, true);
+    v12Failures += sfxStartCount[sfxEnemyHit] != 0
+        || sfxStartCount[sfxEnemyKill] != 1;
+
+    runSeed = 0x51A7C3D9u;
+    for (LONG room = 0; room < roomCount; ++room)
+    {
+        currentRoom = room;
+        SetupCurrentRoom();
+        v12Failures += currentEnemyCount != (room + 1) * 2
+            || currentRoomType < openRoomType
+            || currentRoomType > mixedRoomType
+            || RoomClearsToUpgrade(room) != (room == 1 || room == 3
+                || room == 5 || room == 7 || room == 9);
+    }
+    v12Failures += RoomClearsToUpgrade(roomCount - 1)
+        || saveVersion != 8 || sizeof(SaveCheckpoint) != 32;
+    gameplayMenuActive = false;
+    applicationState = titleMainState;
+    currentRoom = 0;
+    failures += v12Failures;
+    printf("section_v12=%ld selected=%u rooms=%ld pause=%d focus=%d kill=%lu/%lu meta=%lu save=%lu\n",
+        v12Failures, static_cast<UINT>(selectedCharacter), roomCount,
+        gameplayMenuActive, gameplayInputBlocked,
+        sfxStartCount[sfxEnemyHit], sfxStartCount[sfxEnemyKill],
+        static_cast<unsigned long>(sizeof(MetaProfile)),
+        static_cast<unsigned long>(sizeof(SaveCheckpoint)));
 
     constexpr LONG commonUpgradeTop[3]{ 42, 66, 90 };
     for (LONG item = 0; item < 3; ++item)
