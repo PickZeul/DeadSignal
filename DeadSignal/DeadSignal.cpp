@@ -1542,6 +1542,8 @@ constexpr BYTE sfxVoiceCount = 6;
 constexpr BYTE audioBufferCount = 4;
 constexpr WORD audioBufferSampleCount = 128;
 constexpr BYTE masterVolumeMaximumStep = 10;
+constexpr BYTE defaultBgmVolumeStep = 6;
+constexpr BYTE defaultSfxVolumeStep = 10;
 constexpr BYTE masterVolumeStorageMarker = 0x80;
 constexpr BYTE windowResolutionCount = 5;
 constexpr BYTE defaultWindowResolutionIndex = 2;
@@ -1583,7 +1585,13 @@ constexpr DWORD saveMagic = 0x56535344;
 constexpr DWORD saveVersion = 8;
 constexpr wchar_t saveFileName[] = L"DeadSignal.sav";
 constexpr DWORD metaMagic = 0x4154454D;
-constexpr DWORD metaVersion = 2;
+constexpr DWORD metaVersion = 3;
+constexpr DWORD previousMetaVersion = 2;
+constexpr DWORD EncodeMetaVersion(BYTE bgmStep, BYTE sfxStep)
+{
+    return metaVersion | (static_cast<DWORD>(bgmStep
+        + (masterVolumeMaximumStep + 1) * sfxStep) << 8);
+}
 constexpr wchar_t metaFileName[] = L"DeadSignal.meta";
 LONG applicationState = titleMainState;
 LONG menuSelection = 0;
@@ -1594,6 +1602,8 @@ LONG settingsSelection = 0;
 bool helpActive = false;
 bool helpFromGameplay = false;
 BYTE masterVolumeStep = masterVolumeMaximumStep;
+BYTE bgmVolumeStep = defaultBgmVolumeStep;
+BYTE sfxVolumeStep = defaultSfxVolumeStep;
 BYTE windowResolutionIndex = defaultWindowResolutionIndex;
 bool fullscreenEnabled = false;
 HDC logicalFrameContext = nullptr;
@@ -1821,6 +1831,42 @@ short audioSamples[audioBufferCount][audioBufferSampleCount]{};
 HWAVEOUT audioOutput = nullptr;
 WAVEHDR audioHeaders[audioBufferCount]{};
 bool audioStreamReady = false;
+
+enum AudioCategory : BYTE
+{
+    audioCategoryBgm,
+    audioCategorySfx
+};
+
+enum BgmMode : BYTE
+{
+    bgmTitleMode,
+    bgmRunMode,
+    bgmResultMode
+};
+
+struct BgmState
+{
+    DWORD dronePhase;
+    DWORD pulsePhase;
+    DWORD signalPhase;
+    DWORD noiseState;
+    DWORD modeSample;
+    DWORD nextPulseSample;
+    DWORD pulseRemaining;
+    DWORD pulseDuration;
+    DWORD signalRemaining;
+    DWORD signalDuration;
+    DWORD transitionRemaining;
+    DWORD startupRemaining;
+    LONG pulseStep;
+    LONG signalStep;
+    BYTE currentMode;
+    BYTE targetMode;
+    BYTE pulseIndex;
+};
+
+BgmState bgmState{};
 short navigationParent[maxNavigationNodeCount];
 unsigned short navigationScore[maxNavigationNodeCount];
 BYTE navigationState[maxNavigationNodeCount];
@@ -1885,7 +1931,7 @@ void ResetSfxVoices()
 
 bool PlaySfx(BYTE sound)
 {
-    if (sound >= sfxCount || masterVolumeStep == 0)
+    if (sound >= sfxCount || masterVolumeStep == 0 || sfxVolumeStep == 0)
     {
         return false;
     }
@@ -2008,6 +2054,143 @@ LONG SfxVoiceSample(SfxVoice& voice)
     return sample;
 }
 
+BYTE DesiredBgmMode()
+{
+    if (applicationState != gameplayState)
+    {
+        return bgmTitleMode;
+    }
+    return runEndState ? bgmResultMode : bgmRunMode;
+}
+
+void ScheduleBgmPulse()
+{
+    bgmState.noiseState = bgmState.noiseState * 1664525u + 1013904223u;
+    DWORD variation = (bgmState.noiseState >> 19) & 0x0FFF;
+    DWORD baseInterval = bgmState.currentMode == bgmTitleMode
+        ? audioSampleRate * 3 : (bgmState.currentMode == bgmRunMode
+            ? audioSampleRate * 2 : audioSampleRate * 4);
+    bgmState.nextPulseSample = bgmState.modeSample + baseInterval + variation;
+    bgmState.pulseDuration = audioSampleRate
+        * (bgmState.currentMode == bgmRunMode ? 180 : 260) / 1000;
+    bgmState.pulseRemaining = bgmState.pulseDuration;
+    WORD pulseFrequency = static_cast<WORD>(bgmState.currentMode == bgmRunMode
+        ? 82 + ((bgmState.noiseState >> 28) * 3)
+        : 62 + ((bgmState.noiseState >> 28) * 2));
+    bgmState.pulseStep = pulseFrequency * static_cast<LONG>(sfxPhaseUnit);
+    if ((++bgmState.pulseIndex & 3) == 0)
+    {
+        bgmState.signalDuration = audioSampleRate * 70 / 1000;
+        bgmState.signalRemaining = bgmState.signalDuration;
+        bgmState.signalStep = (bgmState.currentMode == bgmRunMode ? 410 : 330)
+            * static_cast<LONG>(sfxPhaseUnit);
+    }
+}
+
+void ResetBgmPattern(BYTE mode)
+{
+    bgmState.currentMode = mode;
+    bgmState.modeSample = 0;
+    bgmState.nextPulseSample = audioSampleRate
+        * (mode == bgmRunMode ? 1 : 2);
+    bgmState.pulseRemaining = 0;
+    bgmState.signalRemaining = 0;
+}
+
+void ResetBgmState()
+{
+    bgmState = {};
+    bgmState.noiseState = 0x51A7C3D9u;
+    bgmState.targetMode = DesiredBgmMode();
+    ResetBgmPattern(bgmState.targetMode);
+    bgmState.startupRemaining = audioSampleRate * 150 / 1000;
+}
+
+LONG BgmSample()
+{
+    constexpr DWORD fadeSamples = audioSampleRate * 150 / 1000;
+    BYTE desiredMode = DesiredBgmMode();
+    if (desiredMode != bgmState.targetMode)
+    {
+        bgmState.targetMode = desiredMode;
+        bgmState.transitionRemaining = fadeSamples * 2;
+    }
+
+    LONG transitionGain = 256;
+    if (bgmState.transitionRemaining)
+    {
+        if (bgmState.transitionRemaining > fadeSamples)
+        {
+            transitionGain = static_cast<LONG>(
+                (bgmState.transitionRemaining - fadeSamples) * 256 / fadeSamples);
+        }
+        else
+        {
+            if (bgmState.currentMode != bgmState.targetMode)
+            {
+                ResetBgmPattern(bgmState.targetMode);
+            }
+            transitionGain = static_cast<LONG>(
+                (fadeSamples - bgmState.transitionRemaining) * 256 / fadeSamples);
+        }
+        --bgmState.transitionRemaining;
+    }
+    else if (bgmState.startupRemaining)
+    {
+        transitionGain = static_cast<LONG>(
+            (fadeSamples - bgmState.startupRemaining) * 256 / fadeSamples);
+        --bgmState.startupRemaining;
+    }
+
+    WORD droneFrequency = bgmState.currentMode == bgmTitleMode ? 43
+        : (bgmState.currentMode == bgmRunMode ? 55 : 36);
+    bgmState.dronePhase += droneFrequency * sfxPhaseUnit;
+    LONG phase = static_cast<LONG>(bgmState.dronePhase >> 24);
+    LONG triangle = phase < 128 ? phase * 2 - 127 : 383 - phase * 2;
+    LONG mixed = triangle * (bgmState.currentMode == bgmRunMode ? 5 : 4) / 127;
+
+    if (bgmState.modeSample >= bgmState.nextPulseSample)
+    {
+        ScheduleBgmPulse();
+    }
+    if (bgmState.pulseRemaining)
+    {
+        bgmState.pulsePhase += static_cast<DWORD>(bgmState.pulseStep);
+        DWORD elapsed = bgmState.pulseDuration - bgmState.pulseRemaining;
+        LONG envelope = static_cast<LONG>(bgmState.pulseRemaining * 256
+            / bgmState.pulseDuration);
+        if (elapsed < 20)
+        {
+            envelope = static_cast<LONG>(elapsed * envelope / 20);
+        }
+        LONG pulse = bgmState.pulsePhase & 0x80000000u ? 1 : -1;
+        LONG pulseAmplitude = bgmState.currentMode == bgmRunMode ? 8 : 6;
+        if (bgmState.currentMode == bgmRunMode && alertEventActive)
+        {
+            pulseAmplitude += 2;
+        }
+        mixed += pulse * pulseAmplitude * envelope / 256;
+        --bgmState.pulseRemaining;
+    }
+    if (bgmState.signalRemaining)
+    {
+        bgmState.signalPhase += static_cast<DWORD>(bgmState.signalStep);
+        LONG signal = bgmState.signalPhase & 0x80000000u ? 1 : -1;
+        mixed += signal * 3 * static_cast<LONG>(bgmState.signalRemaining)
+            / static_cast<LONG>(bgmState.signalDuration);
+        --bgmState.signalRemaining;
+    }
+    ++bgmState.modeSample;
+    return mixed * transitionGain / 256;
+}
+
+LONG ApplyCategoryVolume(LONG mixed, AudioCategory category)
+{
+    BYTE volumeStep = category == audioCategoryBgm
+        ? bgmVolumeStep : sfxVolumeStep;
+    return mixed * volumeStep / masterVolumeMaximumStep;
+}
+
 short ApplyMasterVolume(LONG mixed, BYTE volumeStep)
 {
     mixed = mixed * volumeStep / masterVolumeMaximumStep;
@@ -2016,14 +2199,15 @@ short ApplyMasterVolume(LONG mixed, BYTE volumeStep)
     return static_cast<short>(mixed);
 }
 
-short MixSfxSample()
+short MixAudioSample()
 {
-    LONG mixed = 0;
+    LONG sfxMixed = 0;
     for (BYTE voice = 0; voice < sfxVoiceCount; ++voice)
     {
-        mixed += SfxVoiceSample(sfxVoices[voice]);
+        sfxMixed += SfxVoiceSample(sfxVoices[voice]);
     }
-    mixed *= 256;
+    LONG mixed = ApplyCategoryVolume(sfxMixed * 256, audioCategorySfx)
+        + ApplyCategoryVolume(BgmSample() * 256, audioCategoryBgm);
     return ApplyMasterVolume(mixed, masterVolumeStep);
 }
 
@@ -2031,7 +2215,7 @@ void FillAudioBuffer(BYTE buffer)
 {
     for (WORD sample = 0; sample < audioBufferSampleCount; ++sample)
     {
-        audioSamples[buffer][sample] = MixSfxSample();
+        audioSamples[buffer][sample] = MixAudioSample();
     }
 }
 
@@ -2668,6 +2852,8 @@ void ResetMetaProfile()
     globalCoin = 0;
     unlockedCharacterMask = 1 << basicCharacter;
     masterVolumeStep = masterVolumeMaximumStep;
+    bgmVolumeStep = defaultBgmVolumeStep;
+    sfxVolumeStep = defaultSfxVolumeStep;
     windowResolutionIndex = defaultWindowResolutionIndex;
     fullscreenEnabled = false;
     for (BYTE upgrade = 0; upgrade < commonUpgradeCount; ++upgrade)
@@ -2727,6 +2913,12 @@ bool ReadMetaProfile()
         && ReadFile(file, &profile, sizeof(profile), &bytesRead, nullptr)
         && bytesRead == sizeof(profile);
     CloseHandle(file);
+    bool previousVersion = profile.version == previousMetaVersion;
+    DWORD categoryValue = profile.version >> 8;
+    bool categoryEncoding = (profile.version & 0xFF) == metaVersion
+        && (profile.version >> 16) == 0
+        && categoryValue < (masterVolumeMaximumStep + 1)
+            * (masterVolumeMaximumStep + 1);
     bool legacyAudioEncoding = profile.audioSetting <= 2;
     bool volumeOnlyEncoding = profile.audioSetting >= masterVolumeStorageMarker
         && profile.audioSetting <= masterVolumeStorageMarker
@@ -2734,7 +2926,8 @@ bool ReadMetaProfile()
     bool displayEncoding = profile.audioSetting >= displaySettingStorageBase
         && profile.audioSetting <= EncodeDisplaySetting(
             masterVolumeMaximumStep, windowResolutionCount - 1, true);
-    valid = valid && profile.magic == metaMagic && profile.version == metaVersion
+    valid = valid && profile.magic == metaMagic
+        && (previousVersion || categoryEncoding)
         && profile.coin >= 0
         && (profile.unlockedMask & (1 << basicCharacter)) != 0
         && (profile.unlockedMask & ~((1 << characterCount) - 1)) == 0
@@ -2775,6 +2968,18 @@ bool ReadMetaProfile()
     }
     globalCoin = profile.coin;
     unlockedCharacterMask = profile.unlockedMask;
+    if (categoryEncoding)
+    {
+        bgmVolumeStep = static_cast<BYTE>(categoryValue
+            % (masterVolumeMaximumStep + 1));
+        sfxVolumeStep = static_cast<BYTE>(categoryValue
+            / (masterVolumeMaximumStep + 1));
+    }
+    else
+    {
+        bgmVolumeStep = defaultBgmVolumeStep;
+        sfxVolumeStep = defaultSfxVolumeStep;
+    }
     if (displayEncoding)
     {
         BYTE displayValue = static_cast<BYTE>(
@@ -2812,7 +3017,7 @@ bool ReadMetaProfile()
                     : storedLevel;
         }
     }
-    if (migratePiercerProgression || !displayEncoding)
+    if (migratePiercerProgression || !displayEncoding || previousVersion)
     {
         WriteMetaProfile();
     }
@@ -2823,7 +3028,7 @@ void WriteMetaProfile()
 {
     MetaProfile profile{};
     profile.magic = metaMagic;
-    profile.version = metaVersion;
+    profile.version = EncodeMetaVersion(bgmVolumeStep, sfxVolumeStep);
     profile.coin = globalCoin;
     profile.unlockedMask = unlockedCharacterMask;
     profile.audioSetting = EncodeDisplaySetting(masterVolumeStep,
@@ -4844,6 +5049,42 @@ bool ChangeMasterVolume(LONG direction)
     return true;
 }
 
+bool ChangeBgmVolume(LONG direction)
+{
+    LONG nextStep = bgmVolumeStep + direction;
+    if (nextStep < 0) nextStep = 0;
+    if (nextStep > masterVolumeMaximumStep)
+    {
+        nextStep = masterVolumeMaximumStep;
+    }
+    if (nextStep == bgmVolumeStep)
+    {
+        return false;
+    }
+    bgmVolumeStep = static_cast<BYTE>(nextStep);
+    RestartAudioStream();
+    WriteMetaProfile();
+    return true;
+}
+
+bool ChangeSfxVolume(LONG direction)
+{
+    LONG nextStep = sfxVolumeStep + direction;
+    if (nextStep < 0) nextStep = 0;
+    if (nextStep > masterVolumeMaximumStep)
+    {
+        nextStep = masterVolumeMaximumStep;
+    }
+    if (nextStep == sfxVolumeStep)
+    {
+        return false;
+    }
+    sfxVolumeStep = static_cast<BYTE>(nextStep);
+    RestartAudioStream();
+    WriteMetaProfile();
+    return true;
+}
+
 RECT LogicalPresentRectangle(LONG clientWidth, LONG clientHeight)
 {
     LONG aspectUnit = clientWidth / 16;
@@ -5166,6 +5407,71 @@ void DrawTerminalBackdrop(HDC deviceContext, const RECT& clientArea)
         reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
 }
 
+void DrawVolumeOption(HDC deviceContext, LONG clientWidth, LONG clientHeight,
+    LONG top, LONG selection, const wchar_t* label, BYTE volumeStep)
+{
+    RECT option
+    {
+        clientWidth * 109 / 320, clientHeight * top / 180,
+        clientWidth * 211 / 320, clientHeight * (top + 21) / 180
+    };
+    bool focused = settingsSelection == selection;
+    DrawTerminalPanel(deviceContext, option, focused);
+    RECT line
+    {
+        option.left, clientHeight * (top + 1) / 180,
+        option.right, clientHeight * (top + 10) / 180
+    };
+    SetTextColor(deviceContext, focused
+        ? RGB(255, 216, 0) : RGB(180, 180, 180));
+    DrawCenteredUiText(deviceContext, label, line, focused);
+    for (LONG block = 0; block < masterVolumeMaximumStep; ++block)
+    {
+        RECT volumeBlock
+        {
+            clientWidth * (118 + block * 6) / 320,
+            clientHeight * (top + 12) / 180,
+            clientWidth * (122 + block * 6) / 320,
+            clientHeight * (top + 18) / 180
+        };
+        if (block < volumeStep)
+        {
+            FillUiRectangle(deviceContext, volumeBlock,
+                focused ? RGB(224, 112, 35) : RGB(125, 78, 45));
+        }
+        else
+        {
+            SetDCBrushColor(deviceContext, RGB(55, 64, 71));
+            FrameRect(deviceContext, &volumeBlock,
+                reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        }
+    }
+    wchar_t volumeText[8];
+    if (volumeStep)
+    {
+        wsprintfW(volumeText, L"%u%%", static_cast<UINT>(volumeStep * 10));
+    }
+    else
+    {
+        lstrcpyW(volumeText, L"OFF");
+    }
+    line.left = clientWidth * 179 / 320;
+    line.right = clientWidth * 204 / 320;
+    line.top = clientHeight * (top + 10) / 180;
+    line.bottom = clientHeight * (top + 20) / 180;
+    SetTextColor(deviceContext, volumeStep
+        ? RGB(210, 210, 205) : RGB(210, 90, 80));
+    DrawCenteredUiText(deviceContext, volumeText, line);
+    line.left = clientWidth * 110 / 320;
+    line.right = clientWidth * 119 / 320;
+    SetTextColor(deviceContext, focused
+        ? RGB(255, 216, 0) : RGB(90, 100, 105));
+    DrawCenteredUiText(deviceContext, L"<", line);
+    line.left = clientWidth * 204 / 320;
+    line.right = clientWidth * 210 / 320;
+    DrawCenteredUiText(deviceContext, L">", line);
+}
+
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
     if ((message == WM_KEYDOWN || message == WM_KEYUP) && wParam == VK_ESCAPE)
@@ -5315,12 +5621,12 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         {
             if (pressed && !zPressed)
             {
-                if (settingsSelection == 2)
+                if (settingsSelection == 4)
                 {
                     ToggleFullscreen(window);
                     PlaySfx(sfxUiConfirm);
                 }
-                else if (settingsSelection == 3)
+                else if (settingsSelection == 5)
                 {
                     CloseSettings();
                     PlaySfx(sfxUiBack);
@@ -5533,7 +5839,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             {
                 --settingsSelection;
             }
-            else if (wParam == VK_DOWN && settingsSelection < 3)
+            else if (wParam == VK_DOWN && settingsSelection < 5)
             {
                 ++settingsSelection;
             }
@@ -5549,10 +5855,24 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 }
                 else if (settingsSelection == 1)
                 {
+                    if (ChangeBgmVolume(direction))
+                    {
+                        PlaySfx(sfxUiMove);
+                    }
+                }
+                else if (settingsSelection == 2)
+                {
+                    if (ChangeSfxVolume(direction))
+                    {
+                        PlaySfx(sfxUiMove);
+                    }
+                }
+                else if (settingsSelection == 3)
+                {
                     ChangeWindowResolution(window, direction);
                     PlaySfx(sfxUiConfirm);
                 }
-                else if (settingsSelection == 2)
+                else if (settingsSelection == 4)
                 {
                     ToggleFullscreen(window);
                     PlaySfx(sfxUiConfirm);
@@ -5793,141 +6113,85 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             int clientHeight = clientArea.bottom - clientArea.top;
             RECT panel
             {
-                clientWidth * 105 / 320, clientHeight * 21 / 180,
-                clientWidth * 215 / 320, clientHeight * 159 / 180
+                clientWidth * 105 / 320, clientHeight * 18 / 180,
+                clientWidth * 215 / 320, clientHeight * 163 / 180
             };
             DrawTerminalPanel(deviceContext, panel, false);
-            line.top = clientHeight * 22 / 180;
-            line.bottom = clientHeight * 36 / 180;
+            line.top = clientHeight * 19 / 180;
+            line.bottom = clientHeight * 31 / 180;
             SetTextColor(deviceContext, RGB(220, 220, 220));
             DrawCenteredUiText(deviceContext, L"\uC124\uC815", line);
-            RECT volumeOption
-            {
-                clientWidth * 109 / 320, clientHeight * 38 / 180,
-                clientWidth * 211 / 320, clientHeight * 68 / 180
-            };
-            DrawTerminalPanel(deviceContext, volumeOption,
-                settingsSelection == 0);
-            line.left = volumeOption.left;
-            line.right = volumeOption.right;
-            line.top = clientHeight * 39 / 180;
-            line.bottom = clientHeight * 50 / 180;
-            SetTextColor(deviceContext, settingsSelection == 0
-                ? RGB(255, 216, 0) : RGB(180, 180, 180));
-            DrawCenteredUiText(deviceContext, L"MASTER VOLUME", line,
-                settingsSelection == 0);
-            for (LONG block = 0; block < masterVolumeMaximumStep; ++block)
-            {
-                RECT volumeBlock
-                {
-                    clientWidth * (118 + block * 6) / 320,
-                    clientHeight * 53 / 180,
-                    clientWidth * (122 + block * 6) / 320,
-                    clientHeight * 62 / 180
-                };
-                if (block < masterVolumeStep)
-                {
-                    FillUiRectangle(deviceContext, volumeBlock,
-                        settingsSelection == 0
-                            ? RGB(224, 112, 35) : RGB(125, 78, 45));
-                }
-                else
-                {
-                    SetDCBrushColor(deviceContext, RGB(55, 64, 71));
-                    FrameRect(deviceContext, &volumeBlock,
-                        reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
-                }
-            }
-            wchar_t volumeText[8];
-            if (masterVolumeStep)
-            {
-                wsprintfW(volumeText, L"%u%%",
-                    static_cast<UINT>(masterVolumeStep * 10));
-            }
-            else
-            {
-                lstrcpyW(volumeText, L"OFF");
-            }
-            line.left = clientWidth * 179 / 320;
-            line.right = clientWidth * 204 / 320;
-            line.top = clientHeight * 51 / 180;
-            line.bottom = clientHeight * 64 / 180;
-            SetTextColor(deviceContext, masterVolumeStep
-                ? RGB(210, 210, 205) : RGB(210, 90, 80));
-            DrawCenteredUiText(deviceContext, volumeText, line);
-            line.left = clientWidth * 110 / 320;
-            line.right = clientWidth * 119 / 320;
-            SetTextColor(deviceContext, settingsSelection == 0
-                ? RGB(255, 216, 0) : RGB(90, 100, 105));
-            DrawCenteredUiText(deviceContext, L"<", line);
-            line.left = clientWidth * 204 / 320;
-            line.right = clientWidth * 210 / 320;
-            DrawCenteredUiText(deviceContext, L">", line);
+            DrawVolumeOption(deviceContext, clientWidth, clientHeight, 32, 0,
+                L"MASTER VOLUME", masterVolumeStep);
+            DrawVolumeOption(deviceContext, clientWidth, clientHeight, 55, 1,
+                L"BGM VOLUME", bgmVolumeStep);
+            DrawVolumeOption(deviceContext, clientWidth, clientHeight, 78, 2,
+                L"SFX VOLUME", sfxVolumeStep);
 
             RECT resolutionOption
             {
-                clientWidth * 109 / 320, clientHeight * 72 / 180,
-                clientWidth * 211 / 320, clientHeight * 98 / 180
+                clientWidth * 109 / 320, clientHeight * 101 / 180,
+                clientWidth * 211 / 320, clientHeight * 119 / 180
             };
             DrawTerminalPanel(deviceContext, resolutionOption,
-                settingsSelection == 1);
+                settingsSelection == 3);
             line.left = resolutionOption.left;
             line.right = resolutionOption.right;
-            line.top = clientHeight * 73 / 180;
-            line.bottom = clientHeight * 84 / 180;
-            SetTextColor(deviceContext, settingsSelection == 1
+            line.top = clientHeight * 101 / 180;
+            line.bottom = clientHeight * 109 / 180;
+            SetTextColor(deviceContext, settingsSelection == 3
                 ? RGB(255, 216, 0) : RGB(180, 180, 180));
             DrawCenteredUiText(deviceContext, L"RESOLUTION", line,
-                settingsSelection == 1);
+                settingsSelection == 3);
             wchar_t resolutionText[24];
             wsprintfW(resolutionText, L"< %ld x %ld >",
                 windowResolutionWidth[windowResolutionIndex],
                 windowResolutionHeight[windowResolutionIndex]);
-            line.top = clientHeight * 84 / 180;
-            line.bottom = clientHeight * 97 / 180;
-            SetTextColor(deviceContext, settingsSelection == 1
+            line.top = clientHeight * 109 / 180;
+            line.bottom = clientHeight * 118 / 180;
+            SetTextColor(deviceContext, settingsSelection == 3
                 ? RGB(255, 216, 0) : RGB(160, 170, 172));
             DrawCenteredUiText(deviceContext, resolutionText, line);
 
             RECT fullscreenOption
             {
-                clientWidth * 109 / 320, clientHeight * 102 / 180,
-                clientWidth * 211 / 320, clientHeight * 128 / 180
+                clientWidth * 109 / 320, clientHeight * 121 / 180,
+                clientWidth * 211 / 320, clientHeight * 139 / 180
             };
             DrawTerminalPanel(deviceContext, fullscreenOption,
-                settingsSelection == 2);
+                settingsSelection == 4);
             line.left = fullscreenOption.left;
             line.right = fullscreenOption.right;
-            line.top = clientHeight * 103 / 180;
-            line.bottom = clientHeight * 114 / 180;
-            SetTextColor(deviceContext, settingsSelection == 2
+            line.top = clientHeight * 121 / 180;
+            line.bottom = clientHeight * 130 / 180;
+            SetTextColor(deviceContext, settingsSelection == 4
                 ? RGB(255, 216, 0) : RGB(180, 180, 180));
             DrawCenteredUiText(deviceContext, L"FULLSCREEN", line,
-                settingsSelection == 2);
-            line.top = clientHeight * 114 / 180;
-            line.bottom = clientHeight * 127 / 180;
+                settingsSelection == 4);
+            line.top = clientHeight * 130 / 180;
+            line.bottom = clientHeight * 138 / 180;
             SetTextColor(deviceContext, fullscreenEnabled
-                ? RGB(224, 112, 35) : (settingsSelection == 2
+                ? RGB(224, 112, 35) : (settingsSelection == 4
                     ? RGB(255, 216, 0) : RGB(145, 150, 152)));
             DrawCenteredUiText(deviceContext, fullscreenEnabled
                 ? L"< ON >" : L"< OFF >", line);
 
             RECT backOption
             {
-                clientWidth * 119 / 320, clientHeight * 133 / 180,
-                clientWidth * 201 / 320, clientHeight * 148 / 180
+                clientWidth * 119 / 320, clientHeight * 142 / 180,
+                clientWidth * 201 / 320, clientHeight * 155 / 180
             };
             DrawTerminalPanel(deviceContext, backOption,
-                settingsSelection == 3);
+                settingsSelection == 5);
             line = backOption;
-            SetTextColor(deviceContext, settingsSelection == 3
+            SetTextColor(deviceContext, settingsSelection == 5
                 ? RGB(255, 216, 0) : RGB(160, 160, 160));
             DrawCenteredUiText(deviceContext, L"\uB4A4\uB85C", line,
-                settingsSelection == 3);
+                settingsSelection == 5);
             line.left = panel.left;
             line.right = panel.right;
-            line.top = clientHeight * 150 / 180;
-            line.bottom = clientHeight * 158 / 180;
+            line.top = clientHeight * 156 / 180;
+            line.bottom = clientHeight * 162 / 180;
             SetTextColor(deviceContext, RGB(105, 125, 132));
             DrawCenteredUiText(deviceContext, L"L/R CHANGE   Z TOGGLE", line);
             PresentLogicalFrame(paintContext, windowClientArea);
@@ -6913,6 +7177,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
     }
 
     ResetSfxVoices();
+    ResetBgmState();
     if (!StartAudioStream())
     {
         waveOutClose(audioOutput);
@@ -10036,7 +10301,7 @@ int main()
         || hunterReacquireRangeSquared != 70.0f * 70.0f
         || hunterAlertSearchDuration != 15.0f || lostSightHoldDuration != 0.5f;
     failures += saveVersion != 8 || sizeof(SaveCheckpoint) != 32
-        || metaVersion != 2 || sizeof(LegacyMetaProfile) != 16
+        || metaVersion != 3 || sizeof(LegacyMetaProfile) != 16
         || sizeof(MetaProfile) != 32;
 
     EnemyRuntime transition{};
@@ -10172,7 +10437,7 @@ int main()
     failures += enemyVisionRange != 70 || enemyAttackWindupDuration != 0.3f
         || playerInvulnerabilityDuration != 0.5f;
     failures += saveVersion != 8 || sizeof(SaveCheckpoint) != 32
-        || metaVersion != 2 || sizeof(LegacyMetaProfile) != 16
+        || metaVersion != 3 || sizeof(LegacyMetaProfile) != 16
         || sizeof(MetaProfile) != 32;
 
     failures += !PointInsideVisionSector(0.0f, 0.0f, 1.0f, 0.0f,
@@ -11113,7 +11378,7 @@ int main()
         || playerInvulnerabilityDuration != 0.5f
         || hunterAlertSpeed != 62.0f || pressureMoveSpeed != 32.0f;
     failures += saveVersion != 8 || sizeof(SaveCheckpoint) != 32
-        || metaVersion != 2 || sizeof(LegacyMetaProfile) != 16
+        || metaVersion != 3 || sizeof(LegacyMetaProfile) != 16
         || sizeof(MetaProfile) != 32;
 
     constexpr LONG expectedHP[characterCount]{ 100, 80, 70, 140, 80 };
@@ -11396,16 +11661,18 @@ int main()
     ResetMetaProfile();
     failures += !ReadMetaProfile() || globalCoin != 123
         || unlockedCharacterMask != 0x1f || masterVolumeStep != 0
+        || bgmVolumeStep != defaultBgmVolumeStep
+        || sfxVolumeStep != defaultSfxVolumeStep
         || windowResolutionIndex != 4 || !fullscreenEnabled
         || commonGlobalLevel[2] != 2
         || characterGlobalLevel[mobilityCharacter][0] != 3
         || characterGlobalLevel[heavyCharacter][0] != 2
         || characterGlobalLevel[piercerCharacter][2] != 1;
-    printf("section_meta_v2=%ld\n", failures);
+    printf("section_meta_v3=%ld\n", failures);
 
     MetaProfile b09Profile{};
     b09Profile.magic = metaMagic;
-    b09Profile.version = metaVersion;
+    b09Profile.version = previousMetaVersion;
     b09Profile.coin = 44;
     b09Profile.unlockedMask = 0x1f;
     b09Profile.audioSetting = 1;
@@ -11422,6 +11689,8 @@ int main()
     failures += b09File == INVALID_HANDLE_VALUE
         || b09Transferred != sizeof(b09Profile) || !ReadMetaProfile()
         || globalCoin != 44 || masterVolumeStep != masterVolumeMaximumStep
+        || bgmVolumeStep != defaultBgmVolumeStep
+        || sfxVolumeStep != defaultSfxVolumeStep
         || windowResolutionIndex != defaultWindowResolutionIndex
         || fullscreenEnabled
         || characterGlobalLevel[piercerCharacter][2] != 0;
@@ -11436,6 +11705,8 @@ int main()
         CloseHandle(b09File);
     }
     failures += b09Transferred != sizeof(rewrittenProfile)
+        || rewrittenProfile.version != EncodeMetaVersion(
+            defaultBgmVolumeStep, defaultSfxVolumeStep)
         || rewrittenProfile.audioSetting
             != EncodeDisplaySetting(masterVolumeMaximumStep,
                 defaultWindowResolutionIndex, false)
@@ -11458,6 +11729,8 @@ int main()
     ResetMetaProfile();
     failures += b09Transferred != sizeof(b09Profile) || !ReadMetaProfile()
         || masterVolumeStep != 7
+        || bgmVolumeStep != defaultBgmVolumeStep
+        || sfxVolumeStep != defaultSfxVolumeStep
         || windowResolutionIndex != defaultWindowResolutionIndex
         || fullscreenEnabled;
     b09File = CreateFileW(metaFileName, GENERIC_READ, FILE_SHARE_READ, nullptr,
@@ -11470,6 +11743,8 @@ int main()
         CloseHandle(b09File);
     }
     failures += b09Transferred != sizeof(rewrittenProfile)
+        || rewrittenProfile.version != EncodeMetaVersion(
+            defaultBgmVolumeStep, defaultSfxVolumeStep)
         || rewrittenProfile.audioSetting != EncodeDisplaySetting(7,
             defaultWindowResolutionIndex, false);
     printf("section_v091_meta=%ld\n", failures);
@@ -11497,6 +11772,8 @@ int main()
     }
     failures += !migrated || globalCoin != 77
         || unlockedCharacterMask != 0x0b || masterVolumeStep != 0
+        || bgmVolumeStep != defaultBgmVolumeStep
+        || sfxVolumeStep != defaultSfxVolumeStep
         || windowResolutionIndex != defaultWindowResolutionIndex
         || fullscreenEnabled
         || characterGlobalLevel[basicCharacter][0] != 2
@@ -11575,6 +11852,8 @@ int main()
 
     LONG v10AudioFailures = 0;
     DWORD sfxHashes[sfxCount]{};
+    bgmVolumeStep = 0;
+    sfxVolumeStep = defaultSfxVolumeStep;
     for (BYTE sound = 0; sound < sfxCount; ++sound)
     {
         const SfxSpec& spec = sfxSpecs[sound];
@@ -11594,7 +11873,7 @@ int main()
         LONG peak = 0;
         for (DWORD sample = 0; sample <= sampleCount; ++sample)
         {
-            short mixed = MixSfxSample();
+            short mixed = MixAudioSample();
             LONG magnitude = mixed < 0 ? -static_cast<LONG>(mixed) : mixed;
             if (magnitude > peak) peak = magnitude;
             hash = (hash ^ static_cast<unsigned short>(mixed)) * 16777619u;
@@ -11686,13 +11965,125 @@ int main()
     alertEventActive = savedAlertActive;
     ResetSfxVoices();
     masterVolumeStep = 0;
-    v10AudioFailures += PlaySfx(sfxPlayerHit) || MixSfxSample() != 0;
+    v10AudioFailures += PlaySfx(sfxPlayerHit) || MixAudioSample() != 0;
     masterVolumeStep = masterVolumeMaximumStep;
+    bgmVolumeStep = defaultBgmVolumeStep;
     failures += v10AudioFailures;
     printf("section_v10_audio=%ld sfx=%u voices=%u buffers=%u hashes=%08lX/%08lX\n",
         v10AudioFailures, static_cast<UINT>(sfxCount),
         static_cast<UINT>(sfxVoiceCount), static_cast<UINT>(audioBufferCount),
         sfxHashes[sfxSlashBasic], sfxHashes[sfxSlashRapid]);
+
+    LONG v11AudioFailures = 0;
+    v11AudioFailures += defaultBgmVolumeStep != 6 || defaultSfxVolumeStep != 10
+        || metaVersion != 3 || sizeof(MetaProfile) != 32
+        || sizeof(SaveCheckpoint) != 32;
+    masterVolumeStep = masterVolumeMaximumStep;
+    bgmVolumeStep = defaultBgmVolumeStep;
+    sfxVolumeStep = defaultSfxVolumeStep;
+    applicationState = titleMainState;
+    runEndState = 0;
+    alertEventActive = false;
+    ResetBgmState();
+    DWORD titleHash = 2166136261u;
+    LONG titlePeak = 0;
+    LONG maximumDelta = 0;
+    short previousSample = 0;
+    for (DWORD sample = 0; sample < audioSampleRate * 8; ++sample)
+    {
+        short mixed = MixAudioSample();
+        LONG magnitude = mixed < 0 ? -static_cast<LONG>(mixed) : mixed;
+        if (magnitude > titlePeak) titlePeak = magnitude;
+        LONG delta = mixed - previousSample;
+        if (delta < 0) delta = -delta;
+        if (delta > maximumDelta) maximumDelta = delta;
+        previousSample = mixed;
+        titleHash = (titleHash ^ static_cast<unsigned short>(mixed)) * 16777619u;
+    }
+    applicationState = gameplayState;
+    ResetBgmState();
+    DWORD runHash = 2166136261u;
+    LONG runPeak = 0;
+    for (DWORD sample = 0; sample < audioSampleRate * 8; ++sample)
+    {
+        short mixed = MixAudioSample();
+        LONG magnitude = mixed < 0 ? -static_cast<LONG>(mixed) : mixed;
+        if (magnitude > runPeak) runPeak = magnitude;
+        runHash = (runHash ^ static_cast<unsigned short>(mixed)) * 16777619u;
+    }
+    alertEventActive = true;
+    ResetBgmState();
+    DWORD alertHash = 2166136261u;
+    for (DWORD sample = 0; sample < audioSampleRate * 4; ++sample)
+    {
+        short mixed = MixAudioSample();
+        alertHash = (alertHash ^ static_cast<unsigned short>(mixed)) * 16777619u;
+    }
+    runEndState = gameOverEndState;
+    alertEventActive = false;
+    ResetBgmState();
+    DWORD resultHash = 2166136261u;
+    for (DWORD sample = 0; sample < audioSampleRate * 4; ++sample)
+    {
+        short mixed = MixAudioSample();
+        resultHash = (resultHash ^ static_cast<unsigned short>(mixed)) * 16777619u;
+    }
+    v11AudioFailures += !titlePeak || !runPeak || maximumDelta > 8192
+        || titleHash == runHash || runHash == alertHash
+        || resultHash == titleHash || resultHash == runHash;
+
+    masterVolumeStep = masterVolumeMaximumStep;
+    bgmVolumeStep = 0;
+    sfxVolumeStep = defaultSfxVolumeStep;
+    ResetSfxVoices();
+    LONG sfxOnlyEnergy = 0;
+    v11AudioFailures += !PlaySfx(sfxUiMove);
+    for (DWORD sample = 0; sample < 400; ++sample)
+    {
+        short mixed = MixAudioSample();
+        sfxOnlyEnergy += mixed < 0 ? -static_cast<LONG>(mixed) : mixed;
+    }
+    bgmVolumeStep = masterVolumeMaximumStep;
+    sfxVolumeStep = 0;
+    applicationState = titleMainState;
+    runEndState = 0;
+    ResetSfxVoices();
+    ResetBgmState();
+    LONG bgmOnlyEnergy = 0;
+    v11AudioFailures += PlaySfx(sfxUiMove);
+    for (DWORD sample = 0; sample < 2000; ++sample)
+    {
+        short mixed = MixAudioSample();
+        bgmOnlyEnergy += mixed < 0 ? -static_cast<LONG>(mixed) : mixed;
+    }
+    masterVolumeStep = 0;
+    v11AudioFailures += MixAudioSample() != 0 || !sfxOnlyEnergy || !bgmOnlyEnergy;
+    masterVolumeStep = 8;
+    bgmVolumeStep = 4;
+    sfxVolumeStep = 7;
+    windowResolutionIndex = 3;
+    fullscreenEnabled = true;
+    WriteMetaProfile();
+    ResetMetaProfile();
+    v11AudioFailures += !ReadMetaProfile() || masterVolumeStep != 8
+        || bgmVolumeStep != 4 || sfxVolumeStep != 7
+        || windowResolutionIndex != 3 || !fullscreenEnabled;
+    MetaProfile v11Profile{};
+    HANDLE v11File = CreateFileW(metaFileName, GENERIC_READ, FILE_SHARE_READ,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    DWORD v11Transferred = 0;
+    if (v11File != INVALID_HANDLE_VALUE)
+    {
+        ReadFile(v11File, &v11Profile, sizeof(v11Profile), &v11Transferred, nullptr);
+        CloseHandle(v11File);
+    }
+    v11AudioFailures += v11Transferred != sizeof(v11Profile)
+        || v11Profile.version != EncodeMetaVersion(4, 7);
+    failures += v11AudioFailures;
+    printf("section_v11_audio=%ld title=%08lX run=%08lX alert=%08lX result=%08lX peak=%ld/%ld meta=%lu/%lu\n",
+        v11AudioFailures, titleHash, runHash, alertHash, resultHash,
+        titlePeak, runPeak, static_cast<unsigned long>(sizeof(MetaProfile)),
+        static_cast<unsigned long>(sizeof(SaveCheckpoint)));
 
     LONG unlockCostTotal = 0;
     LONG commonCostTotal = 0;
@@ -11948,6 +12339,8 @@ int main()
     settingsSelection = 0;
     applicationState = titleMainState;
     masterVolumeStep = masterVolumeMaximumStep;
+    bgmVolumeStep = defaultBgmVolumeStep;
+    sfxVolumeStep = defaultSfxVolumeStep;
     windowResolutionIndex = defaultWindowResolutionIndex;
     fullscreenEnabled = false;
     leftPressed = false;
@@ -11975,6 +12368,20 @@ int main()
     WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
     failures += masterVolumeStep != masterVolumeMaximumStep || !settingsActive;
     downPressed = false;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_DOWN, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_DOWN, 0);
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_RIGHT, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_RIGHT, 0);
+    failures += bgmVolumeStep != 7 || sfxVolumeStep != defaultSfxVolumeStep;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_LEFT, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_LEFT, 0);
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_DOWN, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_DOWN, 0);
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_LEFT, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_LEFT, 0);
+    failures += bgmVolumeStep != defaultBgmVolumeStep || sfxVolumeStep != 9;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_RIGHT, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_RIGHT, 0);
     WindowProcedure(nullptr, WM_KEYDOWN, VK_DOWN, 0);
     WindowProcedure(nullptr, WM_KEYUP, VK_DOWN, 0);
     windowResolutionIndex = defaultWindowResolutionIndex;
