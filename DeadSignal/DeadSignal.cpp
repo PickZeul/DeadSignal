@@ -1542,7 +1542,7 @@ constexpr BYTE sfxVoiceCount = 6;
 constexpr BYTE audioBufferCount = 4;
 constexpr WORD audioBufferSampleCount = 128;
 constexpr BYTE masterVolumeMaximumStep = 10;
-constexpr BYTE defaultBgmVolumeStep = 6;
+constexpr BYTE defaultBgmVolumeStep = 8;
 constexpr BYTE defaultSfxVolumeStep = 10;
 constexpr BYTE masterVolumeStorageMarker = 0x80;
 constexpr BYTE windowResolutionCount = 5;
@@ -1626,6 +1626,7 @@ LONG runCoinSenseBonus = 0;
 LONG runEarnedCoin = 0;
 BYTE alertEventCount = 0;
 bool alertEventActive = false;
+BYTE bgmTensionLevel = 0;
 LONG currentEnemyCount = 2;
 LONG currentEnemyRemaining = 2;
 LONG currentRoomType = openRoomType;
@@ -1840,7 +1841,7 @@ enum AudioCategory : BYTE
 
 enum BgmMode : BYTE
 {
-    bgmTitleMode,
+    bgmMenuMode,
     bgmRunMode,
     bgmResultMode
 };
@@ -1848,22 +1849,38 @@ enum BgmMode : BYTE
 struct BgmState
 {
     DWORD dronePhase;
+    DWORD harmonicPhase;
+    DWORD bodyPhase;
     DWORD pulsePhase;
+    DWORD rhythmPhase;
     DWORD signalPhase;
     DWORD noiseState;
     DWORD modeSample;
     DWORD nextPulseSample;
+    DWORD nextRhythmSample;
+    DWORD nextStaticSample;
     DWORD pulseRemaining;
     DWORD pulseDuration;
+    DWORD rhythmRemaining;
+    DWORD rhythmDuration;
     DWORD signalRemaining;
     DWORD signalDuration;
+    DWORD staticRemaining;
+    DWORD staticDuration;
     DWORD transitionRemaining;
     DWORD startupRemaining;
+    DWORD duckHold;
     LONG pulseStep;
+    LONG rhythmStep;
     LONG signalStep;
+    WORD duckGain;
     BYTE currentMode;
     BYTE targetMode;
     BYTE pulseIndex;
+    BYTE rhythmIndex;
+    BYTE rhythmPattern;
+    BYTE phraseIndex;
+    BYTE phraseRemaining;
 };
 
 BgmState bgmState{};
@@ -1979,6 +1996,10 @@ bool PlaySfx(BYTE sound)
     voice.sound = sound;
     voice.priority = spec.priority;
     voice.active = true;
+    if (spec.priority >= 4)
+    {
+        bgmState.duckHold = audioSampleRate / 5;
+    }
     ++sfxStartCount[sound];
     return true;
 }
@@ -2056,9 +2077,9 @@ LONG SfxVoiceSample(SfxVoice& voice)
 
 BYTE DesiredBgmMode()
 {
-    if (applicationState != gameplayState)
+    if (applicationState != gameplayState || upgradeMenuActive)
     {
-        return bgmTitleMode;
+        return bgmMenuMode;
     }
     return runEndState ? bgmResultMode : bgmRunMode;
 }
@@ -2066,35 +2087,140 @@ BYTE DesiredBgmMode()
 void ScheduleBgmPulse()
 {
     bgmState.noiseState = bgmState.noiseState * 1664525u + 1013904223u;
-    DWORD variation = (bgmState.noiseState >> 19) & 0x0FFF;
-    DWORD baseInterval = bgmState.currentMode == bgmTitleMode
-        ? audioSampleRate * 3 : (bgmState.currentMode == bgmRunMode
-            ? audioSampleRate * 2 : audioSampleRate * 4);
+    DWORD variation = (bgmState.noiseState >> 20) & 0x07FF;
+    DWORD baseInterval = audioSampleRate * 4;
+    if (bgmState.currentMode == bgmRunMode)
+    {
+        baseInterval = bgmTensionLevel >= 2 ? audioSampleRate * 2
+            : (bgmTensionLevel ? audioSampleRate * 5 / 2
+                : audioSampleRate * 3);
+    }
     bgmState.nextPulseSample = bgmState.modeSample + baseInterval + variation;
     bgmState.pulseDuration = audioSampleRate
-        * (bgmState.currentMode == bgmRunMode ? 180 : 260) / 1000;
+        * (bgmState.currentMode == bgmRunMode ? 180 : 220) / 1000;
     bgmState.pulseRemaining = bgmState.pulseDuration;
     WORD pulseFrequency = static_cast<WORD>(bgmState.currentMode == bgmRunMode
-        ? 82 + ((bgmState.noiseState >> 28) * 3)
-        : 62 + ((bgmState.noiseState >> 28) * 2));
+        ? 68 + ((bgmState.noiseState >> 29) * 3)
+        : 55 + ((bgmState.noiseState >> 29) * 2));
     bgmState.pulseStep = pulseFrequency * static_cast<LONG>(sfxPhaseUnit);
     if ((++bgmState.pulseIndex & 3) == 0)
     {
-        bgmState.signalDuration = audioSampleRate * 70 / 1000;
+        bgmState.signalDuration = audioSampleRate * 55 / 1000;
         bgmState.signalRemaining = bgmState.signalDuration;
-        bgmState.signalStep = (bgmState.currentMode == bgmRunMode ? 410 : 330)
+        bgmState.signalStep = (bgmState.currentMode == bgmRunMode ? 360 : 260)
             * static_cast<LONG>(sfxPhaseUnit);
     }
+}
+
+void ScheduleBgmRhythm()
+{
+    bgmState.noiseState = bgmState.noiseState * 1664525u + 1013904223u;
+    DWORD interval = bgmState.currentMode == bgmMenuMode
+        ? audioSampleRate / 3 : (bgmState.currentMode == bgmRunMode
+            ? (bgmTensionLevel >= 2 ? audioSampleRate * 4 / 5
+                : (bgmTensionLevel ? audioSampleRate * 19 / 20
+                    : audioSampleRate * 11 / 10))
+            : audioSampleRate * 2 / 3);
+    bgmState.nextRhythmSample = bgmState.modeSample + interval;
+    BYTE step = bgmState.rhythmIndex;
+    if (bgmState.currentMode == bgmMenuMode)
+    {
+        BYTE thumpMask = bgmState.rhythmPattern == 0 ? 0x11
+            : (bgmState.rhythmPattern == 1 ? 0x21 : 0x41);
+        BYTE tickMask = bgmState.rhythmPattern == 0 ? 0x44
+            : (bgmState.rhythmPattern == 1 ? 0x8A : 0x48);
+        if (thumpMask & (1 << step))
+        {
+            bgmState.pulseDuration = audioSampleRate * 150 / 1000;
+            bgmState.pulseRemaining = bgmState.pulseDuration;
+            bgmState.pulseStep = (55 + bgmState.rhythmPattern * 3)
+                * static_cast<LONG>(sfxPhaseUnit);
+        }
+        if (tickMask & (1 << step))
+        {
+            bgmState.rhythmDuration = audioSampleRate * 55 / 1000;
+            bgmState.rhythmRemaining = bgmState.rhythmDuration;
+            bgmState.rhythmStep = (142 + step * 7)
+                * static_cast<LONG>(sfxPhaseUnit);
+        }
+        if (bgmState.phraseRemaining)
+        {
+            constexpr WORD phraseFrequency[4]{ 220, 262, 247, 196 };
+            bgmState.signalDuration = audioSampleRate * 85 / 1000;
+            bgmState.signalRemaining = bgmState.signalDuration;
+            bgmState.signalStep = phraseFrequency[bgmState.phraseIndex]
+                * static_cast<LONG>(sfxPhaseUnit);
+            bgmState.phraseIndex = static_cast<BYTE>(
+                (bgmState.phraseIndex + 1) & 3);
+            --bgmState.phraseRemaining;
+        }
+    }
+    else
+    {
+        BYTE mask = bgmState.currentMode == bgmResultMode ? 0x11
+            : (bgmTensionLevel >= 2 ? 0x55
+                : (bgmTensionLevel ? 0x51 : 0x11));
+        if (mask & (1 << step))
+        {
+            bgmState.rhythmDuration = audioSampleRate
+                * (bgmState.currentMode == bgmRunMode ? 45 : 60) / 1000;
+            bgmState.rhythmRemaining = bgmState.rhythmDuration;
+            WORD frequency = static_cast<WORD>(bgmState.currentMode == bgmRunMode
+                ? 126 + step * 4 + bgmTensionLevel * 7 : 132 + step * 4);
+            bgmState.rhythmStep = frequency * static_cast<LONG>(sfxPhaseUnit);
+        }
+    }
+    bgmState.rhythmIndex = static_cast<BYTE>((step + 1) & 7);
+    if (!bgmState.rhythmIndex)
+    {
+        if (bgmState.currentMode == bgmMenuMode)
+        {
+            bgmState.rhythmPattern = static_cast<BYTE>(
+                (bgmState.rhythmPattern + 1) % 3);
+            if ((++bgmState.pulseIndex & 3) == 3)
+            {
+                bgmState.phraseIndex = 0;
+                bgmState.phraseRemaining = 4;
+            }
+        }
+        else
+        {
+            bgmState.rhythmPattern ^= 1;
+        }
+    }
+}
+
+void ScheduleBgmStatic()
+{
+    bgmState.noiseState = bgmState.noiseState * 1664525u + 1013904223u;
+    DWORD baseInterval = bgmState.currentMode == bgmRunMode
+        ? audioSampleRate * 5 / 2 : audioSampleRate * 4;
+    DWORD variation = ((bgmState.noiseState >> 17) & 0x7FFF)
+        * audioSampleRate * 3 / (0x7FFF * 2);
+    bgmState.nextStaticSample = bgmState.modeSample + baseInterval + variation;
+    bgmState.staticDuration = audioSampleRate
+        * (bgmState.currentMode == bgmRunMode ? 55 : 35) / 1000;
+    bgmState.staticRemaining = bgmState.staticDuration;
 }
 
 void ResetBgmPattern(BYTE mode)
 {
     bgmState.currentMode = mode;
     bgmState.modeSample = 0;
-    bgmState.nextPulseSample = audioSampleRate
-        * (mode == bgmRunMode ? 1 : 2);
+    bgmState.nextPulseSample = mode == bgmMenuMode ? 0xFFFFFFFFu
+        : audioSampleRate * (mode == bgmRunMode ? 2 : 3);
+    bgmState.nextRhythmSample = audioSampleRate
+        * (mode == bgmMenuMode ? 1 : 2) / 3;
+    bgmState.nextStaticSample = audioSampleRate
+        * (mode == bgmRunMode ? 3 : 5);
     bgmState.pulseRemaining = 0;
+    bgmState.rhythmRemaining = 0;
     bgmState.signalRemaining = 0;
+    bgmState.staticRemaining = 0;
+    bgmState.rhythmIndex = 0;
+    bgmState.rhythmPattern = 0;
+    bgmState.phraseIndex = 0;
+    bgmState.phraseRemaining = 0;
 }
 
 void ResetBgmState()
@@ -2104,6 +2230,7 @@ void ResetBgmState()
     bgmState.targetMode = DesiredBgmMode();
     ResetBgmPattern(bgmState.targetMode);
     bgmState.startupRemaining = audioSampleRate * 150 / 1000;
+    bgmState.duckGain = 256;
 }
 
 LONG BgmSample()
@@ -2142,12 +2269,34 @@ LONG BgmSample()
         --bgmState.startupRemaining;
     }
 
-    WORD droneFrequency = bgmState.currentMode == bgmTitleMode ? 43
-        : (bgmState.currentMode == bgmRunMode ? 55 : 36);
+    WORD droneFrequency = bgmState.currentMode == bgmMenuMode ? 41
+        : (bgmState.currentMode == bgmRunMode ? 47 : 38);
     bgmState.dronePhase += droneFrequency * sfxPhaseUnit;
+    bgmState.harmonicPhase += (droneFrequency * 2 + 1) * sfxPhaseUnit;
+    WORD bodyFrequency = 72;
+    if (bgmState.currentMode == bgmMenuMode)
+    {
+        BYTE bassNote = static_cast<BYTE>(
+            (bgmState.modeSample / (audioSampleRate * 2 / 3)) & 3);
+        bodyFrequency = bassNote < 2 ? 55 : (bassNote == 2 ? 65 : 49);
+    }
+    else if (bgmState.currentMode == bgmRunMode)
+    {
+        bodyFrequency = static_cast<WORD>(92 + bgmTensionLevel * 3);
+    }
+    bgmState.bodyPhase += bodyFrequency * sfxPhaseUnit;
     LONG phase = static_cast<LONG>(bgmState.dronePhase >> 24);
     LONG triangle = phase < 128 ? phase * 2 - 127 : 383 - phase * 2;
-    LONG mixed = triangle * (bgmState.currentMode == bgmRunMode ? 5 : 4) / 127;
+    LONG mixed = triangle * (bgmState.currentMode == bgmRunMode ? 4 : 3) / 127;
+    phase = static_cast<LONG>(bgmState.harmonicPhase >> 24);
+    triangle = phase < 128 ? phase * 2 - 127 : 383 - phase * 2;
+    mixed += triangle / 127;
+    phase = static_cast<LONG>(bgmState.bodyPhase >> 24);
+    triangle = phase < 128 ? phase * 2 - 127 : 383 - phase * 2;
+    LONG bodyAmplitude = bgmState.currentMode == bgmMenuMode ? 4
+        : (bgmState.currentMode == bgmRunMode
+            ? 3 + (bgmTensionLevel ? 1 : 0) : 2);
+    mixed += triangle * bodyAmplitude / 127;
 
     if (bgmState.modeSample >= bgmState.nextPulseSample)
     {
@@ -2163,25 +2312,83 @@ LONG BgmSample()
         {
             envelope = static_cast<LONG>(elapsed * envelope / 20);
         }
-        LONG pulse = bgmState.pulsePhase & 0x80000000u ? 1 : -1;
-        LONG pulseAmplitude = bgmState.currentMode == bgmRunMode ? 8 : 6;
-        if (bgmState.currentMode == bgmRunMode && alertEventActive)
+        phase = static_cast<LONG>(bgmState.pulsePhase >> 24);
+        LONG pulse = phase < 128 ? phase * 2 - 127 : 383 - phase * 2;
+        LONG pulseAmplitude = bgmState.currentMode == bgmRunMode ? 5 : 7;
+        if (bgmState.currentMode == bgmRunMode && bgmTensionLevel >= 2)
         {
-            pulseAmplitude += 2;
+            ++pulseAmplitude;
         }
-        mixed += pulse * pulseAmplitude * envelope / 256;
+        mixed += pulse * pulseAmplitude * envelope * 56
+            / (127 * 256 * 25);
         --bgmState.pulseRemaining;
+    }
+    if (bgmState.modeSample >= bgmState.nextRhythmSample)
+    {
+        ScheduleBgmRhythm();
+    }
+    if (bgmState.rhythmRemaining)
+    {
+        bgmState.rhythmPhase += static_cast<DWORD>(bgmState.rhythmStep);
+        DWORD elapsed = bgmState.rhythmDuration - bgmState.rhythmRemaining;
+        LONG envelope = static_cast<LONG>(bgmState.rhythmRemaining * 256
+            / bgmState.rhythmDuration);
+        if (elapsed < 24)
+        {
+            envelope = static_cast<LONG>(elapsed * envelope / 24);
+        }
+        phase = static_cast<LONG>(bgmState.rhythmPhase >> 24);
+        triangle = phase < 128 ? phase * 2 - 127 : 383 - phase * 2;
+        LONG rhythmAmplitude = bgmState.currentMode == bgmMenuMode ? 3
+            : (bgmState.currentMode == bgmRunMode
+                ? 1 + (bgmTensionLevel >= 2 ? 1 : 0) : 1);
+        mixed += triangle * rhythmAmplitude * envelope * 8
+            / (127 * 256 * 5);
+        --bgmState.rhythmRemaining;
     }
     if (bgmState.signalRemaining)
     {
         bgmState.signalPhase += static_cast<DWORD>(bgmState.signalStep);
         LONG signal = bgmState.signalPhase & 0x80000000u ? 1 : -1;
-        mixed += signal * 3 * static_cast<LONG>(bgmState.signalRemaining)
-            / static_cast<LONG>(bgmState.signalDuration);
+        LONG signalAmplitude = bgmState.currentMode == bgmMenuMode ? 2 : 1;
+        mixed += signal * signalAmplitude
+            * static_cast<LONG>(bgmState.signalRemaining) * 7
+            / (static_cast<LONG>(bgmState.signalDuration) * 5);
         --bgmState.signalRemaining;
     }
+    if (bgmState.modeSample >= bgmState.nextStaticSample)
+    {
+        ScheduleBgmStatic();
+    }
+    if (bgmState.staticRemaining)
+    {
+        bgmState.noiseState = bgmState.noiseState * 1664525u + 1013904223u;
+        LONG noise = static_cast<LONG>(bgmState.noiseState >> 24) - 128;
+        DWORD elapsed = bgmState.staticDuration - bgmState.staticRemaining;
+        LONG envelope = static_cast<LONG>(bgmState.staticRemaining * 256
+            / bgmState.staticDuration);
+        if (elapsed < 16)
+        {
+            envelope = static_cast<LONG>(elapsed * envelope / 16);
+        }
+        LONG staticAmplitude = bgmState.currentMode == bgmRunMode ? 2 : 1;
+        mixed += noise * staticAmplitude * envelope / (128 * 256);
+        --bgmState.staticRemaining;
+    }
     ++bgmState.modeSample;
-    return mixed * transitionGain / 256;
+    if (bgmState.duckHold)
+    {
+        --bgmState.duckHold;
+        if (bgmState.duckGain > 218)
+        {
+            --bgmState.duckGain;
+        }
+    }
+    else if (bgmState.duckGain < 256)
+    {
+        ++bgmState.duckGain;
+    }
+    return mixed * transitionGain / 256 * bgmState.duckGain / 256;
 }
 
 LONG ApplyCategoryVolume(LONG mixed, AudioCategory category)
@@ -2206,8 +2413,10 @@ short MixAudioSample()
     {
         sfxMixed += SfxVoiceSample(sfxVoices[voice]);
     }
+    LONG bgmMixed = BgmSample();
+    LONG bgmGain = bgmState.currentMode == bgmResultMode ? 256 : 333;
     LONG mixed = ApplyCategoryVolume(sfxMixed * 256, audioCategorySfx)
-        + ApplyCategoryVolume(BgmSample() * 256, audioCategoryBgm);
+        + ApplyCategoryVolume(bgmMixed * bgmGain, audioCategoryBgm);
     return ApplyMasterVolume(mixed, masterVolumeStep);
 }
 
@@ -8856,6 +9065,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                 dashRequested = false;
                 executeRequested = false;
             }
+            bgmTensionLevel = 0;
+            for (LONG enemyIndex = 0; enemyIndex < currentEnemyCount; ++enemyIndex)
+            {
+                const EnemyRuntime& enemy = enemies[enemyIndex];
+                if (!enemy.alive)
+                {
+                    continue;
+                }
+                if (enemy.alert)
+                {
+                    bgmTensionLevel = 2;
+                    break;
+                }
+                if (enemy.detectionProgress > 0.0f || enemy.heardSuspicion)
+                {
+                    bgmTensionLevel = 1;
+                }
+            }
             LONG cameraX = static_cast<LONG>(playerX) - framebufferWidth / 2;
             LONG cameraY = static_cast<LONG>(playerY) - framebufferHeight / 2;
             LONG maximumCameraX = worldWidth - framebufferWidth;
@@ -11975,7 +12202,7 @@ int main()
         sfxHashes[sfxSlashBasic], sfxHashes[sfxSlashRapid]);
 
     LONG v11AudioFailures = 0;
-    v11AudioFailures += defaultBgmVolumeStep != 6 || defaultSfxVolumeStep != 10
+    v11AudioFailures += defaultBgmVolumeStep != 8 || defaultSfxVolumeStep != 10
         || metaVersion != 3 || sizeof(MetaProfile) != 32
         || sizeof(SaveCheckpoint) != 32;
     masterVolumeStep = masterVolumeMaximumStep;
@@ -12012,6 +12239,7 @@ int main()
         runHash = (runHash ^ static_cast<unsigned short>(mixed)) * 16777619u;
     }
     alertEventActive = true;
+    bgmTensionLevel = 2;
     ResetBgmState();
     DWORD alertHash = 2166136261u;
     for (DWORD sample = 0; sample < audioSampleRate * 4; ++sample)
@@ -12021,6 +12249,7 @@ int main()
     }
     runEndState = gameOverEndState;
     alertEventActive = false;
+    bgmTensionLevel = 0;
     ResetBgmState();
     DWORD resultHash = 2166136261u;
     for (DWORD sample = 0; sample < audioSampleRate * 4; ++sample)
@@ -12084,6 +12313,246 @@ int main()
         v11AudioFailures, titleHash, runHash, alertHash, resultHash,
         titlePeak, runPeak, static_cast<unsigned long>(sizeof(MetaProfile)),
         static_cast<unsigned long>(sizeof(SaveCheckpoint)));
+
+    struct BgmDensityMetrics
+    {
+        ULONGLONG energy;
+        LONG peak;
+        LONG maximumSilence;
+        DWORD pulseSamples;
+        DWORD rhythmSamples;
+        DWORD signalSamples;
+        DWORD staticSamples;
+        DWORD segmentHash[6];
+    };
+    auto MeasureBgmDensity = [](BYTE mode, BYTE tension)
+    {
+        BgmDensityMetrics metrics{};
+        applicationState = mode == bgmMenuMode
+            ? titleMainState : gameplayState;
+        runEndState = mode == bgmResultMode ? gameOverEndState : 0;
+        upgradeMenuActive = false;
+        gameplayMenuActive = false;
+        bgmTensionLevel = tension;
+        alertEventActive = tension >= 2;
+        masterVolumeStep = masterVolumeMaximumStep;
+        bgmVolumeStep = masterVolumeMaximumStep;
+        sfxVolumeStep = 0;
+        ResetSfxVoices();
+        ResetBgmState();
+        LONG silence = 0;
+        constexpr DWORD segmentSamples = audioSampleRate * 10;
+        for (BYTE segment = 0; segment < 6; ++segment)
+        {
+            DWORD hash = 2166136261u;
+            for (DWORD sample = 0; sample < segmentSamples; ++sample)
+            {
+                short mixed = MixAudioSample();
+                LONG magnitude = mixed < 0 ? -static_cast<LONG>(mixed) : mixed;
+                metrics.energy += magnitude;
+                if (magnitude > metrics.peak) metrics.peak = magnitude;
+                if (!mixed)
+                {
+                    ++silence;
+                    if (silence > metrics.maximumSilence)
+                    {
+                        metrics.maximumSilence = silence;
+                    }
+                }
+                else
+                {
+                    silence = 0;
+                }
+                metrics.pulseSamples += bgmState.pulseRemaining != 0;
+                metrics.rhythmSamples += bgmState.rhythmRemaining != 0;
+                metrics.signalSamples += bgmState.signalRemaining != 0;
+                metrics.staticSamples += bgmState.staticRemaining != 0;
+                hash = (hash ^ static_cast<unsigned short>(mixed)) * 16777619u;
+            }
+            metrics.segmentHash[segment] = hash;
+        }
+        return metrics;
+    };
+    LONG v111AudioFailures = 0;
+    BgmDensityMetrics titleDensity = MeasureBgmDensity(bgmMenuMode, 0);
+    BgmDensityMetrics calmDensity = MeasureBgmDensity(bgmRunMode, 0);
+    BgmDensityMetrics suspicionDensity = MeasureBgmDensity(bgmRunMode, 1);
+    BgmDensityMetrics alertDensity = MeasureBgmDensity(bgmRunMode, 2);
+    constexpr ULONGLONG densitySampleCount = audioSampleRate * 60;
+    v111AudioFailures += !titleDensity.energy || !calmDensity.energy
+        || titleDensity.maximumSilence > audioSampleRate / 10
+        || calmDensity.maximumSilence > audioSampleRate / 10
+        || titleDensity.peak >= 8192 || calmDensity.peak >= 8192
+        || alertDensity.peak >= 8192
+        || suspicionDensity.energy <= calmDensity.energy
+        || alertDensity.energy <= suspicionDensity.energy;
+    for (BYTE first = 0; first < 6; ++first)
+    {
+        for (BYTE second = first + 1; second < 6; ++second)
+        {
+            v111AudioFailures += titleDensity.segmentHash[first]
+                    == titleDensity.segmentHash[second]
+                || calmDensity.segmentHash[first]
+                    == calmDensity.segmentHash[second];
+        }
+    }
+
+    applicationState = gameplayState;
+    runEndState = 0;
+    bgmTensionLevel = 2;
+    alertEventActive = true;
+    masterVolumeStep = masterVolumeMaximumStep;
+    bgmVolumeStep = masterVolumeMaximumStep;
+    sfxVolumeStep = defaultSfxVolumeStep;
+    ResetSfxVoices();
+    ResetBgmState();
+    for (DWORD sample = 0; sample < audioSampleRate; ++sample)
+    {
+        BgmSample();
+    }
+    constexpr BYTE readabilitySounds[6]
+    {
+        sfxWindupPatroller, sfxAlert, sfxExecuteHeavy,
+        sfxPlayerHit, sfxPressureEnrage, sfxTrapWarning
+    };
+    for (BYTE index = 0; index < 6; ++index)
+    {
+        ResetSfxVoices();
+        sfxStartCount[readabilitySounds[index]] = 0;
+        v111AudioFailures += !PlaySfx(readabilitySounds[index]);
+        LONG peak = 0;
+        LONG clipped = 0;
+        DWORD duration = sfxSpecs[readabilitySounds[index]].durationMilliseconds
+            * audioSampleRate / 1000;
+        for (DWORD sample = 0; sample < duration; ++sample)
+        {
+            short mixed = MixAudioSample();
+            LONG magnitude = mixed < 0 ? -static_cast<LONG>(mixed) : mixed;
+            if (magnitude > peak) peak = magnitude;
+            clipped += mixed == 32767 || mixed == -32768;
+        }
+        v111AudioFailures += peak <= alertDensity.peak * 2
+            || clipped > static_cast<LONG>(duration / 20);
+    }
+    ResetBgmState();
+    ResetSfxVoices();
+    sfxStartCount[sfxPlayerHit] = 0;
+    v111AudioFailures += bgmState.duckGain != 256 || !PlaySfx(sfxPlayerHit)
+        || bgmState.duckHold != audioSampleRate / 5;
+    for (DWORD sample = 0; sample < 64; ++sample)
+    {
+        BgmSample();
+    }
+    v111AudioFailures += bgmState.duckGain >= 256 || bgmState.duckGain < 218;
+    for (DWORD sample = 0; sample < audioSampleRate / 5 + 64; ++sample)
+    {
+        BgmSample();
+    }
+    v111AudioFailures += bgmState.duckGain != 256;
+    applicationState = titleMainState;
+    runEndState = 0;
+    bgmTensionLevel = 0;
+    alertEventActive = false;
+    masterVolumeStep = masterVolumeMaximumStep;
+    bgmVolumeStep = defaultBgmVolumeStep;
+    sfxVolumeStep = defaultSfxVolumeStep;
+    failures += v111AudioFailures;
+    printf("section_v111_bgm=%ld avg=%llu/%llu/%llu/%llu peak=%ld/%ld/%ld silence=%ld/%ld segments=%08lX/%08lX\n",
+        v111AudioFailures,
+        titleDensity.energy / densitySampleCount,
+        calmDensity.energy / densitySampleCount,
+        suspicionDensity.energy / densitySampleCount,
+        alertDensity.energy / densitySampleCount,
+        titleDensity.peak, calmDensity.peak, alertDensity.peak,
+        titleDensity.maximumSilence, calmDensity.maximumSilence,
+        titleDensity.segmentHash[0], titleDensity.segmentHash[5]);
+
+    LONG v112AudioFailures = 0;
+    v112AudioFailures += titleDensity.pulseSamples <= calmDensity.pulseSamples
+        || titleDensity.rhythmSamples <= calmDensity.rhythmSamples
+        || titleDensity.signalSamples == 0
+        || titleDensity.staticSamples == 0
+        || calmDensity.staticSamples <= titleDensity.staticSamples
+        || titleDensity.staticSamples >= densitySampleCount / 50
+        || calmDensity.staticSamples >= densitySampleCount / 50;
+    applicationState = titleMainState;
+    upgradeMenuActive = false;
+    gameplayMenuActive = false;
+    runEndState = 0;
+    ResetBgmState();
+    v112AudioFailures += DesiredBgmMode() != bgmMenuMode;
+    for (DWORD sample = 0; sample < audioSampleRate * 30; ++sample)
+    {
+        BgmSample();
+    }
+    DWORD menuFlowSample = bgmState.modeSample;
+    applicationState = preparationState;
+    BgmSample();
+    v112AudioFailures += DesiredBgmMode() != bgmMenuMode
+        || bgmState.currentMode != bgmMenuMode
+        || bgmState.modeSample != menuFlowSample + 1
+        || bgmState.transitionRemaining != 0;
+    applicationState = characterSelectState;
+    for (DWORD sample = 0; sample < audioSampleRate * 30; ++sample)
+    {
+        BgmSample();
+    }
+    v112AudioFailures += DesiredBgmMode() != bgmMenuMode
+        || bgmState.currentMode != bgmMenuMode
+        || bgmState.transitionRemaining != 0;
+    applicationState = gameplayState;
+    gameplayMenuActive = true;
+    v112AudioFailures += DesiredBgmMode() != bgmRunMode;
+    for (DWORD sample = 0; sample < audioSampleRate; ++sample)
+    {
+        BgmSample();
+    }
+    v112AudioFailures += bgmState.currentMode != bgmRunMode;
+    DWORD pauseFlowSample = bgmState.modeSample;
+    BgmSample();
+    v112AudioFailures += bgmState.modeSample != pauseFlowSample + 1;
+    gameplayMenuActive = false;
+    upgradeMenuActive = true;
+    v112AudioFailures += DesiredBgmMode() != bgmMenuMode;
+    for (DWORD sample = 0; sample < audioSampleRate; ++sample)
+    {
+        BgmSample();
+    }
+    v112AudioFailures += bgmState.currentMode != bgmMenuMode;
+    upgradeMenuActive = false;
+    runEndState = gameOverEndState;
+    v112AudioFailures += DesiredBgmMode() != bgmResultMode;
+    masterVolumeStep = masterVolumeMaximumStep;
+    bgmVolumeStep = 0;
+    sfxVolumeStep = defaultSfxVolumeStep;
+    ResetSfxVoices();
+    ResetBgmState();
+    sfxStartCount[sfxUiMove] = 0;
+    v112AudioFailures += !PlaySfx(sfxUiMove);
+    LONG uiWithMutedBgm = 0;
+    for (DWORD sample = 0; sample < 400; ++sample)
+    {
+        short mixed = MixAudioSample();
+        uiWithMutedBgm += mixed < 0 ? -static_cast<LONG>(mixed) : mixed;
+    }
+    v112AudioFailures += !uiWithMutedBgm;
+    failures += v112AudioFailures;
+    printf("section_v112_bgm=%ld menu/run activity=%lu/%lu rhythm=%lu/%lu static=%lu/%lu transition=%u\n",
+        v112AudioFailures, titleDensity.pulseSamples, calmDensity.pulseSamples,
+        titleDensity.rhythmSamples, calmDensity.rhythmSamples,
+        titleDensity.staticSamples, calmDensity.staticSamples,
+        static_cast<unsigned>(bgmState.transitionRemaining));
+    applicationState = titleMainState;
+    upgradeMenuActive = false;
+    gameplayMenuActive = false;
+    runEndState = 0;
+    bgmTensionLevel = 0;
+    alertEventActive = false;
+    masterVolumeStep = masterVolumeMaximumStep;
+    bgmVolumeStep = defaultBgmVolumeStep;
+    sfxVolumeStep = defaultSfxVolumeStep;
+    ResetSfxVoices();
+    ResetBgmState();
 
     LONG unlockCostTotal = 0;
     LONG commonCostTotal = 0;
@@ -12372,7 +12841,8 @@ int main()
     WindowProcedure(nullptr, WM_KEYUP, VK_DOWN, 0);
     WindowProcedure(nullptr, WM_KEYDOWN, VK_RIGHT, 0);
     WindowProcedure(nullptr, WM_KEYUP, VK_RIGHT, 0);
-    failures += bgmVolumeStep != 7 || sfxVolumeStep != defaultSfxVolumeStep;
+    failures += bgmVolumeStep != defaultBgmVolumeStep + 1
+        || sfxVolumeStep != defaultSfxVolumeStep;
     WindowProcedure(nullptr, WM_KEYDOWN, VK_LEFT, 0);
     WindowProcedure(nullptr, WM_KEYUP, VK_LEFT, 0);
     WindowProcedure(nullptr, WM_KEYDOWN, VK_DOWN, 0);
