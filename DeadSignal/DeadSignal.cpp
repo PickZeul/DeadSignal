@@ -723,16 +723,6 @@ void PlayerPoseOffset(BYTE character, BYTE frame, bool executing,
                 : (character == heavyCharacter ? 1 : 0);
         }
     }
-    else if (frame == playerWalkAFrame || frame == playerWalkBFrame)
-    {
-        lateral = frame == playerWalkAFrame ? -1 : 1;
-        if (character == piercerCharacter)
-        {
-            lateral = 0;
-        }
-        forward = character == mobilityCharacter
-            || character == rapidCharacter ? 1 : 0;
-    }
     else if (frame >= playerSlashAnticipationFrame
         && frame <= playerSlashRecoveryFrame)
     {
@@ -1551,6 +1541,29 @@ constexpr DWORD toneSampleRate = 8000;
 constexpr DWORD toneFrequency = 440;
 constexpr DWORD toneDurationMilliseconds = 250;
 constexpr DWORD toneSampleCount = toneSampleRate * toneDurationMilliseconds / 1000;
+constexpr BYTE masterVolumeMaximumStep = 10;
+constexpr BYTE masterVolumeStorageMarker = 0x80;
+constexpr BYTE windowResolutionCount = 5;
+constexpr BYTE defaultWindowResolutionIndex = 2;
+constexpr LONG uiReferenceWidth = 1600;
+constexpr LONG uiReferenceHeight = 900;
+constexpr LONG windowResolutionWidth[windowResolutionCount]
+    { 640, 960, 1280, 1600, 1920 };
+constexpr LONG windowResolutionHeight[windowResolutionCount]
+    { 360, 540, 720, 900, 1080 };
+constexpr BYTE displaySettingStorageBase = 0x90;
+constexpr DWORD windowedWindowStyle
+    = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+
+constexpr BYTE EncodeDisplaySetting(BYTE volumeStep, BYTE resolutionIndex,
+    bool fullscreen)
+{
+    return static_cast<BYTE>(displaySettingStorageBase + volumeStep
+        + (masterVolumeMaximumStep + 1)
+            * (resolutionIndex + (fullscreen ? windowResolutionCount : 0)));
+}
+static_assert(EncodeDisplaySetting(masterVolumeMaximumStep,
+    windowResolutionCount - 1, true) <= 0xFD);
 
 DWORD framebuffer[framebufferWidth * framebufferHeight];
 BYTE visionOverlay[framebufferWidth * framebufferHeight];
@@ -1575,7 +1588,14 @@ bool settingsFromGameplay = false;
 LONG settingsSelection = 0;
 bool helpActive = false;
 bool helpFromGameplay = false;
-bool audioEnabled = true;
+BYTE masterVolumeStep = masterVolumeMaximumStep;
+BYTE windowResolutionIndex = defaultWindowResolutionIndex;
+bool fullscreenEnabled = false;
+HDC logicalFrameContext = nullptr;
+HBITMAP logicalFrameBitmap = nullptr;
+HGDIOBJ logicalFramePreviousBitmap = nullptr;
+HFONT titleFont = nullptr;
+HFONT uiFont = nullptr;
 bool newGameRequested = false;
 bool loadGameRequested = false;
 LONG currentRoom = 0;
@@ -2251,7 +2271,9 @@ void ResetMetaProfile()
 {
     globalCoin = 0;
     unlockedCharacterMask = 1 << basicCharacter;
-    audioEnabled = true;
+    masterVolumeStep = masterVolumeMaximumStep;
+    windowResolutionIndex = defaultWindowResolutionIndex;
+    fullscreenEnabled = false;
     for (BYTE upgrade = 0; upgrade < commonUpgradeCount; ++upgrade)
     {
         commonGlobalLevel[upgrade] = 0;
@@ -2297,7 +2319,8 @@ bool ReadMetaProfile()
         ResetMetaProfile();
         globalCoin = legacy.coin;
         unlockedCharacterMask = legacy.unlockedMask;
-        audioEnabled = legacy.audioSetting != 2;
+        masterVolumeStep = legacy.audioSetting == 2
+            ? 0 : masterVolumeMaximumStep;
         characterGlobalLevel[basicCharacter][0] = legacy.dashGrowth;
         WriteMetaProfile();
         return true;
@@ -2308,11 +2331,18 @@ bool ReadMetaProfile()
         && ReadFile(file, &profile, sizeof(profile), &bytesRead, nullptr)
         && bytesRead == sizeof(profile);
     CloseHandle(file);
+    bool legacyAudioEncoding = profile.audioSetting <= 2;
+    bool volumeOnlyEncoding = profile.audioSetting >= masterVolumeStorageMarker
+        && profile.audioSetting <= masterVolumeStorageMarker
+            + masterVolumeMaximumStep;
+    bool displayEncoding = profile.audioSetting >= displaySettingStorageBase
+        && profile.audioSetting <= EncodeDisplaySetting(
+            masterVolumeMaximumStep, windowResolutionCount - 1, true);
     valid = valid && profile.magic == metaMagic && profile.version == metaVersion
         && profile.coin >= 0
         && (profile.unlockedMask & (1 << basicCharacter)) != 0
         && (profile.unlockedMask & ~((1 << characterCount) - 1)) == 0
-        && profile.audioSetting <= 2;
+        && (legacyAudioEncoding || volumeOnlyEncoding || displayEncoding);
     for (BYTE upgrade = 0; valid && upgrade < commonUpgradeCount; ++upgrade)
     {
         valid = profile.commonLevel[upgrade] <= commonUpgradeMaximum[upgrade];
@@ -2349,7 +2379,27 @@ bool ReadMetaProfile()
     }
     globalCoin = profile.coin;
     unlockedCharacterMask = profile.unlockedMask;
-    audioEnabled = profile.audioSetting != 2;
+    if (displayEncoding)
+    {
+        BYTE displayValue = static_cast<BYTE>(
+            profile.audioSetting - displaySettingStorageBase);
+        masterVolumeStep = static_cast<BYTE>(displayValue
+            % (masterVolumeMaximumStep + 1));
+        BYTE displayMode = static_cast<BYTE>(displayValue
+            / (masterVolumeMaximumStep + 1));
+        windowResolutionIndex = static_cast<BYTE>(displayMode
+            % windowResolutionCount);
+        fullscreenEnabled = displayMode >= windowResolutionCount;
+    }
+    else
+    {
+        masterVolumeStep = legacyAudioEncoding
+            ? (profile.audioSetting == 2 ? 0 : masterVolumeMaximumStep)
+            : static_cast<BYTE>(profile.audioSetting
+                - masterVolumeStorageMarker);
+        windowResolutionIndex = defaultWindowResolutionIndex;
+        fullscreenEnabled = false;
+    }
     for (BYTE upgrade = 0; upgrade < commonUpgradeCount; ++upgrade)
     {
         commonGlobalLevel[upgrade] = profile.commonLevel[upgrade];
@@ -2366,7 +2416,7 @@ bool ReadMetaProfile()
                     : storedLevel;
         }
     }
-    if (migratePiercerProgression)
+    if (migratePiercerProgression || !displayEncoding)
     {
         WriteMetaProfile();
     }
@@ -2380,7 +2430,8 @@ void WriteMetaProfile()
     profile.version = metaVersion;
     profile.coin = globalCoin;
     profile.unlockedMask = unlockedCharacterMask;
-    profile.audioSetting = static_cast<BYTE>(audioEnabled ? 1 : 2);
+    profile.audioSetting = EncodeDisplaySetting(masterVolumeStep,
+        windowResolutionIndex, fullscreenEnabled);
     for (BYTE upgrade = 0; upgrade < commonUpgradeCount; ++upgrade)
     {
         profile.commonLevel[upgrade] = commonGlobalLevel[upgrade];
@@ -2587,7 +2638,6 @@ bool UnlockCharacter(BYTE character)
     }
     globalCoin -= characterUnlockCosts[character];
     unlockedCharacterMask |= characterBit;
-    selectedCharacter = character;
     titleStatus = 4;
     WriteMetaProfile();
     return true;
@@ -4371,10 +4421,163 @@ void CloseHelp()
     }
 }
 
-void ChangeAudioSetting()
+BYTE MasterVolumeSample(BYTE sample, BYTE volumeStep)
 {
-    audioEnabled = !audioEnabled;
+    LONG centered = static_cast<LONG>(sample) - 128;
+    LONG scaled = centered * volumeStep / masterVolumeMaximumStep + 128;
+    if (scaled < 0) scaled = 0;
+    if (scaled > 255) scaled = 255;
+    return static_cast<BYTE>(scaled);
+}
+
+void GenerateToneSamples()
+{
+    for (DWORD sample = 0; sample < toneSampleCount; ++sample)
+    {
+        BYTE source = ((sample * toneFrequency * 2 / toneSampleRate) & 1)
+            ? 64 : 192;
+        toneSamples[sample] = MasterVolumeSample(source, masterVolumeStep);
+    }
+}
+
+bool ChangeMasterVolume(LONG direction)
+{
+    LONG nextStep = masterVolumeStep + direction;
+    if (nextStep < 0) nextStep = 0;
+    if (nextStep > masterVolumeMaximumStep)
+    {
+        nextStep = masterVolumeMaximumStep;
+    }
+    if (nextStep == masterVolumeStep)
+    {
+        return false;
+    }
+    if (tonePlaying && audioOutput)
+    {
+        waveOutReset(audioOutput);
+        tonePlaying = false;
+    }
+    masterVolumeStep = static_cast<BYTE>(nextStep);
+    GenerateToneSamples();
     WriteMetaProfile();
+    return true;
+}
+
+RECT LogicalPresentRectangle(LONG clientWidth, LONG clientHeight)
+{
+    LONG aspectUnit = clientWidth / 16;
+    LONG heightUnit = clientHeight / 9;
+    if (heightUnit < aspectUnit)
+    {
+        aspectUnit = heightUnit;
+    }
+    if (aspectUnit < 1)
+    {
+        aspectUnit = 1;
+    }
+    LONG destinationWidth = aspectUnit * 16;
+    LONG destinationHeight = aspectUnit * 9;
+    RECT destination
+    {
+        (clientWidth - destinationWidth) / 2,
+        (clientHeight - destinationHeight) / 2,
+        (clientWidth + destinationWidth) / 2,
+        (clientHeight + destinationHeight) / 2
+    };
+    return destination;
+}
+
+void ApplyDisplaySettings(HWND window)
+{
+    if (!window)
+    {
+        return;
+    }
+    HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitorInfo{ sizeof(monitorInfo) };
+    if (!GetMonitorInfoW(monitor, &monitorInfo))
+    {
+        return;
+    }
+    LONG_PTR visibility = GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE;
+    if (fullscreenEnabled)
+    {
+        SetWindowLongPtrW(window, GWL_STYLE, WS_POPUP | visibility);
+        RECT bounds = monitorInfo.rcMonitor;
+        SetWindowPos(window, nullptr, bounds.left, bounds.top,
+            bounds.right - bounds.left, bounds.bottom - bounds.top,
+            SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOZORDER);
+    }
+    else
+    {
+        SetWindowLongPtrW(window, GWL_STYLE,
+            windowedWindowStyle | visibility);
+        RECT work = monitorInfo.rcWork;
+        LONG workWidth = work.right - work.left;
+        LONG workHeight = work.bottom - work.top;
+        BYTE appliedIndex = windowResolutionIndex;
+        RECT outer{};
+        for (;;)
+        {
+            outer = { 0, 0, windowResolutionWidth[appliedIndex],
+                windowResolutionHeight[appliedIndex] };
+            AdjustWindowRectEx(&outer, windowedWindowStyle, FALSE, 0);
+            if ((outer.right - outer.left <= workWidth
+                    && outer.bottom - outer.top <= workHeight)
+                || appliedIndex == 0)
+            {
+                break;
+            }
+            --appliedIndex;
+        }
+        LONG outerWidth = outer.right - outer.left;
+        LONG outerHeight = outer.bottom - outer.top;
+        if (outerWidth > workWidth) outerWidth = workWidth;
+        if (outerHeight > workHeight) outerHeight = workHeight;
+        LONG windowX = work.left + (workWidth - outerWidth) / 2;
+        LONG windowY = work.top + (workHeight - outerHeight) / 2;
+        SetWindowPos(window, nullptr, windowX, windowY,
+            outerWidth, outerHeight,
+            SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOZORDER);
+    }
+    if (visibility)
+    {
+        SetForegroundWindow(window);
+    }
+    InvalidateRect(window, nullptr, FALSE);
+}
+
+bool ChangeWindowResolution(HWND window, LONG direction)
+{
+    windowResolutionIndex = static_cast<BYTE>((windowResolutionIndex
+        + (direction < 0 ? windowResolutionCount - 1 : 1))
+        % windowResolutionCount);
+    WriteMetaProfile();
+    if (!fullscreenEnabled)
+    {
+        ApplyDisplaySettings(window);
+    }
+    return true;
+}
+
+void ToggleFullscreen(HWND window)
+{
+    fullscreenEnabled = !fullscreenEnabled;
+    WriteMetaProfile();
+    ApplyDisplaySettings(window);
+}
+
+void PresentLogicalFrame(HDC destinationContext, const RECT& clientArea)
+{
+    RECT destination = LogicalPresentRectangle(
+        clientArea.right - clientArea.left,
+        clientArea.bottom - clientArea.top);
+    SetStretchBltMode(destinationContext, COLORONCOLOR);
+    StretchBlt(destinationContext, destination.left, destination.top,
+        destination.right - destination.left,
+        destination.bottom - destination.top,
+        logicalFrameContext, 0, 0, uiReferenceWidth, uiReferenceHeight,
+        SRCCOPY);
 }
 
 void ConfirmGameplayMenu(HWND window)
@@ -4505,15 +4708,11 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         GetClientRect(window, &client);
         LONG clientWidth = client.right;
         LONG clientHeight = client.bottom;
-        LONG destinationWidth = clientWidth;
-        LONG destinationHeight = clientWidth * framebufferHeight / framebufferWidth;
-        if (destinationHeight > clientHeight)
-        {
-            destinationHeight = clientHeight;
-            destinationWidth = clientHeight * framebufferWidth / framebufferHeight;
-        }
-        LONG destinationX = (clientWidth - destinationWidth) / 2;
-        LONG destinationY = (clientHeight - destinationHeight) / 2;
+        RECT presentation = LogicalPresentRectangle(clientWidth, clientHeight);
+        LONG destinationWidth = presentation.right - presentation.left;
+        LONG destinationHeight = presentation.bottom - presentation.top;
+        LONG destinationX = presentation.left;
+        LONG destinationY = presentation.top;
         LONG mouseX = static_cast<short>(LOWORD(lParam));
         LONG mouseY = static_cast<short>(HIWORD(lParam));
         LONG logicalX = destinationWidth
@@ -4598,11 +4797,11 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         {
             if (pressed && !zPressed)
             {
-                if (settingsSelection == 0)
+                if (settingsSelection == 2)
                 {
-                    ChangeAudioSetting();
+                    ToggleFullscreen(window);
                 }
-                else
+                else if (settingsSelection == 3)
                 {
                     CloseSettings();
                 }
@@ -4699,16 +4898,15 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             }
             else if (applicationState == characterSelectState)
             {
-                BYTE character = static_cast<BYTE>(menuSelection);
                 if (!characterUpgradeFocus)
                 {
-                    UnlockCharacter(character);
+                    UnlockCharacter(static_cast<BYTE>(menuSelection));
                 }
                 else if (characterUpgradeSelection < characterGlobalUpgradeCount)
                 {
-                    if (unlockedCharacterMask & (1 << character))
+                    if (unlockedCharacterMask & (1 << selectedCharacter))
                     {
-                        BuyCharacterGlobalUpgrade(character,
+                        BuyCharacterGlobalUpgrade(selectedCharacter,
                             static_cast<BYTE>(characterUpgradeSelection));
                     }
                     else
@@ -4747,7 +4945,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     {
         bool pressed = message == WM_KEYDOWN;
         if (applicationState == gameplayState && !runEndState && !gameplayMenuActive
-            && !gameplayInputBlocked && audioEnabled
+            && !gameplayInputBlocked && masterVolumeStep != 0
             && pressed && !spacePressed && !tonePlaying
             && waveOutWrite(audioOutput, &toneHeader, sizeof(toneHeader)) == MMSYSERR_NOERROR)
         {
@@ -4799,14 +4997,25 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             {
                 --settingsSelection;
             }
-            else if (wParam == VK_DOWN && settingsSelection < 1)
+            else if (wParam == VK_DOWN && settingsSelection < 3)
             {
                 ++settingsSelection;
             }
-            else if ((wParam == VK_LEFT || wParam == VK_RIGHT)
-                && settingsSelection == 0)
+            else if (wParam == VK_LEFT || wParam == VK_RIGHT)
             {
-                ChangeAudioSetting();
+                LONG direction = wParam == VK_LEFT ? -1 : 1;
+                if (settingsSelection == 0)
+                {
+                    ChangeMasterVolume(direction);
+                }
+                else if (settingsSelection == 1)
+                {
+                    ChangeWindowResolution(window, direction);
+                }
+                else if (settingsSelection == 2)
+                {
+                    ToggleFullscreen(window);
+                }
             }
             InvalidateRect(window, nullptr, FALSE);
         }
@@ -4927,15 +5136,21 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     if (message == WM_PAINT)
     {
         PAINTSTRUCT paint{};
-        HDC deviceContext = BeginPaint(window, &paint);
-        RECT clientArea{};
-        GetClientRect(window, &clientArea);
-        FillRect(deviceContext, &clientArea, reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+        HDC paintContext = BeginPaint(window, &paint);
+        RECT windowClientArea{};
+        GetClientRect(window, &windowClientArea);
+        FillRect(paintContext, &windowClientArea,
+            reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+        HDC deviceContext = logicalFrameContext;
+        RECT clientArea{ 0, 0, uiReferenceWidth, uiReferenceHeight };
+        FillRect(deviceContext, &clientArea,
+            reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
 
         if (helpActive)
         {
             DrawTerminalBackdrop(deviceContext, clientArea);
-            SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
+            SelectObject(deviceContext, uiFont
+                ? uiFont : GetStockObject(DEFAULT_GUI_FONT));
             SetBkMode(deviceContext, TRANSPARENT);
             SetTextColor(deviceContext, RGB(220, 220, 220));
             constexpr const wchar_t* helpLines[11]
@@ -4991,6 +5206,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             SetTextColor(deviceContext, RGB(255, 216, 0));
             DrawTextW(deviceContext, L"Z / ESC : \uB4A4\uB85C", -1, &line,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            PresentLogicalFrame(paintContext, windowClientArea);
             EndPaint(window, &paint);
             return 0;
         }
@@ -4998,52 +5214,160 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (settingsActive)
         {
             DrawTerminalBackdrop(deviceContext, clientArea);
-            SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
+            SelectObject(deviceContext, uiFont
+                ? uiFont : GetStockObject(DEFAULT_GUI_FONT));
             SetBkMode(deviceContext, TRANSPARENT);
             RECT line = clientArea;
             int clientWidth = clientArea.right - clientArea.left;
             int clientHeight = clientArea.bottom - clientArea.top;
             RECT panel
             {
-                clientWidth * 78 / 320, clientHeight * 31 / 180,
-                clientWidth * 242 / 320, clientHeight * 149 / 180
+                clientWidth * 95 / 320, clientHeight * 10 / 180,
+                clientWidth * 225 / 320, clientHeight * 172 / 180
             };
             DrawTerminalPanel(deviceContext, panel, false);
-            line.top = clientHeight * 37 / 180;
-            line.bottom = clientHeight * 57 / 180;
+            line.top = clientHeight * 13 / 180;
+            line.bottom = clientHeight * 29 / 180;
             SetTextColor(deviceContext, RGB(220, 220, 220));
             DrawTextW(deviceContext, L"\uC124\uC815", -1, &line,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            wchar_t settingText[32];
-            for (LONG item = 0; item < 2; ++item)
+            RECT volumeOption
             {
-                RECT option
+                clientWidth * 100 / 320, clientHeight * 32 / 180,
+                clientWidth * 220 / 320, clientHeight * 68 / 180
+            };
+            DrawTerminalPanel(deviceContext, volumeOption,
+                settingsSelection == 0);
+            line.left = volumeOption.left;
+            line.right = volumeOption.right;
+            line.top = clientHeight * 34 / 180;
+            line.bottom = clientHeight * 47 / 180;
+            SetTextColor(deviceContext, settingsSelection == 0
+                ? RGB(255, 216, 0) : RGB(180, 180, 180));
+            DrawTextW(deviceContext, L"MASTER VOLUME", -1, &line,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            for (LONG block = 0; block < masterVolumeMaximumStep; ++block)
+            {
+                RECT volumeBlock
                 {
-                    clientWidth * 96 / 320, clientHeight * (68 + item * 31) / 180,
-                    clientWidth * 224 / 320, clientHeight * (91 + item * 31) / 180
+                    clientWidth * (115 + block * 7) / 320,
+                    clientHeight * 52 / 180,
+                    clientWidth * (120 + block * 7) / 320,
+                    clientHeight * 62 / 180
                 };
-                DrawTerminalPanel(deviceContext, option, item == settingsSelection);
-                const wchar_t* text = item == 0
-                    ? (audioEnabled ? L"\uC624\uB514\uC624: ON" : L"\uC624\uB514\uC624: OFF")
-                    : L"\uB4A4\uB85C";
-                wsprintfW(settingText, item == settingsSelection
-                    ? L"> %s" : L"  %s", text);
-                line.left = option.left;
-                line.right = option.right;
-                line.top = option.top;
-                line.bottom = option.bottom;
-                SetTextColor(deviceContext, item == settingsSelection
-                    ? RGB(255, 216, 0) : RGB(160, 160, 160));
-                DrawTextW(deviceContext, settingText, -1, &line,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                if (block < masterVolumeStep)
+                {
+                    FillUiRectangle(deviceContext, volumeBlock,
+                        settingsSelection == 0
+                            ? RGB(224, 112, 35) : RGB(125, 78, 45));
+                }
+                else
+                {
+                    SetDCBrushColor(deviceContext, RGB(55, 64, 71));
+                    FrameRect(deviceContext, &volumeBlock,
+                        reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+                }
             }
+            wchar_t volumeText[8];
+            if (masterVolumeStep)
+            {
+                wsprintfW(volumeText, L"%u%%",
+                    static_cast<UINT>(masterVolumeStep * 10));
+            }
+            else
+            {
+                lstrcpyW(volumeText, L"OFF");
+            }
+            line.left = clientWidth * 185 / 320;
+            line.right = clientWidth * 210 / 320;
+            line.top = clientHeight * 50 / 180;
+            line.bottom = clientHeight * 64 / 180;
+            SetTextColor(deviceContext, masterVolumeStep
+                ? RGB(210, 210, 205) : RGB(210, 90, 80));
+            DrawTextW(deviceContext, volumeText, -1, &line,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            line.left = clientWidth * 101 / 320;
+            line.right = clientWidth * 114 / 320;
+            SetTextColor(deviceContext, settingsSelection == 0
+                ? RGB(255, 216, 0) : RGB(90, 100, 105));
+            DrawTextW(deviceContext, L"<", -1, &line,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            line.left = clientWidth * 210 / 320;
+            line.right = clientWidth * 219 / 320;
+            DrawTextW(deviceContext, L">", -1, &line,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            RECT resolutionOption
+            {
+                clientWidth * 100 / 320, clientHeight * 73 / 180,
+                clientWidth * 220 / 320, clientHeight * 103 / 180
+            };
+            DrawTerminalPanel(deviceContext, resolutionOption,
+                settingsSelection == 1);
+            line.left = resolutionOption.left;
+            line.right = resolutionOption.right;
+            line.top = clientHeight * 75 / 180;
+            line.bottom = clientHeight * 88 / 180;
+            SetTextColor(deviceContext, settingsSelection == 1
+                ? RGB(255, 216, 0) : RGB(180, 180, 180));
+            DrawTextW(deviceContext, L"RESOLUTION", -1, &line,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            wchar_t resolutionText[24];
+            wsprintfW(resolutionText, L"< %ld x %ld >",
+                windowResolutionWidth[windowResolutionIndex],
+                windowResolutionHeight[windowResolutionIndex]);
+            line.top = clientHeight * 87 / 180;
+            line.bottom = clientHeight * 101 / 180;
+            SetTextColor(deviceContext, settingsSelection == 1
+                ? RGB(255, 216, 0) : RGB(160, 170, 172));
+            DrawTextW(deviceContext, resolutionText, -1, &line,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            RECT fullscreenOption
+            {
+                clientWidth * 100 / 320, clientHeight * 108 / 180,
+                clientWidth * 220 / 320, clientHeight * 138 / 180
+            };
+            DrawTerminalPanel(deviceContext, fullscreenOption,
+                settingsSelection == 2);
+            line.left = fullscreenOption.left;
+            line.right = fullscreenOption.right;
+            line.top = clientHeight * 110 / 180;
+            line.bottom = clientHeight * 123 / 180;
+            SetTextColor(deviceContext, settingsSelection == 2
+                ? RGB(255, 216, 0) : RGB(180, 180, 180));
+            DrawTextW(deviceContext, L"FULLSCREEN", -1, &line,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            line.top = clientHeight * 122 / 180;
+            line.bottom = clientHeight * 136 / 180;
+            SetTextColor(deviceContext, fullscreenEnabled
+                ? RGB(224, 112, 35) : (settingsSelection == 2
+                    ? RGB(255, 216, 0) : RGB(145, 150, 152)));
+            DrawTextW(deviceContext, fullscreenEnabled
+                ? L"< ON >" : L"< OFF >", -1, &line,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+            RECT backOption
+            {
+                clientWidth * 112 / 320, clientHeight * 143 / 180,
+                clientWidth * 208 / 320, clientHeight * 160 / 180
+            };
+            DrawTerminalPanel(deviceContext, backOption,
+                settingsSelection == 3);
+            line = backOption;
+            SetTextColor(deviceContext, settingsSelection == 3
+                ? RGB(255, 216, 0) : RGB(160, 160, 160));
+            DrawTextW(deviceContext, settingsSelection == 3
+                ? L"> \uB4A4\uB85C" : L"  \uB4A4\uB85C", -1, &line,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             line.left = panel.left;
             line.right = panel.right;
-            line.top = clientHeight * 133 / 180;
-            line.bottom = clientHeight * 145 / 180;
+            line.top = clientHeight * 162 / 180;
+            line.bottom = clientHeight * 171 / 180;
             SetTextColor(deviceContext, RGB(105, 125, 132));
-            DrawTextW(deviceContext, L"Z : SELECT   ESC : BACK", -1, &line,
+            DrawTextW(deviceContext, L"L/R CHANGE   Z TOGGLE", -1, &line,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            PresentLogicalFrame(paintContext, windowClientArea);
             EndPaint(window, &paint);
             return 0;
         }
@@ -5051,7 +5375,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (applicationState != gameplayState)
         {
             DrawTerminalBackdrop(deviceContext, clientArea);
-            SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
+            SelectObject(deviceContext, uiFont
+                ? uiFont : GetStockObject(DEFAULT_GUI_FONT));
             SetBkMode(deviceContext, TRANSPARENT);
             int clientWidth = clientArea.right - clientArea.left;
             int clientHeight = clientArea.bottom - clientArea.top;
@@ -5061,32 +5386,58 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             {
                 RECT panel
                 {
-                    clientWidth * 82 / 320, clientHeight * 10 / 180,
-                    clientWidth * 238 / 320, clientHeight * 170 / 180
+                    clientWidth * 96 / 320, clientHeight * 14 / 180,
+                    clientWidth * 224 / 320, clientHeight * 166 / 180
                 };
                 DrawTerminalPanel(deviceContext, panel, false);
                 line.left = panel.left;
                 line.right = panel.right;
-                line.top = clientHeight * 17 / 180;
-                line.bottom = clientHeight * 39 / 180;
+                line.top = clientHeight * 15 / 180;
+                line.bottom = clientHeight * 43 / 180;
                 SetTextColor(deviceContext, RGB(235, 235, 230));
+                if (titleFont)
+                {
+                    SelectObject(deviceContext, titleFont);
+                }
                 DrawTextW(deviceContext, L"DEAD SIGNAL", -1, &line,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                SelectObject(deviceContext, uiFont
+                    ? uiFont : GetStockObject(DEFAULT_GUI_FONT));
                 RECT divider
                 {
-                    clientWidth * 103 / 320, clientHeight * 40 / 180,
-                    clientWidth * 217 / 320, clientHeight * 41 / 180
+                    clientWidth * 106 / 320, clientHeight * 45 / 180,
+                    clientWidth * 214 / 320, clientHeight * 46 / 180
                 };
-                FillUiRectangle(deviceContext, divider, RGB(100, 31, 31));
+                FillUiRectangle(deviceContext, divider, RGB(136, 42, 33));
+                RECT titleAccent
+                {
+                    clientWidth * 102 / 320, clientHeight * 21 / 180,
+                    clientWidth * 104 / 320, clientHeight * 37 / 180
+                };
+                FillUiRectangle(deviceContext, titleAccent, RGB(91, 29, 30));
+                titleAccent.left = clientWidth * 216 / 320;
+                titleAccent.right = clientWidth * 218 / 320;
+                FillUiRectangle(deviceContext, titleAccent, RGB(91, 29, 30));
+                titleAccent =
+                {
+                    clientWidth * 105 / 320, clientHeight * 18 / 180,
+                    clientWidth * 108 / 320, clientHeight * 20 / 180
+                };
+                FillUiRectangle(deviceContext, titleAccent, RGB(184, 60, 42));
+                titleAccent.left = clientWidth * 212 / 320;
+                titleAccent.right = clientWidth * 215 / 320;
+                titleAccent.top = clientHeight * 38 / 180;
+                titleAccent.bottom = clientHeight * 40 / 180;
+                FillUiRectangle(deviceContext, titleAccent, RGB(126, 37, 34));
                 for (LONG item = 0; item < 5; ++item)
                 {
                     bool focused = item == menuSelection;
                     RECT option
                     {
-                        clientWidth * 101 / 320,
-                        clientHeight * (49 + item * 21) / 180,
-                        clientWidth * 219 / 320,
-                        clientHeight * (66 + item * 21) / 180
+                        clientWidth * 115 / 320,
+                        clientHeight * (58 + item * 18) / 180,
+                        clientWidth * 205 / 320,
+                        clientHeight * (72 + item * 18) / 180
                     };
                     DrawTerminalPanel(deviceContext, option, focused);
                     const wchar_t* text = item == 0 ? L"\uAC8C\uC784 \uC2DC\uC791"
@@ -5287,9 +5638,19 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                         clientWidth * 77 / 320,
                         clientHeight * (slotTop + 26) / 180
                     };
-                    DrawTerminalPanel(deviceContext, card, selected || focused);
+                    DrawTerminalPanel(deviceContext, card, focused);
                     if (selected)
                     {
+                        RECT selectedFrame
+                        {
+                            card.left + clientWidth * 2 / 320,
+                            card.top + clientHeight * 2 / 180,
+                            card.right - clientWidth * 2 / 320,
+                            card.bottom - clientHeight * 2 / 180
+                        };
+                        SetDCBrushColor(deviceContext, RGB(64, 174, 184));
+                        FrameRect(deviceContext, &selectedFrame,
+                            reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
                         RECT selectedMarker
                         {
                             card.right - clientWidth * 4 / 320,
@@ -5297,8 +5658,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                             card.right - clientWidth * 2 / 320,
                             card.bottom - clientHeight * 3 / 180
                         };
-                        FillRect(deviceContext, &selectedMarker,
-                            reinterpret_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+                        FillUiRectangle(deviceContext, selectedMarker,
+                            RGB(64, 194, 194));
                     }
                     line.left = card.left + clientWidth * 2 / 320;
                     line.right = card.right - clientWidth * 2 / 320;
@@ -5320,7 +5681,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     }
                 }
 
-                BYTE previewCharacter = static_cast<BYTE>(menuSelection);
+                BYTE previewCharacter = selectedCharacter;
                 bool previewUnlocked
                     = (unlockedCharacterMask & (1 << previewCharacter)) != 0;
                 RECT previewCard
@@ -5591,6 +5952,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
 
+            PresentLogicalFrame(paintContext, windowClientArea);
             EndPaint(window, &paint);
             return 0;
         }
@@ -5622,16 +5984,17 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             DIB_RGB_COLORS,
             SRCCOPY);
 
-        SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
+        SelectObject(deviceContext, uiFont
+            ? uiFont : GetStockObject(DEFAULT_GUI_FONT));
         SetBkMode(deviceContext, TRANSPARENT);
         SetTextColor(deviceContext, RGB(220, 220, 220));
         wchar_t hudText[32];
         RECT hudLine
         {
-            destinationX + 8,
-            destinationY + 3,
+            destinationX + 8 * destinationWidth / framebufferWidth,
+            destinationY + 3 * destinationHeight / framebufferHeight,
             destinationX + destinationWidth / 3,
-            destinationY + 24
+            destinationY + 24 * destinationHeight / framebufferHeight
         };
         wsprintfW(hudText, L"E %ld/%ld", currentEnemyRemaining, currentEnemyCount);
         DrawTextW(deviceContext, hudText, -1, &hudLine,
@@ -5642,13 +6005,17 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 : (currentRoomType == mazeRoomType ? L"Maze"
                     : (currentRoomType == trapRoomType ? L"Trap" : L"Mixed")));
         wsprintfW(hudText, L"R%02ld %s", currentRoom + 1, roomName);
-        hudLine.left = destinationX + destinationWidth / 2 - 60;
-        hudLine.right = destinationX + destinationWidth / 2 + 60;
+        hudLine.left = destinationX + destinationWidth / 2
+            - 60 * destinationWidth / framebufferWidth;
+        hudLine.right = destinationX + destinationWidth / 2
+            + 60 * destinationWidth / framebufferWidth;
         DrawTextW(deviceContext, hudText, -1, &hudLine,
             DT_CENTER | DT_TOP | DT_SINGLELINE);
         wsprintfW(hudText, L"K %ld", runKillCount);
-        hudLine.left = destinationX + destinationWidth / 2 + 64;
-        hudLine.right = destinationX + destinationWidth - 34;
+        hudLine.left = destinationX + destinationWidth / 2
+            + 64 * destinationWidth / framebufferWidth;
+        hudLine.right = destinationX + destinationWidth
+            - 34 * destinationWidth / framebufferWidth;
         DrawTextW(deviceContext, hudText, -1, &hudLine,
             DT_LEFT | DT_TOP | DT_SINGLELINE);
 
@@ -5718,7 +6085,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         }
         else if (upgradeMenuActive)
         {
-            SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
+            SelectObject(deviceContext, uiFont
+                ? uiFont : GetStockObject(DEFAULT_GUI_FONT));
             SetBkMode(deviceContext, TRANSPARENT);
             RECT panel
             {
@@ -5783,7 +6151,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         else if (runEndState)
         {
             DrawTerminalBackdrop(deviceContext, clientArea);
-            SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
+            SelectObject(deviceContext, uiFont
+                ? uiFont : GetStockObject(DEFAULT_GUI_FONT));
             SetBkMode(deviceContext, TRANSPARENT);
             RECT line = clientArea;
             wchar_t resultText[64];
@@ -5901,6 +6270,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
         }
+        PresentLogicalFrame(paintContext, windowClientArea);
         EndPaint(window, &paint);
         return 0;
     }
@@ -5914,7 +6284,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
 {
     constexpr wchar_t windowClassName[] = L"DeadSignalWindow";
     if (!ReadMetaProfile())
@@ -5938,7 +6308,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         0,
         windowClassName,
         L"DEAD SIGNAL",
-        WS_OVERLAPPEDWINDOW,
+        windowedWindowStyle,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
@@ -6054,10 +6424,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         }
     }
 
-    for (DWORD sample = 0; sample < toneSampleCount; ++sample)
-    {
-        toneSamples[sample] = ((sample * toneFrequency * 2 / toneSampleRate) & 1) ? 64 : 192;
-    }
+    GenerateToneSamples();
 
     WAVEFORMATEX toneFormat{};
     toneFormat.wFormatTag = WAVE_FORMAT_PCM;
@@ -6080,7 +6447,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         return 0;
     }
 
-    ShowWindow(window, showCommand);
+    HDC windowContext = GetDC(window);
+    logicalFrameContext = CreateCompatibleDC(windowContext);
+    logicalFrameBitmap = CreateCompatibleBitmap(windowContext,
+        uiReferenceWidth, uiReferenceHeight);
+    ReleaseDC(window, windowContext);
+    if (!logicalFrameContext || !logicalFrameBitmap)
+    {
+        waveOutUnprepareHeader(audioOutput, &toneHeader, sizeof(toneHeader));
+        waveOutClose(audioOutput);
+        return 0;
+    }
+    logicalFramePreviousBitmap = SelectObject(logicalFrameContext,
+        logicalFrameBitmap);
+    uiFont = CreateFontW(-25, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        NONANTIALIASED_QUALITY, DEFAULT_PITCH, L"Malgun Gothic");
+    titleFont = CreateFontW(-40, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        NONANTIALIASED_QUALITY, FIXED_PITCH, L"Consolas");
+    ApplyDisplaySettings(window);
+    ShowWindow(window, SW_SHOWNORMAL);
 
     timeBeginPeriod(1);
     LARGE_INTEGER performanceFrequency{};
@@ -8441,6 +8828,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     waveOutReset(audioOutput);
     waveOutUnprepareHeader(audioOutput, &toneHeader, sizeof(toneHeader));
     waveOutClose(audioOutput);
+    if (titleFont)
+    {
+        DeleteObject(titleFont);
+    }
+    if (uiFont)
+    {
+        DeleteObject(uiFont);
+    }
+    SelectObject(logicalFrameContext, logicalFramePreviousBitmap);
+    DeleteObject(logicalFrameBitmap);
+    DeleteDC(logicalFrameContext);
     return static_cast<int>(message.wParam);
 }
 
@@ -10341,7 +10739,9 @@ int main()
     ResetMetaProfile();
     globalCoin = 123;
     unlockedCharacterMask = 0x1f;
-    audioEnabled = false;
+    masterVolumeStep = 0;
+    windowResolutionIndex = 4;
+    fullscreenEnabled = true;
     commonGlobalLevel[0] = 1;
     commonGlobalLevel[1] = 1;
     commonGlobalLevel[2] = 2;
@@ -10356,7 +10756,8 @@ int main()
     WriteMetaProfile();
     ResetMetaProfile();
     failures += !ReadMetaProfile() || globalCoin != 123
-        || unlockedCharacterMask != 0x1f || audioEnabled
+        || unlockedCharacterMask != 0x1f || masterVolumeStep != 0
+        || windowResolutionIndex != 4 || !fullscreenEnabled
         || commonGlobalLevel[2] != 2
         || characterGlobalLevel[mobilityCharacter][0] != 3
         || characterGlobalLevel[heavyCharacter][0] != 2
@@ -10381,7 +10782,10 @@ int main()
     ResetMetaProfile();
     failures += b09File == INVALID_HANDLE_VALUE
         || b09Transferred != sizeof(b09Profile) || !ReadMetaProfile()
-        || globalCoin != 44 || characterGlobalLevel[piercerCharacter][2] != 0;
+        || globalCoin != 44 || masterVolumeStep != masterVolumeMaximumStep
+        || windowResolutionIndex != defaultWindowResolutionIndex
+        || fullscreenEnabled
+        || characterGlobalLevel[piercerCharacter][2] != 0;
     MetaProfile rewrittenProfile{};
     b09File = CreateFileW(metaFileName, GENERIC_READ, FILE_SHARE_READ, nullptr,
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -10393,9 +10797,43 @@ int main()
         CloseHandle(b09File);
     }
     failures += b09Transferred != sizeof(rewrittenProfile)
+        || rewrittenProfile.audioSetting
+            != EncodeDisplaySetting(masterVolumeMaximumStep,
+                defaultWindowResolutionIndex, false)
         || rewrittenProfile.characterLevel[piercerCharacter][2]
             != pierceThroughStorageMarker;
     printf("section_b09_slot_migration=%ld\n", failures);
+
+    b09Profile.audioSetting = masterVolumeStorageMarker | 7;
+    b09Profile.characterLevel[piercerCharacter][2]
+        = pierceThroughStorageMarker;
+    b09File = CreateFileW(metaFileName, GENERIC_WRITE, 0, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    b09Transferred = 0;
+    if (b09File != INVALID_HANDLE_VALUE)
+    {
+        WriteFile(b09File, &b09Profile, sizeof(b09Profile),
+            &b09Transferred, nullptr);
+        CloseHandle(b09File);
+    }
+    ResetMetaProfile();
+    failures += b09Transferred != sizeof(b09Profile) || !ReadMetaProfile()
+        || masterVolumeStep != 7
+        || windowResolutionIndex != defaultWindowResolutionIndex
+        || fullscreenEnabled;
+    b09File = CreateFileW(metaFileName, GENERIC_READ, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    b09Transferred = 0;
+    if (b09File != INVALID_HANDLE_VALUE)
+    {
+        ReadFile(b09File, &rewrittenProfile, sizeof(rewrittenProfile),
+            &b09Transferred, nullptr);
+        CloseHandle(b09File);
+    }
+    failures += b09Transferred != sizeof(rewrittenProfile)
+        || rewrittenProfile.audioSetting != EncodeDisplaySetting(7,
+            defaultWindowResolutionIndex, false);
+    printf("section_v091_meta=%ld\n", failures);
 
     LegacyMetaProfile legacy
         { metaMagic, 1, 77, 0x0b, 2, 2, 0 };
@@ -10419,7 +10857,9 @@ int main()
         CloseHandle(file);
     }
     failures += !migrated || globalCoin != 77
-        || unlockedCharacterMask != 0x0b || audioEnabled
+        || unlockedCharacterMask != 0x0b || masterVolumeStep != 0
+        || windowResolutionIndex != defaultWindowResolutionIndex
+        || fullscreenEnabled
         || characterGlobalLevel[basicCharacter][0] != 2
         || characterGlobalLevel[mobilityCharacter][0] != 0
         || migratedSize != 32;
@@ -10438,8 +10878,62 @@ int main()
         CloseHandle(file);
     }
     failures += ReadMetaProfile() || globalCoin != 0
-        || unlockedCharacterMask != 1 || !audioEnabled;
+        || unlockedCharacterMask != 1
+        || masterVolumeStep != masterVolumeMaximumStep
+        || windowResolutionIndex != defaultWindowResolutionIndex
+        || fullscreenEnabled;
+    corrupt.coin = 0;
+    corrupt.unlockedMask = 1;
+    corrupt.audioSetting = 0xFF;
+    corrupt.characterLevel[piercerCharacter][2]
+        = pierceThroughStorageMarker;
+    file = CreateFileW(metaFileName, GENERIC_WRITE, 0, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file != INVALID_HANDLE_VALUE)
+    {
+        WriteFile(file, &corrupt, sizeof(corrupt), &transferred, nullptr);
+        CloseHandle(file);
+    }
+    windowResolutionIndex = 4;
+    fullscreenEnabled = true;
+    failures += ReadMetaProfile()
+        || windowResolutionIndex != defaultWindowResolutionIndex
+        || fullscreenEnabled;
     printf("section_corrupt=%ld\n", failures);
+
+    masterVolumeStep = masterVolumeMaximumStep;
+    failures += !ChangeMasterVolume(-1) || masterVolumeStep != 9
+        || !ChangeMasterVolume(-1) || masterVolumeStep != 8;
+    while (masterVolumeStep > 1)
+    {
+        ChangeMasterVolume(-1);
+    }
+    failures += !ChangeMasterVolume(-1) || masterVolumeStep != 0
+        || ChangeMasterVolume(-1) || masterVolumeStep != 0
+        || !ChangeMasterVolume(1) || masterVolumeStep != 1;
+    masterVolumeStep = masterVolumeMaximumStep;
+    failures += ChangeMasterVolume(1)
+        || masterVolumeStep != masterVolumeMaximumStep
+        || MasterVolumeSample(192, 10) != 192
+        || MasterVolumeSample(192, 5) != 160
+        || MasterVolumeSample(192, 1) != 134
+        || MasterVolumeSample(192, 0) != 128
+        || MasterVolumeSample(64, 5) != 96
+        || MasterVolumeSample(64, 1) != 122
+        || MasterVolumeSample(64, 0) != 128;
+    masterVolumeStep = 7;
+    windowResolutionIndex = 2;
+    fullscreenEnabled = true;
+    GenerateToneSamples();
+    WriteMetaProfile();
+    ResetMetaProfile();
+    failures += !ReadMetaProfile() || masterVolumeStep != 7
+        || windowResolutionIndex != 2 || !fullscreenEnabled
+        || toneSamples[0] != MasterVolumeSample(192, 7)
+        || sizeof(MetaProfile) != 32 || sizeof(SaveCheckpoint) != 32;
+    printf("section_v09_audio=%ld volume=%u sample=%u\n", failures,
+        static_cast<UINT>(masterVolumeStep),
+        static_cast<UINT>(toneSamples[0]));
 
     LONG unlockCostTotal = 0;
     LONG commonCostTotal = 0;
@@ -10690,6 +11184,99 @@ int main()
     }
     printf("section_dash_hud=%ld\n", failures);
 
+    settingsActive = true;
+    settingsFromGameplay = false;
+    settingsSelection = 0;
+    applicationState = titleMainState;
+    masterVolumeStep = masterVolumeMaximumStep;
+    windowResolutionIndex = defaultWindowResolutionIndex;
+    fullscreenEnabled = false;
+    leftPressed = false;
+    rightPressed = false;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_LEFT, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_LEFT, 0);
+    failures += masterVolumeStep != 9;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_LEFT, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_LEFT, 0);
+    failures += masterVolumeStep != 8;
+    masterVolumeStep = 1;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_LEFT, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_LEFT, 0);
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_LEFT, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_LEFT, 0);
+    failures += masterVolumeStep != 0;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_RIGHT, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_RIGHT, 0);
+    failures += masterVolumeStep != 1;
+    masterVolumeStep = masterVolumeMaximumStep;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_RIGHT, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_RIGHT, 0);
+    zPressed = false;
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    failures += masterVolumeStep != masterVolumeMaximumStep || !settingsActive;
+    downPressed = false;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_DOWN, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_DOWN, 0);
+    windowResolutionIndex = defaultWindowResolutionIndex;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_RIGHT, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_RIGHT, 0);
+    failures += windowResolutionIndex != 3 || fullscreenEnabled;
+    for (LONG change = 0; change < 3; ++change)
+    {
+        WindowProcedure(nullptr, WM_KEYDOWN, VK_RIGHT, 0);
+        WindowProcedure(nullptr, WM_KEYUP, VK_RIGHT, 0);
+    }
+    failures += windowResolutionIndex != 1;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_LEFT, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_LEFT, 0);
+    failures += windowResolutionIndex != 0;
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    failures += !settingsActive || fullscreenEnabled;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_DOWN, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_DOWN, 0);
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_RIGHT, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_RIGHT, 0);
+    failures += !fullscreenEnabled;
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    failures += fullscreenEnabled;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_DOWN, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_DOWN, 0);
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    failures += settingsActive || applicationState != titleMainState;
+    RECT widePresent = LogicalPresentRectangle(3440, 1440);
+    RECT tallPresent = LogicalPresentRectangle(1024, 768);
+    RECT exactPresent = LogicalPresentRectangle(960, 540);
+    RECT referencePresent = LogicalPresentRectangle(1280, 720);
+    RECT mediumPresent = LogicalPresentRectangle(1600, 900);
+    RECT fullHdPresent = LogicalPresentRectangle(1920, 1080);
+    RECT sixteenTenPresent = LogicalPresentRectangle(1536, 960);
+    failures += widePresent.left != 440 || widePresent.top
+        || widePresent.right != 3000 || widePresent.bottom != 1440
+        || tallPresent.left || tallPresent.top != 96
+        || tallPresent.right != 1024 || tallPresent.bottom != 672
+        || exactPresent.left || exactPresent.top
+        || exactPresent.right != 960 || exactPresent.bottom != 540
+        || referencePresent.left || referencePresent.top
+        || referencePresent.right != 1280 || referencePresent.bottom != 720
+        || mediumPresent.left || mediumPresent.top
+        || mediumPresent.right != 1600 || mediumPresent.bottom != 900
+        || fullHdPresent.left || fullHdPresent.top
+        || fullHdPresent.right != 1920 || fullHdPresent.bottom != 1080
+        || sixteenTenPresent.left || sixteenTenPresent.top != 48
+        || sixteenTenPresent.right != 1536 || sixteenTenPresent.bottom != 912
+        || uiReferenceWidth != 1600 || uiReferenceHeight != 900
+        || framebufferWidth != 320 || framebufferHeight != 180
+        || defaultWindowResolutionIndex != 2
+        || windowResolutionWidth[0] != 640
+        || windowResolutionHeight[0] != 360
+        || windowResolutionWidth[4] != 1920
+        || windowResolutionHeight[4] != 1080;
+    printf("section_v09_settings=%ld\n", failures);
+
     ResetMetaProfile();
     selectedCharacter = basicCharacter;
     applicationState = titleMainState;
@@ -10703,7 +11290,9 @@ int main()
     WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
     failures += applicationState != characterSelectState
         || menuSelection != basicCharacter || characterUpgradeFocus;
-    menuSelection = mobilityCharacter;
+    downPressed = false;
+    WindowProcedure(nullptr, WM_KEYDOWN, VK_DOWN, 0);
+    WindowProcedure(nullptr, WM_KEYUP, VK_DOWN, 0);
     globalCoin = 0;
     WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
     WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
@@ -10713,7 +11302,10 @@ int main()
     WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
     WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
     failures += !(unlockedCharacterMask & (1 << mobilityCharacter))
-        || selectedCharacter != mobilityCharacter || globalCoin != 0;
+        || selectedCharacter != basicCharacter || globalCoin != 0;
+    WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
+    WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
+    failures += selectedCharacter != mobilityCharacter;
     menuSelection = basicCharacter;
     characterUpgradeFocus = false;
     WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
@@ -10722,17 +11314,18 @@ int main()
     menuSelection = mobilityCharacter;
     characterUpgradeFocus = true;
     characterUpgradeSelection = 0;
-    globalCoin = characterGlobalCost[mobilityCharacter][0][0];
+    globalCoin = characterGlobalCost[basicCharacter][0][0];
     WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
     WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
-    failures += characterGlobalLevel[mobilityCharacter][0] != 1
+    failures += characterGlobalLevel[basicCharacter][0] != 1
+        || characterGlobalLevel[mobilityCharacter][0] != 0
         || globalCoin != 0 || selectedCharacter != basicCharacter;
     escapePressed = false;
     WindowProcedure(nullptr, WM_KEYDOWN, VK_ESCAPE, 0);
     WindowProcedure(nullptr, WM_KEYUP, VK_ESCAPE, 0);
     failures += applicationState != preparationState || menuSelection != 3
         || selectedCharacter != basicCharacter
-        || characterGlobalLevel[mobilityCharacter][0] != 1;
+        || characterGlobalLevel[basicCharacter][0] != 1;
     WindowProcedure(nullptr, WM_KEYDOWN, 'Z', 0);
     WindowProcedure(nullptr, WM_KEYUP, 'Z', 0);
     failures += applicationState != characterSelectState
@@ -10850,6 +11443,12 @@ int main()
         GetTextExtentPoint32W(measurementDC, L"K 156",
             lstrlenW(L"K 156"), &textSize);
         failures += textSize.cx > 62;
+        GetTextExtentPoint32W(measurementDC, L"L/R CHANGE   Z TOGGLE",
+            lstrlenW(L"L/R CHANGE   Z TOGGLE"), &textSize);
+        failures += textSize.cx > 180;
+        GetTextExtentPoint32W(measurementDC, L"< 1920 x 1080 >",
+            lstrlenW(L"< 1920 x 1080 >"), &textSize);
+        failures += textSize.cx > 160;
         for (BYTE character = 0; character < characterCount; ++character)
         {
             GetTextExtentPoint32W(measurementDC, CharacterName(character),
@@ -11226,6 +11825,28 @@ int main()
     LONG poseY = 0;
     PlayerPoseOffset(mobilityCharacter, playerDashStreakFrame, false, 3,
         1, 0, poseX, poseY);
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        for (BYTE frame = playerWalkAFrame; frame <= playerWalkBFrame; ++frame)
+        {
+            LONG walkPoseX = 0;
+            LONG walkPoseY = 0;
+            PlayerPoseOffset(character, frame, false, 3,
+                1, 1, walkPoseX, walkPoseY);
+            failures += walkPoseX != 0 || walkPoseY != 0;
+        }
+        LONG changedWalkPixels = 0;
+        for (LONG y = 0; y < playerHeight; ++y)
+        {
+            for (LONG x = 0; x < playerWidth; ++x)
+            {
+                changedWalkPixels += PlayerSpritePaletteIndex(character,
+                    playerWalkAFrame, x, y) != PlayerSpritePaletteIndex(
+                        character, playerWalkBFrame, x, y);
+            }
+        }
+        failures += changedWalkPixels == 0;
+    }
     LONG pressurePixels = 0;
     for (LONG y = 88; y <= 112; ++y)
     {
