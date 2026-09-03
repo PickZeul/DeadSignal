@@ -1547,6 +1547,11 @@ constexpr BYTE windowResolutionCount = 5;
 constexpr BYTE defaultWindowResolutionIndex = 2;
 constexpr LONG uiReferenceWidth = 1600;
 constexpr LONG uiReferenceHeight = 900;
+constexpr const wchar_t* titleMenuLabels[5]
+{
+    L"\uAC8C\uC784 \uC2DC\uC791", L"\uC774\uC5B4\uD558\uAE30", L"\uC124\uC815",
+    L"\uB3C4\uC6C0\uB9D0", L"\uC885\uB8CC"
+};
 constexpr LONG windowResolutionWidth[windowResolutionCount]
     { 640, 960, 1280, 1600, 1920 };
 constexpr LONG windowResolutionHeight[windowResolutionCount]
@@ -1594,8 +1599,12 @@ bool fullscreenEnabled = false;
 HDC logicalFrameContext = nullptr;
 HBITMAP logicalFrameBitmap = nullptr;
 HGDIOBJ logicalFramePreviousBitmap = nullptr;
+LONG logicalFrameWidth = uiReferenceWidth;
+LONG logicalFrameHeight = uiReferenceHeight;
 HFONT titleFont = nullptr;
 HFONT uiFont = nullptr;
+LONG titleFontRasterHeight = 34;
+LONG uiFontRasterHeight = 21;
 bool newGameRequested = false;
 bool loadGameRequested = false;
 LONG currentRoom = 0;
@@ -4567,17 +4576,84 @@ void ToggleFullscreen(HWND window)
     ApplyDisplaySettings(window);
 }
 
+LONG UiFontHeightForWidth(LONG width)
+{
+    LONG height = (21 * width + uiReferenceWidth / 2) / uiReferenceWidth;
+    return height < 12 ? 12 : height;
+}
+
+LONG TitleFontHeightForWidth(LONG width)
+{
+    LONG height = (34 * width + uiReferenceWidth / 2) / uiReferenceWidth;
+    return height < 18 ? 18 : height;
+}
+
+bool EnsureUiFontRaster(HDC deviceContext, LONG width)
+{
+    LONG nextUiHeight = UiFontHeightForWidth(width);
+    LONG nextTitleHeight = TitleFontHeightForWidth(width);
+    if (nextUiHeight == uiFontRasterHeight
+        && nextTitleHeight == titleFontRasterHeight)
+    {
+        return true;
+    }
+    HFONT nextUiFont = CreateFontW(-nextUiHeight, 0, 0, 0, FW_NORMAL,
+        FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, DEFAULT_PITCH,
+        L"Malgun Gothic");
+    HFONT nextTitleFont = CreateFontW(-nextTitleHeight, 0, 0, 0, FW_BOLD,
+        FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, FIXED_PITCH,
+        L"Consolas");
+    if (!nextUiFont || !nextTitleFont)
+    {
+        if (nextUiFont) DeleteObject(nextUiFont);
+        if (nextTitleFont) DeleteObject(nextTitleFont);
+        return false;
+    }
+    SelectObject(deviceContext, GetStockObject(DEFAULT_GUI_FONT));
+    if (uiFont) DeleteObject(uiFont);
+    if (titleFont) DeleteObject(titleFont);
+    uiFont = nextUiFont;
+    titleFont = nextTitleFont;
+    uiFontRasterHeight = nextUiHeight;
+    titleFontRasterHeight = nextTitleHeight;
+    return true;
+}
+
+bool EnsureLogicalFrameSize(HDC destinationContext, LONG width, LONG height)
+{
+    if (width == logicalFrameWidth && height == logicalFrameHeight)
+    {
+        return true;
+    }
+    HBITMAP nextBitmap = CreateCompatibleBitmap(destinationContext, width, height);
+    if (!nextBitmap)
+    {
+        return false;
+    }
+    HGDIOBJ previousBitmap = SelectObject(logicalFrameContext, nextBitmap);
+    if (!previousBitmap || previousBitmap == HGDI_ERROR)
+    {
+        DeleteObject(nextBitmap);
+        return false;
+    }
+    DeleteObject(logicalFrameBitmap);
+    logicalFrameBitmap = nextBitmap;
+    logicalFrameWidth = width;
+    logicalFrameHeight = height;
+    return true;
+}
+
 void PresentLogicalFrame(HDC destinationContext, const RECT& clientArea)
 {
     RECT destination = LogicalPresentRectangle(
         clientArea.right - clientArea.left,
         clientArea.bottom - clientArea.top);
-    SetStretchBltMode(destinationContext, COLORONCOLOR);
-    StretchBlt(destinationContext, destination.left, destination.top,
+    BitBlt(destinationContext, destination.left, destination.top,
         destination.right - destination.left,
         destination.bottom - destination.top,
-        logicalFrameContext, 0, 0, uiReferenceWidth, uiReferenceHeight,
-        SRCCOPY);
+        logicalFrameContext, 0, 0, SRCCOPY);
 }
 
 void ConfirmGameplayMenu(HWND window)
@@ -5201,8 +5277,19 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         GetClientRect(window, &windowClientArea);
         FillRect(paintContext, &windowClientArea,
             reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+        RECT contentArea = LogicalPresentRectangle(
+            windowClientArea.right - windowClientArea.left,
+            windowClientArea.bottom - windowClientArea.top);
+        LONG contentWidth = contentArea.right - contentArea.left;
+        LONG contentHeight = contentArea.bottom - contentArea.top;
+        if (!EnsureLogicalFrameSize(paintContext, contentWidth, contentHeight)
+            || !EnsureUiFontRaster(logicalFrameContext, contentWidth))
+        {
+            EndPaint(window, &paint);
+            return 0;
+        }
         HDC deviceContext = logicalFrameContext;
-        RECT clientArea{ 0, 0, uiReferenceWidth, uiReferenceHeight };
+        RECT clientArea{ 0, 0, contentWidth, contentHeight };
         FillRect(deviceContext, &clientArea,
             reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
 
@@ -5484,10 +5571,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                         clientHeight * (71 + item * 16) / 180
                     };
                     DrawTerminalPanel(deviceContext, option, focused);
-                    const wchar_t* text = item == 0 ? L"\uAC8C\uC784 \uC2DC\uC791"
-                        : (item == 1 ? L"\uC774\uC5B4\uD558\uAE30"
-                            : (item == 2 ? L"\uC124\uC815"
-                                : (item == 3 ? L"\uB3C4\uC6C0\uB9D0" : L"\uC885\uB8CC")));
+                    const wchar_t* text = titleMenuLabels[item];
                     line.left = option.left;
                     line.right = option.right;
                     line.top = option.top;
@@ -11241,6 +11325,37 @@ int main()
         || windowResolutionWidth[4] != 1920
         || windowResolutionHeight[4] != 1080;
     printf("section_v09_settings=%ld\n", failures);
+
+    constexpr LONG expectedUiFontHeight[windowResolutionCount]
+        { 12, 13, 17, 21, 25 };
+    constexpr LONG expectedTitleFontHeight[windowResolutionCount]
+        { 18, 20, 27, 34, 41 };
+    LONG fontFailures = 0;
+    for (BYTE resolution = 0; resolution < windowResolutionCount; ++resolution)
+    {
+        fontFailures += UiFontHeightForWidth(windowResolutionWidth[resolution])
+                != expectedUiFontHeight[resolution]
+            || TitleFontHeightForWidth(windowResolutionWidth[resolution])
+                != expectedTitleFontHeight[resolution];
+    }
+    fontFailures += UiFontHeightForWidth(1536) != 20
+        || TitleFontHeightForWidth(1536) != 33
+        || titleMenuLabels[0][0] != 0xAC8C
+        || titleMenuLabels[0][1] != 0xC784
+        || titleMenuLabels[0][2] != L' '
+        || titleMenuLabels[0][3] != 0xC2DC
+        || titleMenuLabels[0][4] != 0xC791
+        || titleMenuLabels[4][0] != 0xC885
+        || titleMenuLabels[4][1] != 0xB8CC
+        || titleMenuLabels[4][2] != L'\0';
+    failures += fontFailures;
+    printf("section_v093_font=%ld raster=%ld/%ld/%ld/%ld/%ld\n",
+        fontFailures,
+        UiFontHeightForWidth(windowResolutionWidth[0]),
+        UiFontHeightForWidth(windowResolutionWidth[1]),
+        UiFontHeightForWidth(windowResolutionWidth[2]),
+        UiFontHeightForWidth(windowResolutionWidth[3]),
+        UiFontHeightForWidth(windowResolutionWidth[4]));
 
     ResetMetaProfile();
     selectedCharacter = basicCharacter;
