@@ -103,7 +103,8 @@ constexpr float enemyAttackWindupDuration = 0.3f;
 constexpr float enemyAttackContactTolerance = 1.0f;
 constexpr float playerHitFeedbackDuration = 0.10f;
 constexpr float playerInvulnerabilityDuration = 0.5f;
-constexpr float detectionFillDuration = 3.0f;
+constexpr float detectionFillDuration = 2.4f;
+constexpr float detectionDecayDuration = 3.0f;
 constexpr float lostSightHoldDuration = 0.5f;
 constexpr LONG navigationCellSize = 8;
 constexpr LONG maxNavigationColumns = 100;
@@ -1085,6 +1086,7 @@ constexpr DWORD toneDurationMilliseconds = 250;
 constexpr DWORD toneSampleCount = toneSampleRate * toneDurationMilliseconds / 1000;
 
 DWORD framebuffer[framebufferWidth * framebufferHeight];
+BYTE visionOverlay[framebufferWidth * framebufferHeight];
 
 constexpr LONG titleMainState = 0;
 constexpr LONG preparationState = 1;
@@ -1474,6 +1476,49 @@ bool PointInsideVisionSector(float originX, float originY, float facingX,
     return forward > 0.0f && distanceSquared <= enemyVisionRangeSquared
         && lateral * lateral <= forward * forward
             * enemyVisionSlope * enemyVisionSlope;
+}
+
+DWORD BlendVisionColor(DWORD destination, DWORD source, BYTE alpha)
+{
+    LONG inverse = 256 - alpha;
+    DWORD red = (((destination >> 16) & 0xFF) * inverse
+        + ((source >> 16) & 0xFF) * alpha) >> 8;
+    DWORD green = (((destination >> 8) & 0xFF) * inverse
+        + ((source >> 8) & 0xFF) * alpha) >> 8;
+    DWORD blue = ((destination & 0xFF) * inverse
+        + (source & 0xFF) * alpha) >> 8;
+    return (red << 16) | (green << 8) | blue;
+}
+
+BYTE VisionEdgeAlpha(float forward, float lateral, float distanceSquared)
+{
+    float absoluteLateral = lateral < 0.0f ? -lateral : lateral;
+    float angleMargin = forward * enemyVisionSlope - absoluteLateral;
+    float radiusMargin = (enemyVisionRangeSquared - distanceSquared)
+        / (enemyVisionRange * 2.0f);
+    float margin = angleMargin < radiusMargin ? angleMargin : radiusMargin;
+    return margin >= 3.0f ? 40
+        : (margin >= 1.5f ? 48
+            : (margin >= 0.5f ? 72
+                : (margin >= -0.5f ? 112
+                    : (margin >= -1.5f ? 72
+                        : (margin >= -2.5f ? 40
+                            : (margin >= -3.0f ? 32 : 0))))));
+}
+
+void AccumulateVisionOverlay(LONG pixel, bool red, BYTE alpha)
+{
+    BYTE current = visionOverlay[pixel];
+    BYTE currentAlpha = current & 0x7F;
+    bool currentRed = (current & 0x80) != 0;
+    if (!alpha || (currentRed && !red))
+    {
+        return;
+    }
+    if ((red && !currentRed) || alpha > currentAlpha)
+    {
+        visionOverlay[pixel] = static_cast<BYTE>((red ? 0x80 : 0) | alpha);
+    }
 }
 
 bool PointInsideExecuteFacing(float playerX, float playerY, float facingX,
@@ -2262,6 +2307,79 @@ bool PiercerSlashOutlinePixel(float originX, float originY, LONG directionX,
         && lateral >= -halfWidth && lateral < halfWidth
         && (forward < start + 1.0f || forward > end - 1.0f
             || lateral < -halfWidth + 1.0f || lateral >= halfWidth - 1.0f);
+}
+
+BYTE SlashVisualPixel(BYTE character, float originX, float originY,
+    LONG directionX, LONG directionY, float pointX, float pointY)
+{
+    float scale = directionX && directionY ? 0.70710678f : 1.0f;
+    float forwardX = directionX * scale;
+    float forwardY = directionY * scale;
+    float differenceX = pointX - originX;
+    float differenceY = pointY - originY;
+    float forward = differenceX * forwardX + differenceY * forwardY;
+    float lateral = differenceX * -forwardY + differenceY * forwardX;
+    float absoluteForwardX = forwardX < 0.0f ? -forwardX : forwardX;
+    float absoluteForwardY = forwardY < 0.0f ? -forwardY : forwardY;
+    float start = absoluteForwardX * playerHalfWidth
+        + absoluteForwardY * playerHalfHeight;
+    float depth = forward - start;
+    float reach = static_cast<float>(CharacterSlashReach(character));
+    float halfWidth = CharacterSlashWidth(character) * 0.5f;
+    float absoluteLateral = lateral < 0.0f ? -lateral : lateral;
+    if (depth < 0.0f || depth > reach || absoluteLateral > halfWidth)
+    {
+        return 0;
+    }
+
+    if (character == piercerCharacter)
+    {
+        if (lateral >= -0.5f && lateral < 0.5f)
+        {
+            return 2;
+        }
+        if (depth >= reach - 2.0f
+            && absoluteLateral <= reach - depth + 0.5f)
+        {
+            return 2;
+        }
+        return depth < 4.0f && absoluteLateral < halfWidth ? 1 : 0;
+    }
+
+    float widthSquared = halfWidth * halfWidth;
+    if (character == rapidCharacter)
+    {
+        float mainStroke = depth - reach * 0.5f + lateral * 0.8f;
+        float trailStroke = depth - reach * 0.15f + lateral * 0.8f;
+        float absoluteMain = mainStroke < 0.0f ? -mainStroke : mainStroke;
+        float absoluteTrail = trailStroke < 0.0f ? -trailStroke : trailStroke;
+        return absoluteMain < 0.70f ? 2
+            : (absoluteTrail < 0.55f && depth < reach * 0.65f ? 1 : 0);
+    }
+
+    float curvature = lateral * lateral * reach / widthSquared;
+    if (character == mobilityCharacter)
+    {
+        float arc = reach - curvature * 0.45f;
+        float mainDistance = depth - arc;
+        float trailDistance = depth - (arc - 2.0f);
+        if (mainDistance < 0.0f) mainDistance = -mainDistance;
+        if (trailDistance < 0.0f) trailDistance = -trailDistance;
+        return mainDistance < 0.65f ? 2
+            : (lateral > 0.0f && trailDistance < 0.55f ? 1 : 0);
+    }
+
+    float arc = reach - curvature
+        / (character == heavyCharacter ? 1.5f : 1.25f);
+    float arcDistance = depth - arc;
+    if (arcDistance < 0.0f) arcDistance = -arcDistance;
+    if (character == heavyCharacter)
+    {
+        return arcDistance <= 1.55f ? 2
+            : (arcDistance <= 2.35f ? 1 : 0);
+    }
+    return arcDistance < 0.85f ? 2
+        : (arcDistance < 1.75f ? 1 : 0);
 }
 
 bool RectangleOverlapsRoomWall(float left, float top, float right, float bottom);
@@ -5866,7 +5984,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         {
                             decayTime = deltaTime;
                         }
-                        detectionProgress -= decayTime / detectionFillDuration;
+                        detectionProgress -= decayTime / detectionDecayDuration;
                         if (detectionProgress <= 0.0f)
                         {
                             detectionProgress = 0.0f;
@@ -6794,6 +6912,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 }
             }
 
+            ZeroMemory(visionOverlay, sizeof(visionOverlay));
             for (LONG enemyIndex = 0; enemyIndex < currentEnemyCount; ++enemyIndex)
             {
                 EnemyRuntime& enemy = enemies[enemyIndex];
@@ -6807,10 +6926,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                 float redDistanceSquared = redDistance * redDistance;
                 float enemyFacingX = cosf(enemy.facingAngle);
                 float enemyFacingY = sinf(enemy.facingAngle);
-                LONG visionLeft = enemyCenterX - enemyVisionRange - cameraX;
-                LONG visionRight = enemyCenterX + enemyVisionRange - cameraX;
-                LONG visionTop = enemyCenterY - enemyVisionRange - cameraY;
-                LONG visionBottom = enemyCenterY + enemyVisionRange - cameraY;
+                constexpr LONG visionFeather = 3;
+                LONG visionLeft = enemyCenterX - enemyVisionRange
+                    - visionFeather - cameraX;
+                LONG visionRight = enemyCenterX + enemyVisionRange
+                    + visionFeather - cameraX;
+                LONG visionTop = enemyCenterY - enemyVisionRange
+                    - visionFeather - cameraY;
+                LONG visionBottom = enemyCenterY + enemyVisionRange
+                    + visionFeather - cameraY;
                 if (visionLeft < 0)
                 {
                     visionLeft = 0;
@@ -6836,18 +6960,45 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                         float worldPixelY = static_cast<float>(pixelY + cameraY);
                         float visionX = worldPixelX - enemy.x;
                         float visionY = worldPixelY - enemy.y;
-                        float visionDistanceSquared
-                            = visionX * visionX + visionY * visionY;
-                        if (PointInsideVisionSector(enemy.x, enemy.y,
-                            enemyFacingX, enemyFacingY, worldPixelX, worldPixelY)
-                            && !WallBlocksSegment(enemy.x, enemy.y,
-                                worldPixelX, worldPixelY))
+                        float visionDistanceSquared = visionX * visionX
+                            + visionY * visionY;
+                        float forward = visionX * enemyFacingX
+                            + visionY * enemyFacingY;
+                        float lateral = visionX * -enemyFacingY
+                            + visionY * enemyFacingX;
+                        BYTE alpha = forward >= 0.0f
+                            ? VisionEdgeAlpha(forward, lateral,
+                                visionDistanceSquared) : 0;
+                        if (alpha && !WallBlocksSegment(enemy.x, enemy.y,
+                            worldPixelX, worldPixelY))
                         {
-                            framebuffer[pixelY * framebufferWidth + pixelX]
-                                = visionDistanceSquared <= redDistanceSquared
-                                    ? 0x00401818 : 0x00182040;
+                            bool red = redDistance > 0.0f
+                                && visionDistanceSquared <= redDistanceSquared;
+                            if (red && redDistance < enemyVisionRange)
+                            {
+                                float progressMargin = (redDistanceSquared
+                                    - visionDistanceSquared) / (redDistance * 2.0f);
+                                if (progressMargin < 0.75f && alpha < 96)
+                                {
+                                    alpha = 96;
+                                }
+                            }
+                            AccumulateVisionOverlay(
+                                pixelY * framebufferWidth + pixelX, red, alpha);
                         }
                     }
+                }
+            }
+
+            for (LONG pixel = 0; pixel < framebufferWidth * framebufferHeight;
+                ++pixel)
+            {
+                BYTE overlay = visionOverlay[pixel];
+                BYTE alpha = overlay & 0x7F;
+                if (alpha)
+                {
+                    framebuffer[pixel] = BlendVisionColor(framebuffer[pixel],
+                        overlay & 0x80 ? 0x00A83A30 : 0x00285878, alpha);
                 }
             }
 
@@ -6914,17 +7065,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
                     {
                         LONG screenX = x - cameraX;
                         LONG screenY = y - cameraY;
-                        bool outline = selectedCharacter == piercerCharacter
-                            ? PiercerSlashOutlinePixel(slashOriginX, slashOriginY,
-                                slashDirectionX, slashDirectionY,
-                                x + 0.5f, y + 0.5f)
-                            : x == slashLeft || x == slashRight - 1
-                                || y == slashTop || y == slashBottom - 1;
+                        BYTE slashPixel = SlashVisualPixel(selectedCharacter,
+                            slashOriginX, slashOriginY, slashDirectionX,
+                            slashDirectionY, x + 0.5f, y + 0.5f);
                         if (screenX >= 0 && screenX < framebufferWidth
                             && screenY >= 0 && screenY < framebufferHeight
-                            && outline)
+                            && slashPixel)
                         {
-                            framebuffer[screenY * framebufferWidth + screenX] = 0x00E0E0E0;
+                            framebuffer[screenY * framebufferWidth + screenX]
+                                = slashPixel == 2 ? 0x00FFF4D0 : 0x00B09878;
                         }
                     }
                 }
@@ -9617,6 +9766,115 @@ int main()
     characterGlobalLevel[piercerCharacter][2] = 1;
     failures += CharacterSlashHitCap(piercerCharacter) != 2;
     printf("section_multitarget=%ld\n", failures);
+
+    ResetMetaProfile();
+    constexpr LONG slashVisualMinimum[characterCount]{ 20, 7, 18, 35, 8 };
+    constexpr LONG slashVisualMaximum[characterCount]{ 36, 20, 40, 64, 24 };
+    constexpr LONG visualDirectionX[8]{ 1, 1, 0, -1, -1, -1, 0, 1 };
+    constexpr LONG visualDirectionY[8]{ 0, 1, 1, 1, 0, -1, -1, -1 };
+    for (BYTE character = 0; character < characterCount; ++character)
+    {
+        for (LONG direction = 0; direction < 8; ++direction)
+        {
+            LONG pixelCount = 0;
+            for (LONG y = 70; y < 130; ++y)
+            {
+                for (LONG x = 70; x < 130; ++x)
+                {
+                    pixelCount += SlashVisualPixel(character, 100.0f, 100.0f,
+                        visualDirectionX[direction], visualDirectionY[direction],
+                        x + 0.5f, y + 0.5f) != 0;
+                }
+            }
+            failures += pixelCount < slashVisualMinimum[character]
+                || pixelCount > slashVisualMaximum[character];
+        }
+    }
+    failures += SlashVisualPixel(piercerCharacter, 100.0f, 100.0f,
+            1, 0, 112.5f, 99.5f) != 2
+        || SlashVisualPixel(piercerCharacter, 100.0f, 100.0f,
+            1, 0, 112.5f, 102.5f) != 0;
+
+    visionOverlay[0] = 0;
+    AccumulateVisionOverlay(0, false, 72);
+    AccumulateVisionOverlay(0, true, 40);
+    AccumulateVisionOverlay(0, false, 112);
+    AccumulateVisionOverlay(0, true, 96);
+    DWORD blueComposite = BlendVisionColor(0x00101018, 0x00285878, 40);
+    DWORD redComposite = BlendVisionColor(0x00101018, 0x00A83A30, 96);
+    failures += visionOverlay[0] != (0x80 | 96)
+        || ((blueComposite & 0xFF) <= ((blueComposite >> 16) & 0xFF))
+        || (((redComposite >> 16) & 0xFF) <= (redComposite & 0xFF))
+        || VisionEdgeAlpha(20.0f, 0.0f, 400.0f) != 40
+        || VisionEdgeAlpha(20.0f, 20.0f * enemyVisionSlope, 400.0f) != 112
+        || VisionEdgeAlpha(20.0f, 20.0f * enemyVisionSlope + 1.0f,
+            400.0f) != 72
+        || VisionEdgeAlpha(20.0f, 20.0f * enemyVisionSlope + 2.0f,
+            400.0f) != 40
+        || VisionEdgeAlpha(20.0f, 20.0f * enemyVisionSlope + 2.8f,
+            400.0f) != 32
+        || VisionEdgeAlpha(20.0f, 20.0f * enemyVisionSlope + 3.1f,
+            400.0f) != 0
+        || enemyVisionRange != 70 || enemyVisionSlope != 0.520567f
+        || fabsf(detectionFillDuration - 3.0f * 0.8f) > 0.0001f
+        || detectionDecayDuration != 3.0f || lostSightHoldDuration != 0.5f;
+
+    ZeroMemory(visionOverlay, sizeof(visionOverlay));
+    LONG v05BluePixels = 0;
+    LONG v05RedPixels = 0;
+    LONG v05PurplePixels = 0;
+    constexpr float validationRedRangeSquared = 35.0f * 35.0f;
+    for (LONG y = 0; y < framebufferHeight; ++y)
+    {
+        for (LONG x = 0; x < framebufferWidth; ++x)
+        {
+            float differenceX = x - 100.0f;
+            float differenceY = y - 90.0f;
+            float distanceSquared = differenceX * differenceX
+                + differenceY * differenceY;
+            BYTE alpha = differenceX >= 0.0f
+                ? VisionEdgeAlpha(differenceX, differenceY, distanceSquared) : 0;
+            LONG pixel = y * framebufferWidth + x;
+            AccumulateVisionOverlay(pixel, false, alpha);
+            if (distanceSquared <= validationRedRangeSquared)
+            {
+                AccumulateVisionOverlay(pixel, true, alpha);
+            }
+        }
+    }
+    currentRoomType = openRoomType;
+    for (LONG y = 0; y < framebufferHeight; ++y)
+    {
+        for (LONG x = 0; x < framebufferWidth; ++x)
+        {
+            LONG pixel = y * framebufferWidth + x;
+            BYTE overlay = visionOverlay[pixel];
+            BYTE alpha = overlay & 0x7F;
+            if (!alpha)
+            {
+                continue;
+            }
+            bool red = (overlay & 0x80) != 0;
+            DWORD composite = BlendVisionColor(FloorVisualColor(x, y,
+                0x564F3555u), red ? 0x00A83A30 : 0x00285878, alpha);
+            LONG redChannel = (composite >> 16) & 0xFF;
+            LONG blueChannel = composite & 0xFF;
+            if (red)
+            {
+                ++v05RedPixels;
+                v05PurplePixels += redChannel <= blueChannel;
+            }
+            else
+            {
+                ++v05BluePixels;
+                failures += blueChannel <= redChannel;
+            }
+        }
+    }
+    failures += !v05BluePixels || !v05RedPixels || v05PurplePixels;
+    visionOverlay[0] = 0;
+    printf("section_v05=%ld blue=%ld red=%ld purple=%ld\n", failures,
+        v05BluePixels, v05RedPixels, v05PurplePixels);
 
 #ifdef DEAD_SIGNAL_B101_SOAK_VALIDATION
     ULONGLONG soakStart = GetTickCount64();
