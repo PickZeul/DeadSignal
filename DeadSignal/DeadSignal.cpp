@@ -286,7 +286,7 @@ constexpr LONG pillarRoomType = 1;
 constexpr LONG mazeRoomType = 2;
 constexpr LONG trapRoomType = 3;
 constexpr LONG mixedRoomType = 4;
-constexpr LONG maxRoomWalls = 24;
+constexpr LONG maxRoomWalls = 640;
 constexpr LONG maxRoomTraps = 19;
 constexpr LONG mazeWallThickness = 8;
 constexpr LONG trapWidth = 24;
@@ -409,6 +409,18 @@ constexpr float detectionDecayDuration = 3.0f;
 constexpr float lostSightHoldDuration = 0.5f;
 constexpr LONG navigationCellSize = 8;
 constexpr float navigationSafetyMargin = 0.25f;
+constexpr LONG mazeChunkCellCount = 3;
+constexpr LONG mazeChunkSize = navigationCellSize * mazeChunkCellCount;
+constexpr LONG mazeDoorSafeMargin = navigationCellSize * 4;
+constexpr LONG mazeEnemySpawnMargin = mazeChunkSize;
+constexpr LONG mazeChunkRollCount = 128;
+constexpr LONG mazeSingleSideWeight = 4;
+constexpr LONG mazeCornerWeight = 2;
+constexpr LONG mazeLayoutRetryCount = 128;
+constexpr LONG maxMazeClearingCount = 4;
+constexpr LONG maxMazeChunkCount = 600;
+constexpr LONG maxMazeEdgeCount = 1200;
+constexpr LONG mazeMinimumCoveragePercent = 50;
 constexpr LONG maxNavigationColumns = 100;
 constexpr LONG maxNavigationRows = 55;
 constexpr LONG maxNavigationNodeCount = maxNavigationColumns * maxNavigationRows;
@@ -1960,6 +1972,19 @@ LONG currentWallLeft[maxRoomWalls]{};
 LONG currentWallTop[maxRoomWalls]{};
 LONG currentWallRight[maxRoomWalls]{};
 LONG currentWallBottom[maxRoomWalls]{};
+LONG currentMazeClearingCount = 0;
+LONG currentMazeClearingColumn[maxMazeClearingCount]{};
+LONG currentMazeClearingRow[maxMazeClearingCount]{};
+BYTE currentMazePassageMask[maxMazeChunkCount]{};
+LONG currentMazePassageHorizontalCount = 0;
+LONG currentMazePassageVerticalCount = 0;
+LONG currentMazePassageStraightTotal = 0;
+LONG currentMazePassageStraightCount = 0;
+LONG currentMazePassageMaximumStraight = 0;
+LONG currentMazePassageTurnCount = 0;
+LONG currentMazePassageBranchCount = 0;
+LONG currentMazePassageDeadEndCount = 0;
+LONG currentMazePassageLoopCount = 0;
 LONG currentTrapCount = 0;
 LONG currentTrapLeft[maxRoomTraps]{};
 LONG currentTrapTop[maxRoomTraps]{};
@@ -4965,70 +4990,903 @@ BYTE RandomRegularEnemyRole(DWORD& state)
 bool WallBlocksSegment(float startX, float startY, float endX, float endY);
 bool NavigationCellValid(LONG column, LONG row);
 bool RoomLayoutConnected();
+LONG NavigationColumn(float x);
+LONG NavigationRow(float y);
+#ifdef DEAD_SIGNAL_B01_VALIDATION
+unsigned long long mazeRetryWallCountFailure = 0;
+unsigned long long mazeRetryComponentFailure = 0;
+unsigned long long mazeRetryExitFailure = 0;
+unsigned long long mazeRetryExitCellFailure = 0;
+unsigned long long mazeRetryExitStateFailure = 0;
+unsigned long long mazeRetrySpawnFailure = 0;
+#endif
 
-bool GenerateMazeLayout(DWORD& state)
+bool RectangleOverlapsMazeDoorSafeArea(float left, float top, float right, float bottom)
 {
-    for (LONG layoutAttempt = 0; layoutAttempt < 32; ++layoutAttempt)
+    return left < currentExitRight + mazeDoorSafeMargin
+        && right > currentExitLeft - mazeDoorSafeMargin
+        && top < currentExitBottom + mazeDoorSafeMargin
+        && bottom > currentExitTop - mazeDoorSafeMargin;
+}
+
+LONG MazeRequiredClearingCount()
+{
+    return roomSizeStage >= 2 ? roomSizeStage - 1 : 0;
+}
+
+bool MazeChunkInClearing(LONG column, LONG row)
+{
+    for (LONG clearing = 0; clearing < currentMazeClearingCount; ++clearing)
     {
-        currentWallCount = 0;
-        bool complete = true;
-        for (LONG quadrant = 0; quadrant < 4 && complete; ++quadrant)
-        {
-            LONG quadrantLeft = (quadrant & 1) ? worldWidth / 2 + 16 : 24;
-            LONG quadrantRight = (quadrant & 1) ? worldWidth - 24 : worldWidth / 2 - 16;
-            LONG quadrantTop = (quadrant & 2) ? worldHeight / 2 + 16 : 24;
-            LONG quadrantBottom = (quadrant & 2) ? worldHeight - 24
-                : worldHeight / 2 - 16;
-            LONG zeroWeight = 12 - currentRoom;
-            LONG oneWeight = 48 - currentRoom * 2;
-            LONG threeWeight = 20 + currentRoom * 2;
-            LONG roll = NextRoomRandom(state) & 127;
-            LONG segmentCount = roll < zeroWeight ? 0
-                : (roll < zeroWeight + oneWeight ? 1
-                    : (roll < 128 - threeWeight ? 2 : 3));
-            for (LONG segment = 0; segment < segmentCount; ++segment)
-            {
-                bool placed = false;
-                for (LONG attempt = 0; attempt < 128 && !placed; ++attempt)
-                {
-                    bool horizontal = (NextRoomRandom(state) & 1) != 0;
-                    LONG availableWidth = quadrantRight - quadrantLeft;
-                    LONG availableHeight = quadrantBottom - quadrantTop;
-                    LONG availableLength = horizontal ? availableWidth : availableHeight;
-                    LONG length = availableLength
-                        * (50 + static_cast<LONG>(NextRoomRandom(state) % 21)) / 100;
-                    if (length < mazeWallThickness * 3)
-                    {
-                        length = mazeWallThickness * 3;
-                    }
-                    if (length > availableLength)
-                    {
-                        length = availableLength;
-                    }
-                    LONG width = horizontal ? length : mazeWallThickness;
-                    LONG height = horizontal ? mazeWallThickness : length;
-                    LONG left = quadrantLeft + NextRoomRandom(state)
-                        % (availableWidth - width + 1);
-                    LONG top = quadrantTop + NextRoomRandom(state)
-                        % (availableHeight - height + 1);
-                    if (left >= quadrantLeft && top >= quadrantTop
-                        && left + width <= quadrantRight
-                        && top + height <= quadrantBottom
-                        && RoomWallPlacementValid(left, top, left + width, top + height))
-                    {
-                        AddRoomWall(left, top, left + width, top + height);
-                        placed = true;
-                    }
-                }
-                complete &= placed;
-            }
-        }
-        if (complete && RoomLayoutConnected())
+        LONG clearingColumn = currentMazeClearingColumn[clearing];
+        LONG clearingRow = currentMazeClearingRow[clearing];
+        if (column >= clearingColumn && column < clearingColumn + 2
+            && row >= clearingRow && row < clearingRow + 2)
         {
             return true;
         }
     }
+    return false;
+}
+
+bool MazeWallCrossesClearing(LONG left, LONG top, LONG right, LONG bottom)
+{
+    bool horizontal = right - left == mazeChunkSize;
+    for (LONG clearing = 0; clearing < currentMazeClearingCount; ++clearing)
+    {
+        LONG clearingLeft = currentMazeClearingColumn[clearing] * mazeChunkSize;
+        LONG clearingTop = currentMazeClearingRow[clearing] * mazeChunkSize;
+        if (horizontal && top == clearingTop + mazeChunkSize
+            && left >= clearingLeft && left < clearingLeft + mazeChunkSize * 2)
+        {
+            return true;
+        }
+        if (!horizontal && left == clearingLeft + mazeChunkSize
+            && top >= clearingTop && top < clearingTop + mazeChunkSize * 2)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool SelectMazeClearings(DWORD& state, LONG chunkColumns, LONG chunkRows)
+{
+    currentMazeClearingCount = 0;
+    LONG requestedCount = MazeRequiredClearingCount();
+    for (LONG clearing = 0; clearing < requestedCount; ++clearing)
+    {
+        bool placed = false;
+        for (LONG attempt = 0; attempt < 512 && !placed; ++attempt)
+        {
+            LONG column = 1 + NextRoomRandom(state) % (chunkColumns - 3);
+            LONG row = 1 + NextRoomRandom(state) % (chunkRows - 3);
+            float left = static_cast<float>(column * mazeChunkSize);
+            float top = static_cast<float>(row * mazeChunkSize);
+            float right = left + mazeChunkSize * 2;
+            float bottom = top + mazeChunkSize * 2;
+            if (RectangleOverlapsMazeDoorSafeArea(left, top, right, bottom)
+                || (left < currentPlayerStartX + playerHalfWidth + mazeChunkSize
+                    && right > currentPlayerStartX - playerHalfWidth - mazeChunkSize
+                    && top < currentPlayerStartY + playerHalfHeight + mazeChunkSize
+                    && bottom > currentPlayerStartY - playerHalfHeight - mazeChunkSize))
+            {
+                continue;
+            }
+            for (LONG other = 0; other < currentMazeClearingCount && !placed; ++other)
+            {
+                LONG differenceX = column - currentMazeClearingColumn[other];
+                LONG differenceY = row - currentMazeClearingRow[other];
+                if (differenceX < 0) differenceX = -differenceX;
+                if (differenceY < 0) differenceY = -differenceY;
+                placed = differenceX < 3 && differenceY < 3;
+            }
+            if (placed)
+            {
+                placed = false;
+                continue;
+            }
+            currentMazeClearingColumn[currentMazeClearingCount] = column;
+            currentMazeClearingRow[currentMazeClearingCount] = row;
+            ++currentMazeClearingCount;
+            placed = true;
+        }
+        if (!placed)
+        {
+            currentMazeClearingCount = 0;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool MazeEnemySpawnCellValid(LONG column, LONG row)
+{
+    if (!NavigationCellValid(column, row))
+    {
+        return false;
+    }
+    float centerX = enemyHalfWidth + column * navigationCellSize;
+    float centerY = enemyHalfHeight + row * navigationCellSize;
+    float left = centerX - enemyHalfWidth;
+    float top = centerY - enemyHalfHeight;
+    float right = centerX + enemyHalfWidth;
+    float bottom = centerY + enemyHalfHeight;
+    return left >= mazeEnemySpawnMargin && top >= mazeEnemySpawnMargin
+        && right <= worldWidth - mazeEnemySpawnMargin
+        && bottom <= worldHeight - mazeEnemySpawnMargin
+        && !RectangleOverlapsMazeDoorSafeArea(left, top, right, bottom)
+        && !(left < currentPlayerStartX + playerHalfWidth
+            && right > currentPlayerStartX - playerHalfWidth
+            && top < currentPlayerStartY + playerHalfHeight
+            && bottom > currentPlayerStartY - playerHalfHeight);
+}
+
+bool EnemyInitialFacingOpen(float x, float y, float angle)
+{
+    float directionX = cosf(angle);
+    float directionY = sinf(angle);
+    for (LONG step = 1; step <= 4; ++step)
+    {
+        float distance = navigationCellSize * step * 0.25f;
+        float centerX = x + directionX * distance;
+        float centerY = y + directionY * distance;
+        float left = centerX - enemyHalfWidth - navigationSafetyMargin;
+        float top = centerY - enemyHalfHeight - navigationSafetyMargin;
+        float right = centerX + enemyHalfWidth + navigationSafetyMargin;
+        float bottom = centerY + enemyHalfHeight + navigationSafetyMargin;
+        if (left < 0.0f || top < 0.0f || right > worldWidth
+            || bottom > worldHeight
+            || RectangleOverlapsRoomWall(left, top, right, bottom))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool SelectInitialEnemyFacing(float x, float y, float facing, DWORD& state,
+    float& selectedFacing)
+{
+    constexpr float quarterTurn = 1.57079633f;
+    if (EnemyInitialFacingOpen(x, y, facing))
+    {
+        selectedFacing = facing;
+        return true;
+    }
+    float leftFacing = facing - quarterTurn;
+    float rightFacing = facing + quarterTurn;
+    bool leftOpen = EnemyInitialFacingOpen(x, y, leftFacing);
+    bool rightOpen = EnemyInitialFacingOpen(x, y, rightFacing);
+    if (leftOpen || rightOpen)
+    {
+        selectedFacing = leftOpen && rightOpen
+            ? ((NextRoomRandom(state) & 1) ? leftFacing : rightFacing)
+            : (leftOpen ? leftFacing : rightFacing);
+        return true;
+    }
+    float backFacing = facing + quarterTurn * 2.0f;
+    if (EnemyInitialFacingOpen(x, y, backFacing))
+    {
+        selectedFacing = backFacing;
+        return true;
+    }
+    return false;
+}
+
+bool MazeChunkMaskAllowed(BYTE mask)
+{
+    return (mask & 0xF0) == 0;
+}
+
+LONG FindMazeWall(LONG left, LONG top, LONG right, LONG bottom)
+{
+    for (LONG wall = 0; wall < currentWallCount; ++wall)
+    {
+        if (currentWallLeft[wall] == left && currentWallTop[wall] == top
+            && currentWallRight[wall] == right && currentWallBottom[wall] == bottom)
+        {
+            return wall;
+        }
+    }
+    return -1;
+}
+
+bool MazeWallSegmentValid(LONG left, LONG top, LONG right, LONG bottom)
+{
+    if (left < 0 || top < 0 || right > worldWidth || bottom > worldHeight
+        || MazeWallCrossesClearing(left, top, right, bottom)
+        || RectangleOverlapsMazeDoorSafeArea(static_cast<float>(left),
+            static_cast<float>(top), static_cast<float>(right),
+            static_cast<float>(bottom))
+        || (left < currentPlayerStartX + playerHalfWidth + navigationCellSize
+            && right > currentPlayerStartX - playerHalfWidth - navigationCellSize
+            && top < currentPlayerStartY + playerHalfHeight + navigationCellSize
+            && bottom > currentPlayerStartY - playerHalfHeight - navigationCellSize))
+    {
+        return false;
+    }
+    if (FindMazeWall(left, top, right, bottom) >= 0)
+    {
+        return true;
+    }
+    return true;
+}
+
+void MazeWallRectangle(LONG chunkColumn, LONG chunkRow, BYTE side,
+    LONG& left, LONG& top, LONG& right, LONG& bottom)
+{
+    left = chunkColumn * mazeChunkSize;
+    top = chunkRow * mazeChunkSize;
+    right = left + mazeChunkSize;
+    bottom = top + mazeWallThickness;
+    if (side == 2)
+    {
+        left += mazeChunkSize;
+        right = left + mazeWallThickness;
+        bottom = top + mazeChunkSize;
+    }
+    else if (side == 4)
+    {
+        top += mazeChunkSize;
+        bottom = top + mazeWallThickness;
+    }
+    else if (side == 8)
+    {
+        right = left + mazeWallThickness;
+        bottom = top + mazeChunkSize;
+    }
+}
+
+bool AddMazeChunkShape(LONG chunkColumn, LONG chunkRow, BYTE desiredMask,
+    BYTE* chunkMasks, LONG chunkColumns, LONG chunkRows)
+{
+    LONG currentChunk = chunkRow * chunkColumns + chunkColumn;
+    if (!MazeChunkMaskAllowed(chunkMasks[currentChunk] | desiredMask))
+    {
+        return false;
+    }
+    constexpr BYTE sides[4] = { 1, 2, 4, 8 };
+    constexpr BYTE opposite[4] = { 4, 8, 1, 2 };
+    constexpr LONG neighborX[4] = { 0, 1, 0, -1 };
+    constexpr LONG neighborY[4] = { -1, 0, 1, 0 };
+    LONG newWallCount = 0;
+    for (LONG sideIndex = 0; sideIndex < 4; ++sideIndex)
+    {
+        BYTE side = sides[sideIndex];
+        if (!(desiredMask & side))
+        {
+            continue;
+        }
+        LONG neighborColumn = chunkColumn + neighborX[sideIndex];
+        LONG neighborRow = chunkRow + neighborY[sideIndex];
+        if (neighborColumn < 0 || neighborColumn >= chunkColumns
+            || neighborRow < 0 || neighborRow >= chunkRows)
+        {
+            return false;
+        }
+        LONG neighborChunk = neighborRow * chunkColumns + neighborColumn;
+        if (!MazeChunkMaskAllowed(chunkMasks[neighborChunk] | opposite[sideIndex]))
+        {
+            return false;
+        }
+        LONG left;
+        LONG top;
+        LONG right;
+        LONG bottom;
+        MazeWallRectangle(chunkColumn, chunkRow, side, left, top, right, bottom);
+        if (!MazeWallSegmentValid(left, top, right, bottom))
+        {
+            return false;
+        }
+        newWallCount += FindMazeWall(left, top, right, bottom) < 0;
+    }
+    if (currentWallCount + newWallCount > maxRoomWalls)
+    {
+        return false;
+    }
+    chunkMasks[currentChunk] |= desiredMask;
+    for (LONG sideIndex = 0; sideIndex < 4; ++sideIndex)
+    {
+        BYTE side = sides[sideIndex];
+        if (!(desiredMask & side))
+        {
+            continue;
+        }
+        LONG neighborColumn = chunkColumn + neighborX[sideIndex];
+        LONG neighborRow = chunkRow + neighborY[sideIndex];
+        chunkMasks[neighborRow * chunkColumns + neighborColumn] |= opposite[sideIndex];
+        LONG left;
+        LONG top;
+        LONG right;
+        LONG bottom;
+        MazeWallRectangle(chunkColumn, chunkRow, side, left, top, right, bottom);
+        if (FindMazeWall(left, top, right, bottom) < 0)
+        {
+            AddRoomWall(left, top, right, bottom);
+        }
+    }
+    return true;
+}
+
+LONG MazeCoveredChunkCount(const BYTE* chunkMasks, LONG chunkColumns, LONG chunkRows)
+{
+    LONG covered = 0;
+    for (LONG row = 0; row < chunkRows; ++row)
+    {
+        for (LONG column = 0; column < chunkColumns; ++column)
+        {
+            covered += !MazeChunkInClearing(column, row)
+                && chunkMasks[row * chunkColumns + column] != 0;
+        }
+    }
+    return covered;
+}
+
+bool MazeClearingsReachable()
+{
+    for (LONG clearing = 0; clearing < currentMazeClearingCount; ++clearing)
+    {
+        float left = static_cast<float>(currentMazeClearingColumn[clearing]
+            * mazeChunkSize);
+        float top = static_cast<float>(currentMazeClearingRow[clearing]
+            * mazeChunkSize);
+        float right = left + mazeChunkSize * 2;
+        float bottom = top + mazeChunkSize * 2;
+        bool reachable = false;
+        for (LONG row = 0; row < navigationRows && !reachable; ++row)
+        {
+            for (LONG column = 0; column < navigationColumns; ++column)
+            {
+                float centerX = enemyHalfWidth + column * navigationCellSize;
+                float centerY = enemyHalfHeight + row * navigationCellSize;
+                if (centerX >= left + enemyHalfWidth && centerX <= right - enemyHalfWidth
+                    && centerY >= top + enemyHalfHeight
+                    && centerY <= bottom - enemyHalfHeight
+                    && NavigationCellValid(column, row)
+                    && navigationState[row * navigationColumns + column])
+                {
+                    reachable = true;
+                    break;
+                }
+            }
+        }
+        if (!reachable)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool MazeLayoutValid()
+{
+    if (currentMazeClearingCount != MazeRequiredClearingCount())
+    {
+        return false;
+    }
+    if (!RoomLayoutConnected())
+    {
+#ifdef DEAD_SIGNAL_B01_VALIDATION
+        ++mazeRetryComponentFailure;
+#endif
+        return false;
+    }
+    if (!MazeClearingsReachable())
+    {
+        return false;
+    }
+    LONG exitX = currentExitSide == 0 ? 4
+        : (currentExitSide == 1 ? worldWidth - 4 : worldWidth / 2);
+    LONG exitY = currentExitSide == 2 ? 6
+        : (currentExitSide == 3 ? worldHeight - 6 : worldHeight / 2);
+    LONG exitColumn = NavigationColumn(static_cast<float>(exitX));
+    LONG exitRow = NavigationRow(static_cast<float>(exitY));
+    bool exitCellValid = NavigationCellValid(exitColumn, exitRow);
+    bool exitStateValid = exitCellValid
+        && navigationState[exitRow * navigationColumns + exitColumn];
+    if (!exitStateValid)
+    {
+#ifdef DEAD_SIGNAL_B01_VALIDATION
+        ++mazeRetryExitFailure;
+        mazeRetryExitCellFailure += !exitCellValid;
+        mazeRetryExitStateFailure += exitCellValid;
+#endif
+        return false;
+    }
+    LONG spawnCellCount = 0;
+    for (LONG row = 0; row < navigationRows; ++row)
+    {
+        for (LONG column = 0; column < navigationColumns; ++column)
+        {
+            spawnCellCount += MazeEnemySpawnCellValid(column, row);
+            if (spawnCellCount >= currentEnemyCount)
+            {
+                return true;
+            }
+        }
+    }
+#ifdef DEAD_SIGNAL_B01_VALIDATION
+    ++mazeRetrySpawnFailure;
+#endif
+    return false;
+}
+
+void OpenMazePassage(LONG first, LONG second, LONG direction)
+{
+    constexpr BYTE directionMask[4] = { 1, 2, 4, 8 };
+    constexpr BYTE oppositeMask[4] = { 4, 8, 1, 2 };
+    currentMazePassageMask[first] |= directionMask[direction];
+    currentMazePassageMask[second] |= oppositeMask[direction];
+}
+
+void MeasureMazePassages(LONG chunkColumns, LONG chunkRows)
+{
+    currentMazePassageHorizontalCount = 0;
+    currentMazePassageVerticalCount = 0;
+    currentMazePassageStraightTotal = 0;
+    currentMazePassageStraightCount = 0;
+    currentMazePassageMaximumStraight = 0;
+    currentMazePassageTurnCount = 0;
+    currentMazePassageBranchCount = 0;
+    currentMazePassageDeadEndCount = 0;
+    for (LONG row = 0; row < chunkRows; ++row)
+    {
+        for (LONG column = 0; column < chunkColumns; ++column)
+        {
+            LONG chunk = row * chunkColumns + column;
+            if (!(currentMazePassageMask[chunk] & 2))
+            {
+                continue;
+            }
+            ++currentMazePassageHorizontalCount;
+            BYTE mask = currentMazePassageMask[chunk];
+            if ((mask & 8) && mask == (2 | 8))
+            {
+                continue;
+            }
+            LONG run = 1;
+            LONG nextColumn = column + 1;
+            while (nextColumn < chunkColumns - 1
+                && currentMazePassageMask[row * chunkColumns + nextColumn]
+                    == (2 | 8))
+            {
+                ++run;
+                ++nextColumn;
+            }
+            currentMazePassageStraightTotal += run;
+            ++currentMazePassageStraightCount;
+            if (run > currentMazePassageMaximumStraight)
+            {
+                currentMazePassageMaximumStraight = run;
+            }
+        }
+    }
+    for (LONG column = 0; column < chunkColumns; ++column)
+    {
+        for (LONG row = 0; row < chunkRows; ++row)
+        {
+            LONG chunk = row * chunkColumns + column;
+            if (!(currentMazePassageMask[chunk] & 4))
+            {
+                continue;
+            }
+            ++currentMazePassageVerticalCount;
+            BYTE mask = currentMazePassageMask[chunk];
+            if ((mask & 1) && mask == (1 | 4))
+            {
+                continue;
+            }
+            LONG run = 1;
+            LONG nextRow = row + 1;
+            while (nextRow < chunkRows - 1
+                && currentMazePassageMask[nextRow * chunkColumns + column]
+                    == (1 | 4))
+            {
+                ++run;
+                ++nextRow;
+            }
+            currentMazePassageStraightTotal += run;
+            ++currentMazePassageStraightCount;
+            if (run > currentMazePassageMaximumStraight)
+            {
+                currentMazePassageMaximumStraight = run;
+            }
+        }
+    }
+    LONG passageCount = currentMazePassageHorizontalCount
+        + currentMazePassageVerticalCount;
+    currentMazePassageLoopCount = passageCount - chunkColumns * chunkRows + 1;
+    for (LONG chunk = 0; chunk < chunkColumns * chunkRows; ++chunk)
+    {
+        BYTE mask = currentMazePassageMask[chunk];
+        LONG degree = ((mask & 1) != 0) + ((mask & 2) != 0)
+            + ((mask & 4) != 0) + ((mask & 8) != 0);
+        currentMazePassageBranchCount += degree >= 3;
+        currentMazePassageDeadEndCount += degree == 1;
+        currentMazePassageTurnCount += degree >= 2
+            && (mask & (1 | 4)) && (mask & (2 | 8));
+    }
+}
+
+bool GenerateMazeTopology(DWORD& state, LONG chunkColumns, LONG chunkRows,
+    BYTE* chunkMasks)
+{
+    constexpr LONG directionX[4] = { 0, 1, 0, -1 };
+    constexpr LONG directionY[4] = { -1, 0, 1, 0 };
+    LONG nodeCount = chunkColumns * chunkRows;
+    bool visited[maxMazeChunkCount]{};
+    short parent[maxMazeChunkCount]{};
+    signed char entryDirection[maxMazeChunkCount]{};
+    BYTE straightLength[maxMazeChunkCount]{};
+    short stack[maxMazeChunkCount]{};
+    for (LONG node = 0; node < nodeCount; ++node)
+    {
+        currentMazePassageMask[node] = 0;
+        parent[node] = -1;
+        entryDirection[node] = -1;
+    }
+    LONG startColumn = static_cast<LONG>(currentPlayerStartX) / mazeChunkSize;
+    LONG startRow = static_cast<LONG>(currentPlayerStartY) / mazeChunkSize;
+    if (startColumn >= chunkColumns) startColumn = chunkColumns - 1;
+    if (startRow >= chunkRows) startRow = chunkRows - 1;
+    LONG exitColumn = currentExitSide == 0 ? 0
+        : (currentExitSide == 1 ? chunkColumns - 1
+            : ((currentExitLeft + currentExitRight) / 2) / mazeChunkSize);
+    LONG exitRow = currentExitSide == 2 ? 0
+        : (currentExitSide == 3 ? chunkRows - 1
+            : ((currentExitTop + currentExitBottom) / 2) / mazeChunkSize);
+    if (exitColumn >= chunkColumns) exitColumn = chunkColumns - 1;
+    if (exitRow >= chunkRows) exitRow = chunkRows - 1;
+    LONG start = startRow * chunkColumns + startColumn;
+    LONG exit = exitRow * chunkColumns + exitColumn;
+    LONG stackCount = 1;
+    LONG visitedCount = 1;
+    LONG horizontalCount = 0;
+    LONG verticalCount = 0;
+    stack[0] = static_cast<short>(start);
+    visited[start] = true;
+    while (stackCount)
+    {
+        LONG current = stack[stackCount - 1];
+        LONG currentColumn = current % chunkColumns;
+        LONG currentRow = current / chunkColumns;
+        LONG candidateNode[4]{};
+        LONG candidateDirection[4]{};
+        LONG candidateWeight[4]{};
+        LONG candidateCount = 0;
+        LONG totalWeight = 0;
+        for (LONG direction = 0; direction < 4; ++direction)
+        {
+            LONG column = currentColumn + directionX[direction];
+            LONG row = currentRow + directionY[direction];
+            if (column < 0 || column >= chunkColumns || row < 0 || row >= chunkRows)
+            {
+                continue;
+            }
+            LONG next = row * chunkColumns + column;
+            if (visited[next])
+            {
+                continue;
+            }
+            LONG weight = 5;
+            if (entryDirection[current] >= 0)
+            {
+                if (direction == entryDirection[current])
+                {
+                    weight = straightLength[current] >= 3 ? 1
+                        : (straightLength[current] >= 2 ? 2 : 5);
+                }
+                else
+                {
+                    weight = straightLength[current] >= 2 ? 12 : 7;
+                }
+            }
+            bool horizontal = direction == 1 || direction == 3;
+            if ((horizontal && horizontalCount < verticalCount)
+                || (!horizontal && verticalCount < horizontalCount))
+            {
+                weight += 3;
+            }
+            if (next == exit && visitedCount < nodeCount / 3)
+            {
+                weight = 1;
+            }
+            candidateNode[candidateCount] = next;
+            candidateDirection[candidateCount] = direction;
+            candidateWeight[candidateCount] = weight;
+            totalWeight += weight;
+            ++candidateCount;
+        }
+        if (!candidateCount)
+        {
+            --stackCount;
+            continue;
+        }
+        LONG roll = NextRoomRandom(state) % totalWeight;
+        LONG selected = 0;
+        while (roll >= candidateWeight[selected])
+        {
+            roll -= candidateWeight[selected++];
+        }
+        LONG next = candidateNode[selected];
+        LONG direction = candidateDirection[selected];
+        OpenMazePassage(current, next, direction);
+        parent[next] = static_cast<short>(current);
+        entryDirection[next] = static_cast<signed char>(direction);
+        straightLength[next] = direction == entryDirection[current]
+            ? static_cast<BYTE>(straightLength[current] + 1) : 1;
+        horizontalCount += direction == 1 || direction == 3;
+        verticalCount += direction == 0 || direction == 2;
+        visited[next] = true;
+        stack[stackCount++] = static_cast<short>(next);
+        ++visitedCount;
+    }
+    if (visitedCount != nodeCount)
+    {
+        return false;
+    }
+    LONG mainPathLength = 0;
+    LONG mainPathTurns = 0;
+    LONG previousDirection = -1;
+    for (LONG node = exit; node != start && node >= 0; node = parent[node])
+    {
+        LONG direction = entryDirection[node];
+        mainPathTurns += previousDirection >= 0 && direction != previousDirection;
+        previousDirection = direction;
+        ++mainPathLength;
+    }
+    if (mainPathLength < (chunkColumns + chunkRows) / 2 || mainPathTurns < 3)
+    {
+        return false;
+    }
+    for (LONG clearing = 0; clearing < currentMazeClearingCount; ++clearing)
+    {
+        LONG column = currentMazeClearingColumn[clearing];
+        LONG row = currentMazeClearingRow[clearing];
+        LONG topLeft = row * chunkColumns + column;
+        OpenMazePassage(topLeft, topLeft + 1, 1);
+        OpenMazePassage(topLeft, topLeft + chunkColumns, 2);
+        OpenMazePassage(topLeft + 1, topLeft + chunkColumns + 1, 2);
+        OpenMazePassage(topLeft + chunkColumns,
+            topLeft + chunkColumns + 1, 1);
+
+        LONG entranceFirst[8]{};
+        LONG entranceSecond[8]{};
+        BYTE entranceDirection[8]{};
+        LONG entranceCount = 0;
+        for (LONG offset = 0; offset < 2; ++offset)
+        {
+            if (row > 0)
+            {
+                entranceFirst[entranceCount] = (row - 1) * chunkColumns
+                    + column + offset;
+                entranceSecond[entranceCount] = row * chunkColumns
+                    + column + offset;
+                entranceDirection[entranceCount++] = 2;
+            }
+            if (row + 2 < chunkRows)
+            {
+                entranceFirst[entranceCount] = (row + 1) * chunkColumns
+                    + column + offset;
+                entranceSecond[entranceCount] = (row + 2) * chunkColumns
+                    + column + offset;
+                entranceDirection[entranceCount++] = 2;
+            }
+            if (column > 0)
+            {
+                entranceFirst[entranceCount] = (row + offset) * chunkColumns
+                    + column - 1;
+                entranceSecond[entranceCount] = (row + offset) * chunkColumns
+                    + column;
+                entranceDirection[entranceCount++] = 1;
+            }
+            if (column + 2 < chunkColumns)
+            {
+                entranceFirst[entranceCount] = (row + offset) * chunkColumns
+                    + column + 1;
+                entranceSecond[entranceCount] = (row + offset) * chunkColumns
+                    + column + 2;
+                entranceDirection[entranceCount++] = 1;
+            }
+        }
+        LONG openEntranceCount = 0;
+        for (LONG entrance = 0; entrance < entranceCount; ++entrance)
+        {
+            BYTE mask = entranceDirection[entrance] == 1 ? 2 : 4;
+            openEntranceCount += (currentMazePassageMask[entranceFirst[entrance]]
+                & mask) != 0;
+        }
+        LONG firstEntrance = entranceCount
+            ? NextRoomRandom(state) % entranceCount : 0;
+        for (LONG candidate = 0; candidate < entranceCount
+            && openEntranceCount < 2; ++candidate)
+        {
+            LONG entrance = (firstEntrance + candidate) % entranceCount;
+            BYTE mask = entranceDirection[entrance] == 1 ? 2 : 4;
+            if (!(currentMazePassageMask[entranceFirst[entrance]] & mask))
+            {
+                OpenMazePassage(entranceFirst[entrance],
+                    entranceSecond[entrance], entranceDirection[entrance]);
+                ++openEntranceCount;
+            }
+        }
+    }
+    LONG horizontalEdgeCount = (chunkRows - 1) * chunkColumns;
+    LONG verticalEdgeCount = (chunkColumns - 1) * chunkRows;
+    LONG edgeCount = horizontalEdgeCount + verticalEdgeCount;
+    unsigned short edges[maxMazeEdgeCount]{};
+    for (LONG edge = 0; edge < edgeCount; ++edge)
+    {
+        edges[edge] = static_cast<unsigned short>(edge);
+    }
+    for (LONG edge = edgeCount - 1; edge > 0; --edge)
+    {
+        LONG other = NextRoomRandom(state) % (edge + 1);
+        unsigned short value = edges[edge];
+        edges[edge] = edges[other];
+        edges[other] = value;
+    }
+    LONG requestedLoops = 1 + nodeCount / 48;
+    LONG addedLoops = 0;
+    for (LONG order = 0; order < edgeCount && addedLoops < requestedLoops; ++order)
+    {
+        LONG edge = edges[order];
+        LONG first;
+        LONG second;
+        LONG direction;
+        if (edge < horizontalEdgeCount)
+        {
+            LONG boundaryRow = edge / chunkColumns + 1;
+            LONG column = edge % chunkColumns;
+            first = (boundaryRow - 1) * chunkColumns + column;
+            second = boundaryRow * chunkColumns + column;
+            direction = 2;
+        }
+        else
+        {
+            LONG verticalEdge = edge - horizontalEdgeCount;
+            LONG boundaryColumn = verticalEdge / chunkRows + 1;
+            LONG row = verticalEdge % chunkRows;
+            first = row * chunkColumns + boundaryColumn - 1;
+            second = first + 1;
+            direction = 1;
+        }
+        constexpr BYTE directionMask[4] = { 1, 2, 4, 8 };
+        if (!(currentMazePassageMask[first] & directionMask[direction]))
+        {
+            OpenMazePassage(first, second, direction);
+            ++addedLoops;
+        }
+    }
+    for (LONG order = 0; order < edgeCount; ++order)
+    {
+        LONG edge = edges[order];
+        LONG chunkColumn;
+        LONG chunkRow;
+        BYTE side;
+        LONG first;
+        LONG second;
+        LONG direction;
+        if (edge < horizontalEdgeCount)
+        {
+            chunkRow = edge / chunkColumns + 1;
+            chunkColumn = edge % chunkColumns;
+            side = 1;
+            first = (chunkRow - 1) * chunkColumns + chunkColumn;
+            second = chunkRow * chunkColumns + chunkColumn;
+            direction = 2;
+        }
+        else
+        {
+            LONG verticalEdge = edge - horizontalEdgeCount;
+            LONG boundaryColumn = verticalEdge / chunkRows + 1;
+            chunkRow = verticalEdge % chunkRows;
+            chunkColumn = boundaryColumn - 1;
+            side = 2;
+            first = chunkRow * chunkColumns + chunkColumn;
+            second = first + 1;
+            direction = 1;
+        }
+        constexpr BYTE directionMask[4] = { 1, 2, 4, 8 };
+        if (!(currentMazePassageMask[first] & directionMask[direction]))
+        {
+            BYTE firstMask = chunkMasks[first];
+            BYTE secondMask = chunkMasks[second];
+            LONG wallCount = currentWallCount;
+            bool added = AddMazeChunkShape(chunkColumn, chunkRow, side,
+                chunkMasks, chunkColumns, chunkRows);
+            if (!added || !RoomLayoutConnected())
+            {
+                currentWallCount = wallCount;
+                chunkMasks[first] = firstMask;
+                chunkMasks[second] = secondMask;
+                OpenMazePassage(first, second, direction);
+            }
+        }
+    }
+    MeasureMazePassages(chunkColumns, chunkRows);
+    LONG totalPassages = currentMazePassageHorizontalCount
+        + currentMazePassageVerticalCount;
+    return totalPassages
+        && currentMazePassageHorizontalCount * 100 >= totalPassages * 40
+        && currentMazePassageHorizontalCount * 100 <= totalPassages * 60
+        && currentMazePassageVerticalCount * 100 >= totalPassages * 40
+        && currentMazePassageVerticalCount * 100 <= totalPassages * 60
+        && currentMazePassageTurnCount > nodeCount / 8
+        && currentMazePassageBranchCount > nodeCount / 16
+        && currentMazePassageDeadEndCount > 0
+        && currentMazePassageMaximumStraight <= 4
+        && currentMazePassageLoopCount > 0;
+}
+
+bool GenerateMazeLayout(DWORD& state)
+{
+    LONG chunkColumns = worldWidth / mazeChunkSize;
+    LONG chunkRows = worldHeight / mazeChunkSize;
+    for (LONG layoutAttempt = 0; layoutAttempt < mazeLayoutRetryCount; ++layoutAttempt)
+    {
+        currentWallCount = 0;
+        currentMazeClearingCount = 0;
+        for (LONG chunk = 0; chunk < chunkColumns * chunkRows; ++chunk)
+        {
+            currentMazePassageMask[chunk] = 0;
+        }
+        BYTE chunkMasks[maxMazeChunkCount]{};
+        if (roomSizeStage == 1)
+        {
+            for (LONG chunkRow = 0; chunkRow < chunkRows; ++chunkRow)
+            {
+                for (LONG chunkColumn = 0; chunkColumn < chunkColumns; ++chunkColumn)
+                {
+                    LONG roll = NextRoomRandom(state) % mazeChunkRollCount;
+                    if (roll >= mazeSingleSideWeight + mazeCornerWeight)
+                    {
+                        continue;
+                    }
+                    LONG orientation = NextRoomRandom(state) & 3;
+                    BYTE shape = static_cast<BYTE>(1 << orientation);
+                    if (roll >= mazeSingleSideWeight)
+                    {
+                        constexpr BYTE cornerMasks[4]
+                            = { 1 | 8, 1 | 2, 4 | 2, 4 | 8 };
+                        shape = cornerMasks[orientation];
+                    }
+                    AddMazeChunkShape(chunkColumn, chunkRow, shape, chunkMasks,
+                        chunkColumns, chunkRows);
+                }
+            }
+        }
+        else
+        {
+            if (!SelectMazeClearings(state, chunkColumns, chunkRows))
+            {
+                continue;
+            }
+            if (!GenerateMazeTopology(state, chunkColumns, chunkRows, chunkMasks))
+            {
+                continue;
+            }
+        }
+        LONG nonClearingChunks = chunkColumns * chunkRows
+            - currentMazeClearingCount * 4;
+        LONG coveredChunks = MazeCoveredChunkCount(chunkMasks, chunkColumns, chunkRows);
+        bool densityValid = roomSizeStage == 1
+            || coveredChunks * 100 >= nonClearingChunks * mazeMinimumCoveragePercent;
+        if (currentWallCount >= roomSizeStage && densityValid && MazeLayoutValid())
+        {
+            return true;
+        }
+#ifdef DEAD_SIGNAL_B01_VALIDATION
+        mazeRetryWallCountFailure += currentWallCount < roomSizeStage || !densityValid;
+#endif
+    }
     currentWallCount = 0;
+    currentMazeClearingCount = 0;
+    for (LONG chunk = 0; chunk < chunkColumns * chunkRows; ++chunk)
+    {
+        currentMazePassageMask[chunk] = 0;
+    }
     return false;
 }
 
@@ -5056,6 +5914,7 @@ void SetupCurrentRoom()
     currentLayoutVariant = NextRoomRandom(state) >> 31;
     currentExitSide = NextRoomRandom(state) & 3;
     currentWallCount = 0;
+    currentMazeClearingCount = 0;
     if (currentExitSide == 0)
     {
         currentExitLeft = 0;
@@ -5199,9 +6058,23 @@ void SetupCurrentRoom()
         LONG firstCell = NextRoomRandom(state) % navigationNodeCount;
         for (LONG attempt = 0; attempt < navigationNodeCount * 3; ++attempt)
         {
-            LONG candidate = attempt < navigationNodeCount * 2
-                ? NextRoomRandom(state) % navigationNodeCount
-                : (firstCell + attempt) % navigationNodeCount;
+            LONG candidate;
+            if (currentRoomType == mazeRoomType && currentMazeClearingCount > 0
+                && attempt < navigationNodeCount && (NextRoomRandom(state) & 1))
+            {
+                LONG clearing = NextRoomRandom(state) % currentMazeClearingCount;
+                LONG candidateColumn = currentMazeClearingColumn[clearing]
+                    * mazeChunkCellCount + NextRoomRandom(state) % 6;
+                LONG candidateRow = currentMazeClearingRow[clearing]
+                    * mazeChunkCellCount + NextRoomRandom(state) % 5;
+                candidate = candidateRow * navigationColumns + candidateColumn;
+            }
+            else
+            {
+                candidate = attempt < navigationNodeCount * 2
+                    ? NextRoomRandom(state) % navigationNodeCount
+                    : (firstCell + attempt) % navigationNodeCount;
+            }
             LONG candidateColumn = candidate % navigationColumns;
             LONG candidateRow = candidate / navigationColumns;
             float cellX = enemyHalfWidth + candidateColumn * navigationCellSize;
@@ -5216,6 +6089,8 @@ void SetupCurrentRoom()
                     && cellY + enemyHalfHeight > currentEnemyStartY[other] - enemyHalfHeight;
             }
             if (enemyOverlap || !NavigationCellValid(candidateColumn, candidateRow)
+                || (currentRoomType == mazeRoomType
+                    && !MazeEnemySpawnCellValid(candidateColumn, candidateRow))
                 || RectangleOverlapsRoomTrap(cellX - enemyHalfWidth,
                     cellY - enemyHalfHeight, cellX + enemyHalfWidth,
                     cellY + enemyHalfHeight)
@@ -5229,6 +6104,24 @@ void SetupCurrentRoom()
                     && cellY + enemyHalfHeight > currentPlayerStartY - playerHalfHeight))
             {
                 continue;
+            }
+            if (currentRoomType == mazeRoomType)
+            {
+                float baseFacing = 0.0f;
+                if (currentEnemyRole[enemy] == watcherEnemyRole)
+                {
+                    baseFacing = eightDirectionAngle[NextRoomRandom(state) & 7];
+                }
+                else if (currentEnemyRole[enemy] == spinnerEnemyRole)
+                {
+                    baseFacing
+                        = eightDirectionAngle[(NextRoomRandom(state) & 3) * 2];
+                }
+                if (!SelectInitialEnemyFacing(cellX, cellY, baseFacing, state,
+                    currentEnemyStartFacing[enemy]))
+                {
+                    continue;
+                }
             }
             currentEnemyStartX[enemy] = cellX;
             currentEnemyStartY[enemy] = cellY;
@@ -5250,6 +6143,10 @@ void SetupCurrentRoom()
 
     for (LONG enemy = 0; enemy < currentEnemyCount; ++enemy)
     {
+        if (currentRoomType == mazeRoomType)
+        {
+            continue;
+        }
         currentEnemyStartFacing[enemy] = 0.0f;
         if (currentEnemyRole[enemy] == watcherEnemyRole)
         {
@@ -5504,12 +6401,14 @@ bool RoomLayoutConnected()
     for (LONG node = 0; node < navigationNodeCount; ++node)
     {
         navigationState[node] = 0;
+        navigationScore[node] = NavigationCellValid(node % navigationColumns,
+            node / navigationColumns);
     }
     LONG startColumn = static_cast<LONG>((currentPlayerStartX - enemyHalfWidth
         + navigationCellSize * 0.5f) / navigationCellSize);
     LONG startRow = static_cast<LONG>((currentPlayerStartY - enemyHalfHeight
         + navigationCellSize * 0.5f) / navigationCellSize);
-    if (!NavigationCellValid(startColumn, startRow))
+    if (!navigationScore[startRow * navigationColumns + startColumn])
     {
         return false;
     }
@@ -5529,10 +6428,11 @@ bool RoomLayoutConnected()
         {
             LONG nextColumn = column + neighborX[neighbor];
             LONG nextRow = row + neighborY[neighbor];
-            if (NavigationCellValid(nextColumn, nextRow))
+            if (nextColumn >= 0 && nextColumn < navigationColumns
+                && nextRow >= 0 && nextRow < navigationRows)
             {
                 LONG next = nextRow * navigationColumns + nextColumn;
-                if (!navigationState[next])
+                if (navigationScore[next] && !navigationState[next])
                 {
                     navigationState[next] = 1;
                     navigationPath[pressureEnemyIndex][written++]
@@ -5545,7 +6445,7 @@ bool RoomLayoutConnected()
     {
         for (LONG column = 0; column < navigationColumns; ++column)
         {
-            if (NavigationCellValid(column, row)
+            if (navigationScore[row * navigationColumns + column]
                 && !navigationState[row * navigationColumns + column])
             {
                 return false;
@@ -11332,6 +12232,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
 }
 
 #ifdef DEAD_SIGNAL_B01_VALIDATION
+#ifndef DEAD_SIGNAL_VALIDATION_SEED_COUNT
+#define DEAD_SIGNAL_VALIDATION_SEED_COUNT 100000
+#endif
+#ifndef DEAD_SIGNAL_MAZE_SIZE_SEED_COUNT
+#define DEAD_SIGNAL_MAZE_SIZE_SEED_COUNT 1000
+#endif
 DWORD ValidationHashValue(DWORD hash, DWORD value)
 {
     return (hash ^ value) * 16777619u;
@@ -11355,6 +12261,12 @@ DWORD CurrentGenerationHash()
     hash = ValidationHashValue(hash, currentExitBottom);
     hash = ValidationHashFloat(hash, currentPlayerStartX);
     hash = ValidationHashFloat(hash, currentPlayerStartY);
+    hash = ValidationHashValue(hash, currentMazeClearingCount);
+    for (LONG clearing = 0; clearing < currentMazeClearingCount; ++clearing)
+    {
+        hash = ValidationHashValue(hash, currentMazeClearingColumn[clearing]);
+        hash = ValidationHashValue(hash, currentMazeClearingRow[clearing]);
+    }
     hash = ValidationHashValue(hash, currentWallCount);
     for (LONG wall = 0; wall < currentWallCount; ++wall)
     {
@@ -11362,6 +12274,15 @@ DWORD CurrentGenerationHash()
         hash = ValidationHashValue(hash, currentWallTop[wall]);
         hash = ValidationHashValue(hash, currentWallRight[wall]);
         hash = ValidationHashValue(hash, currentWallBottom[wall]);
+    }
+    if (currentRoomType == mazeRoomType && roomSizeStage >= 2)
+    {
+        LONG chunkCount = (worldWidth / mazeChunkSize)
+            * (worldHeight / mazeChunkSize);
+        for (LONG chunk = 0; chunk < chunkCount; ++chunk)
+        {
+            hash = ValidationHashValue(hash, currentMazePassageMask[chunk]);
+        }
     }
     hash = ValidationHashValue(hash, currentTrapCount);
     for (LONG trap = 0; trap < currentTrapCount; ++trap)
@@ -11453,16 +12374,48 @@ int main()
     unsigned long long exitBlocked = 0;
     unsigned long long unreachablePlayerExit = 0;
     unsigned long long unreachableEnemy = 0;
-    unsigned long long mazeQuadrantCount = 0;
-    unsigned long long mazeOrientationFailure = 0;
-    unsigned long long mazeThicknessFailure = 0;
-    unsigned long long mazeQuadrantBoundsFailure = 0;
-    unsigned long long mazeZeroQuadrants[roomCount]{};
-    unsigned long long mazeQuadrants[roomCount]{};
-    unsigned long long mazeLengthTotal[5][2]{};
-    unsigned long long mazeLengthCount[5][2]{};
+    unsigned long long mazeChunkAlignmentFailure = 0;
+    unsigned long long mazeWallShapeFailure = 0;
+    unsigned long long mazeChunkMaskFailure = 0;
+    unsigned long long mazeDuplicateWallFailure = 0;
+    unsigned long long mazeIsolatedWallFailure = 0;
+    unsigned long long mazeDoorSafeFailure = 0;
+    unsigned long long mazeEnemyMarginFailure = 0;
+    unsigned long long mazeEnemyDoorSafeFailure = 0;
+    unsigned long long mazeOuterMarginWallCount = 0;
+    unsigned long long mazeInitialFacingFailure = 0;
+    unsigned long long mazeStraightRunTotal = 0;
+    unsigned long long mazeStraightRunCount = 0;
+    unsigned long long mazeMaximumStraightRun = 0;
+    unsigned long long mazeParallelLongStripeCount = 0;
+    unsigned long long mazePassageHorizontalTotal = 0;
+    unsigned long long mazePassageVerticalTotal = 0;
+    unsigned long long mazePassageStraightTotal = 0;
+    unsigned long long mazePassageStraightCount = 0;
+    unsigned long long mazePassageMaximumStraight = 0;
+    unsigned long long mazePassageTurnTotal = 0;
+    unsigned long long mazePassageBranchTotal = 0;
+    unsigned long long mazePassageDeadEndTotal = 0;
+    unsigned long long mazePassageLoopTotal = 0;
+    unsigned long long mazeLayoutInvariantFailure = 0;
+    unsigned long long mazeCoverageFailure = 0;
+    unsigned long long mazeClearingCountFailure = 0;
+    unsigned long long mazeClearingOverlapFailure = 0;
+    unsigned long long mazeClearingDoorFailure = 0;
+    unsigned long long mazeClearingPlayerFailure = 0;
+    unsigned long long mazeClearingWallFailure = 0;
+    unsigned long long mazeClearingReachabilityFailure = 0;
+    unsigned long long mazeClearingAccessFailure = 0;
+    unsigned long long mazeConnectedWallCount = 0;
+    unsigned long long mazeTotalWallCount = 0;
+    unsigned long long mazeSingleChunkCount = 0;
+    unsigned long long mazeCornerChunkCount = 0;
+    unsigned long long mazeHorizontalChunkCount = 0;
+    unsigned long long mazeVerticalChunkCount = 0;
+    unsigned long long mazeCornerDirectionCount[4]{};
+    unsigned long long mazeEmptyChunkCount = 0;
+    unsigned long long mazeWallTotal[5]{};
     unsigned long long mazeRoomCount[5]{};
-    LONG mazeOrientationMask = 0;
     unsigned long long densityCountFailure = 0;
     unsigned long long invalidExitSide = 0;
     bool exitSeen[4]{};
@@ -11472,7 +12425,7 @@ int main()
     unsigned long long room1AllListeners = 0;
     bool duplicateRoleSeen = false;
 
-    for (DWORD seed = 1; seed <= 100000; ++seed)
+    for (DWORD seed = 1; seed <= DEAD_SIGNAL_VALIDATION_SEED_COUNT; ++seed)
     {
         for (currentRoom = 0; currentRoom < roomCount; ++currentRoom)
         {
@@ -11583,7 +12536,7 @@ int main()
                     static_cast<float>(currentExitRight), static_cast<float>(currentExitBottom));
                 for (LONG other = wall + 1; other < currentWallCount; ++other)
                 {
-                    wallOverlap += ValidationOverlap(
+                    bool overlaps = ValidationOverlap(
                         static_cast<float>(currentWallLeft[wall]),
                         static_cast<float>(currentWallTop[wall]),
                         static_cast<float>(currentWallRight[wall]),
@@ -11592,6 +12545,13 @@ int main()
                         static_cast<float>(currentWallTop[other]),
                         static_cast<float>(currentWallRight[other]),
                         static_cast<float>(currentWallBottom[other]));
+                    bool wallHorizontal = currentWallRight[wall] - currentWallLeft[wall]
+                        == mazeChunkSize;
+                    bool otherHorizontal = currentWallRight[other]
+                        - currentWallLeft[other] == mazeChunkSize;
+                    bool mazeCornerOverlap = currentRoomType == mazeRoomType && overlaps
+                        && wallHorizontal != otherHorizontal;
+                    wallOverlap += overlaps && !mazeCornerOverlap;
                 }
             }
             for (LONG trap = 0; trap < currentTrapCount; ++trap)
@@ -11650,6 +12610,15 @@ int main()
                 exitOverlap += ValidationOverlap(left, top, right, bottom,
                     static_cast<float>(currentExitLeft), static_cast<float>(currentExitTop),
                     static_cast<float>(currentExitRight), static_cast<float>(currentExitBottom));
+                if (currentRoomType == mazeRoomType)
+                {
+                    mazeEnemyMarginFailure += left < mazeEnemySpawnMargin
+                        || top < mazeEnemySpawnMargin
+                        || right > worldWidth - mazeEnemySpawnMargin
+                        || bottom > worldHeight - mazeEnemySpawnMargin;
+                    mazeEnemyDoorSafeFailure += RectangleOverlapsMazeDoorSafeArea(
+                        left, top, right, bottom);
+                }
                 LONG node = NavigationRow(currentEnemyStartY[enemy]) * navigationColumns
                     + NavigationColumn(currentEnemyStartX[enemy]);
                 unreachableEnemy += !navigationState[node];
@@ -11707,45 +12676,399 @@ int main()
             if (currentRoomType == mazeRoomType)
             {
                 ++mazeRoomCount[roomSizeStage - 1];
-                LONG quadrantWalls[4]{};
+                mazeWallTotal[roomSizeStage - 1] += currentWallCount;
+                mazePassageHorizontalTotal += currentMazePassageHorizontalCount;
+                mazePassageVerticalTotal += currentMazePassageVerticalCount;
+                mazePassageStraightTotal += currentMazePassageStraightTotal;
+                mazePassageStraightCount += currentMazePassageStraightCount;
+                if (static_cast<unsigned long long>(currentMazePassageMaximumStraight)
+                    > mazePassageMaximumStraight)
+                {
+                    mazePassageMaximumStraight
+                        = currentMazePassageMaximumStraight;
+                }
+                mazePassageTurnTotal += currentMazePassageTurnCount;
+                mazePassageBranchTotal += currentMazePassageBranchCount;
+                mazePassageDeadEndTotal += currentMazePassageDeadEndCount;
+                mazePassageLoopTotal += currentMazePassageLoopCount;
+                BYTE chunkMasks[600]{};
+                bool horizontalEdges[600]{};
+                bool verticalEdges[600]{};
+                LONG chunkColumns = worldWidth / mazeChunkSize;
+                LONG chunkRows = worldHeight / mazeChunkSize;
+                LONG expectedClearingCount = MazeRequiredClearingCount();
+                mazeLayoutInvariantFailure += currentWallCount < roomSizeStage;
+                mazeClearingCountFailure += currentMazeClearingCount
+                    != expectedClearingCount;
+                mazeClearingReachabilityFailure += !MazeClearingsReachable();
+                for (LONG clearing = 0; clearing < currentMazeClearingCount; ++clearing)
+                {
+                    float clearingLeft = static_cast<float>(
+                        currentMazeClearingColumn[clearing] * mazeChunkSize);
+                    float clearingTop = static_cast<float>(
+                        currentMazeClearingRow[clearing] * mazeChunkSize);
+                    float clearingRight = clearingLeft + mazeChunkSize * 2;
+                    float clearingBottom = clearingTop + mazeChunkSize * 2;
+                    mazeClearingDoorFailure += RectangleOverlapsMazeDoorSafeArea(
+                        clearingLeft, clearingTop, clearingRight, clearingBottom);
+                    mazeClearingPlayerFailure += clearingLeft
+                            < currentPlayerStartX + playerHalfWidth + mazeChunkSize
+                        && clearingRight
+                            > currentPlayerStartX - playerHalfWidth - mazeChunkSize
+                        && clearingTop
+                            < currentPlayerStartY + playerHalfHeight + mazeChunkSize
+                        && clearingBottom
+                            > currentPlayerStartY - playerHalfHeight - mazeChunkSize;
+                    LONG clearingColumn = currentMazeClearingColumn[clearing];
+                    LONG clearingRow = currentMazeClearingRow[clearing];
+                    LONG clearingAccesses = 0;
+                    for (LONG offset = 0; offset < 2; ++offset)
+                    {
+                        clearingAccesses += (currentMazePassageMask[
+                            clearingRow * chunkColumns + clearingColumn + offset]
+                            & 1) != 0;
+                        clearingAccesses += (currentMazePassageMask[
+                            (clearingRow + 1) * chunkColumns
+                                + clearingColumn + offset] & 4) != 0;
+                        clearingAccesses += (currentMazePassageMask[
+                            (clearingRow + offset) * chunkColumns
+                                + clearingColumn] & 8) != 0;
+                        clearingAccesses += (currentMazePassageMask[
+                            (clearingRow + offset) * chunkColumns
+                                + clearingColumn + 1] & 2) != 0;
+                    }
+                    mazeClearingAccessFailure += clearingAccesses < 2;
+                    for (LONG other = clearing + 1;
+                        other < currentMazeClearingCount; ++other)
+                    {
+                        LONG differenceX = currentMazeClearingColumn[clearing]
+                            - currentMazeClearingColumn[other];
+                        LONG differenceY = currentMazeClearingRow[clearing]
+                            - currentMazeClearingRow[other];
+                        if (differenceX < 0) differenceX = -differenceX;
+                        if (differenceY < 0) differenceY = -differenceY;
+                        mazeClearingOverlapFailure += differenceX < 3 && differenceY < 3;
+                    }
+                }
                 for (LONG wall = 0; wall < currentWallCount; ++wall)
                 {
-                    LONG centerX = (currentWallLeft[wall] + currentWallRight[wall]) / 2;
-                    LONG centerY = (currentWallTop[wall] + currentWallBottom[wall]) / 2;
-                    LONG quadrant = (centerX >= worldWidth / 2)
-                        | ((centerY >= worldHeight / 2) << 1);
-                    ++quadrantWalls[quadrant];
-                    LONG quadrantLeft = (quadrant & 1) ? worldWidth / 2 + 16 : 24;
-                    LONG quadrantRight = (quadrant & 1) ? worldWidth - 24
-                        : worldWidth / 2 - 16;
-                    LONG quadrantTop = (quadrant & 2) ? worldHeight / 2 + 16 : 24;
-                    LONG quadrantBottom = (quadrant & 2) ? worldHeight - 24
-                        : worldHeight / 2 - 16;
-                    mazeQuadrantBoundsFailure += currentWallLeft[wall] < quadrantLeft
-                        || currentWallTop[wall] < quadrantTop
-                        || currentWallRight[wall] > quadrantRight
-                        || currentWallBottom[wall] > quadrantBottom;
                     LONG width = currentWallRight[wall] - currentWallLeft[wall];
                     LONG height = currentWallBottom[wall] - currentWallTop[wall];
-                    LONG orientation = width > height ? 0 : 1;
-                    LONG length = orientation ? height : width;
-                    mazeOrientationMask |= orientation ? 2 : 1;
-                    mazeThicknessFailure += (orientation ? width : height)
-                        != mazeWallThickness || length <= mazeWallThickness;
-                    mazeLengthTotal[roomSizeStage - 1][orientation] += length;
-                    ++mazeLengthCount[roomSizeStage - 1][orientation];
+                    bool horizontal = width == mazeChunkSize
+                        && height == mazeWallThickness;
+                    bool vertical = width == mazeWallThickness
+                        && height == mazeChunkSize;
+                    mazeWallShapeFailure += !horizontal && !vertical;
+                    mazeChunkAlignmentFailure += currentWallLeft[wall] % mazeChunkSize
+                            || currentWallTop[wall] % mazeChunkSize;
+                    mazeDoorSafeFailure += RectangleOverlapsMazeDoorSafeArea(
+                        static_cast<float>(currentWallLeft[wall]),
+                        static_cast<float>(currentWallTop[wall]),
+                        static_cast<float>(currentWallRight[wall]),
+                        static_cast<float>(currentWallBottom[wall]));
+                    mazeOuterMarginWallCount += currentWallLeft[wall]
+                            < mazeEnemySpawnMargin
+                        || currentWallTop[wall] < mazeEnemySpawnMargin
+                        || currentWallRight[wall] > worldWidth - mazeEnemySpawnMargin
+                        || currentWallBottom[wall] > worldHeight - mazeEnemySpawnMargin;
+                    mazeClearingWallFailure += MazeWallCrossesClearing(
+                        currentWallLeft[wall], currentWallTop[wall],
+                        currentWallRight[wall], currentWallBottom[wall]);
+                    bool connectedWall = false;
+                    for (LONG other = 0; other < currentWallCount; ++other)
+                    {
+                        connectedWall |= other != wall
+                            && currentWallLeft[wall] <= currentWallRight[other]
+                            && currentWallRight[wall] >= currentWallLeft[other]
+                            && currentWallTop[wall] <= currentWallBottom[other]
+                            && currentWallBottom[wall] >= currentWallTop[other];
+                    }
+                    ++mazeTotalWallCount;
+                    mazeConnectedWallCount += connectedWall;
+                    mazeIsolatedWallFailure += !connectedWall;
+                    if (horizontal)
+                    {
+                        LONG boundaryRow = currentWallTop[wall] / mazeChunkSize;
+                        LONG chunkColumn = currentWallLeft[wall] / mazeChunkSize;
+                        mazeChunkAlignmentFailure += boundaryRow <= 0
+                            || boundaryRow >= chunkRows || chunkColumn < 0
+                            || chunkColumn >= chunkColumns;
+                        if (boundaryRow > 0 && boundaryRow < chunkRows
+                            && chunkColumn >= 0 && chunkColumn < chunkColumns)
+                        {
+                            horizontalEdges[boundaryRow * chunkColumns
+                                + chunkColumn] = true;
+                            chunkMasks[(boundaryRow - 1) * chunkColumns + chunkColumn] |= 4;
+                            chunkMasks[boundaryRow * chunkColumns + chunkColumn] |= 1;
+                        }
+                    }
+                    else if (vertical)
+                    {
+                        LONG boundaryColumn = currentWallLeft[wall] / mazeChunkSize;
+                        LONG chunkRow = currentWallTop[wall] / mazeChunkSize;
+                        mazeChunkAlignmentFailure += boundaryColumn <= 0
+                            || boundaryColumn >= chunkColumns || chunkRow < 0
+                            || chunkRow >= chunkRows;
+                        if (boundaryColumn > 0 && boundaryColumn < chunkColumns
+                            && chunkRow >= 0 && chunkRow < chunkRows)
+                        {
+                            verticalEdges[chunkRow * chunkColumns
+                                + boundaryColumn - 1] = true;
+                            chunkMasks[chunkRow * chunkColumns + boundaryColumn - 1] |= 2;
+                            chunkMasks[chunkRow * chunkColumns + boundaryColumn] |= 8;
+                        }
+                    }
+                    for (LONG other = wall + 1; other < currentWallCount; ++other)
+                    {
+                        bool duplicate = currentWallLeft[wall] == currentWallLeft[other]
+                            && currentWallTop[wall] == currentWallTop[other]
+                            && currentWallRight[wall] == currentWallRight[other]
+                            && currentWallBottom[wall] == currentWallBottom[other];
+                        mazeDuplicateWallFailure += duplicate;
+                        LONG otherWidth = currentWallRight[other] - currentWallLeft[other];
+                        LONG otherHeight = currentWallBottom[other] - currentWallTop[other];
+                        mazeWallShapeFailure += otherWidth <= 0 || otherHeight <= 0;
+                    }
                 }
-                for (LONG quadrant = 0; quadrant < 4; ++quadrant)
+                for (LONG boundaryRow = 1; boundaryRow < chunkRows; ++boundaryRow)
                 {
-                    mazeQuadrantCount += quadrantWalls[quadrant] > 3;
-                    mazeZeroQuadrants[currentRoom] += quadrantWalls[quadrant] == 0;
-                    ++mazeQuadrants[currentRoom];
+                    LONG runLength = 0;
+                    for (LONG column = 0; column <= chunkColumns; ++column)
+                    {
+                        bool wall = column < chunkColumns
+                            && horizontalEdges[boundaryRow * chunkColumns + column];
+                        if (wall)
+                        {
+                            ++runLength;
+                        }
+                        else if (runLength)
+                        {
+                            mazeStraightRunTotal += runLength;
+                            ++mazeStraightRunCount;
+                            if (static_cast<unsigned long long>(runLength)
+                                > mazeMaximumStraightRun)
+                            {
+                                mazeMaximumStraightRun = runLength;
+                            }
+                            runLength = 0;
+                        }
+                    }
+                }
+                for (LONG boundaryColumn = 1; boundaryColumn < chunkColumns;
+                    ++boundaryColumn)
+                {
+                    LONG runLength = 0;
+                    for (LONG row = 0; row <= chunkRows; ++row)
+                    {
+                        bool wall = row < chunkRows
+                            && verticalEdges[row * chunkColumns + boundaryColumn - 1];
+                        if (wall)
+                        {
+                            ++runLength;
+                        }
+                        else if (runLength)
+                        {
+                            mazeStraightRunTotal += runLength;
+                            ++mazeStraightRunCount;
+                            if (static_cast<unsigned long long>(runLength)
+                                > mazeMaximumStraightRun)
+                            {
+                                mazeMaximumStraightRun = runLength;
+                            }
+                            runLength = 0;
+                        }
+                    }
+                }
+                for (LONG boundaryRow = 1; boundaryRow + 1 < chunkRows;
+                    ++boundaryRow)
+                {
+                    LONG parallelRun = 0;
+                    for (LONG column = 0; column <= chunkColumns; ++column)
+                    {
+                        bool parallel = column < chunkColumns
+                            && horizontalEdges[boundaryRow * chunkColumns + column]
+                            && horizontalEdges[(boundaryRow + 1) * chunkColumns + column];
+                        if (parallel)
+                        {
+                            ++parallelRun;
+                        }
+                        else
+                        {
+                            mazeParallelLongStripeCount += parallelRun >= 4;
+                            parallelRun = 0;
+                        }
+                    }
+                }
+                for (LONG boundaryColumn = 1;
+                    boundaryColumn + 1 < chunkColumns; ++boundaryColumn)
+                {
+                    LONG parallelRun = 0;
+                    for (LONG row = 0; row <= chunkRows; ++row)
+                    {
+                        bool parallel = row < chunkRows
+                            && verticalEdges[row * chunkColumns + boundaryColumn - 1]
+                            && verticalEdges[row * chunkColumns + boundaryColumn];
+                        if (parallel)
+                        {
+                            ++parallelRun;
+                        }
+                        else
+                        {
+                            mazeParallelLongStripeCount += parallelRun >= 4;
+                            parallelRun = 0;
+                        }
+                    }
+                }
+                LONG nonClearingChunks = 0;
+                LONG coveredChunks = 0;
+                for (LONG chunk = 0; chunk < chunkColumns * chunkRows; ++chunk)
+                {
+                    BYTE mask = chunkMasks[chunk];
+                    mazeChunkMaskFailure += !MazeChunkMaskAllowed(mask);
+                    mazeEmptyChunkCount += mask == 0;
+                    mazeSingleChunkCount += mask == 1 || mask == 2 || mask == 4 || mask == 8;
+                    mazeCornerChunkCount += mask == (1 | 2) || mask == (1 | 8)
+                        || mask == (4 | 2) || mask == (4 | 8);
+                    mazeHorizontalChunkCount += mask == 1 || mask == 4;
+                    mazeVerticalChunkCount += mask == 2 || mask == 8;
+                    mazeCornerDirectionCount[0] += mask == (1 | 8);
+                    mazeCornerDirectionCount[1] += mask == (1 | 2);
+                    mazeCornerDirectionCount[2] += mask == (4 | 2);
+                    mazeCornerDirectionCount[3] += mask == (4 | 8);
+                    LONG chunkColumn = chunk % chunkColumns;
+                    LONG chunkRow = chunk / chunkColumns;
+                    if (!MazeChunkInClearing(chunkColumn, chunkRow))
+                    {
+                        ++nonClearingChunks;
+                        coveredChunks += mask != 0;
+                    }
+                }
+                mazeCoverageFailure += roomSizeStage >= 2
+                    && coveredChunks * 100
+                        < nonClearingChunks * mazeMinimumCoveragePercent;
+                for (LONG enemy = 0; enemy < currentEnemyCount; ++enemy)
+                {
+                    mazeInitialFacingFailure += !EnemyInitialFacingOpen(
+                        currentEnemyStartX[enemy], currentEnemyStartY[enemy],
+                        currentEnemyStartFacing[enemy]);
                 }
             }
 
             DWORD firstHash = CurrentGenerationHash();
             SetupCurrentRoom();
             deterministicMismatch += firstHash != CurrentGenerationHash();
+        }
+    }
+
+    unsigned long long mazeAllSizeFailure = 0;
+    unsigned long long mazeAllSizeDeterminismFailure = 0;
+    constexpr LONG mazeAllSizeEnemyCounts[5] = { 2, 4, 10, 18, 24 };
+    for (LONG stage = 1; stage <= 5; ++stage)
+    {
+        for (DWORD seed = 1; seed <= DEAD_SIGNAL_MAZE_SIZE_SEED_COUNT; ++seed)
+        {
+            SetRoomSizeStage(stage);
+            currentRoomType = mazeRoomType;
+            currentEnemyCount = mazeAllSizeEnemyCounts[stage - 1];
+            currentExitSide = seed & 3;
+            if (currentExitSide == 0)
+            {
+                currentExitLeft = 0;
+                currentExitTop = worldHeight / 2 - 12;
+                currentExitRight = 16;
+                currentExitBottom = worldHeight / 2 + 12;
+                currentPlayerStartX = worldWidth - 28.0f;
+                currentPlayerStartY = worldHeight / 2.0f;
+            }
+            else if (currentExitSide == 1)
+            {
+                currentExitLeft = worldWidth - 16;
+                currentExitTop = worldHeight / 2 - 12;
+                currentExitRight = worldWidth;
+                currentExitBottom = worldHeight / 2 + 12;
+                currentPlayerStartX = 28.0f;
+                currentPlayerStartY = worldHeight / 2.0f;
+            }
+            else if (currentExitSide == 2)
+            {
+                currentExitLeft = worldWidth / 2 - 12;
+                currentExitTop = 0;
+                currentExitRight = worldWidth / 2 + 12;
+                currentExitBottom = 16;
+                currentPlayerStartX = worldWidth / 2.0f;
+                currentPlayerStartY = worldHeight - 28.0f;
+            }
+            else
+            {
+                currentExitLeft = worldWidth / 2 - 12;
+                currentExitTop = worldHeight - 16;
+                currentExitRight = worldWidth / 2 + 12;
+                currentExitBottom = worldHeight;
+                currentPlayerStartX = worldWidth / 2.0f;
+                currentPlayerStartY = 28.0f;
+            }
+            DWORD firstState = RoomRandom(seed, stage);
+            bool firstValid = GenerateMazeLayout(firstState);
+            DWORD firstHash = 2166136261u;
+            firstHash = ValidationHashValue(firstHash, currentMazeClearingCount);
+            for (LONG clearing = 0; clearing < currentMazeClearingCount; ++clearing)
+            {
+                firstHash = ValidationHashValue(firstHash,
+                    currentMazeClearingColumn[clearing]);
+                firstHash = ValidationHashValue(firstHash,
+                    currentMazeClearingRow[clearing]);
+            }
+            firstHash = ValidationHashValue(firstHash, currentWallCount);
+            for (LONG wall = 0; wall < currentWallCount; ++wall)
+            {
+                firstHash = ValidationHashValue(firstHash, currentWallLeft[wall]);
+                firstHash = ValidationHashValue(firstHash, currentWallTop[wall]);
+                firstHash = ValidationHashValue(firstHash, currentWallRight[wall]);
+                firstHash = ValidationHashValue(firstHash, currentWallBottom[wall]);
+            }
+            if (stage >= 2)
+            {
+                LONG chunkCount = (worldWidth / mazeChunkSize)
+                    * (worldHeight / mazeChunkSize);
+                for (LONG chunk = 0; chunk < chunkCount; ++chunk)
+                {
+                    firstHash = ValidationHashValue(firstHash,
+                        currentMazePassageMask[chunk]);
+                }
+            }
+            mazeAllSizeFailure += !firstValid || currentWallCount < stage
+                || !MazeLayoutValid();
+            DWORD secondState = RoomRandom(seed, stage);
+            bool secondValid = GenerateMazeLayout(secondState);
+            DWORD secondHash = 2166136261u;
+            secondHash = ValidationHashValue(secondHash, currentMazeClearingCount);
+            for (LONG clearing = 0; clearing < currentMazeClearingCount; ++clearing)
+            {
+                secondHash = ValidationHashValue(secondHash,
+                    currentMazeClearingColumn[clearing]);
+                secondHash = ValidationHashValue(secondHash,
+                    currentMazeClearingRow[clearing]);
+            }
+            secondHash = ValidationHashValue(secondHash, currentWallCount);
+            for (LONG wall = 0; wall < currentWallCount; ++wall)
+            {
+                secondHash = ValidationHashValue(secondHash, currentWallLeft[wall]);
+                secondHash = ValidationHashValue(secondHash, currentWallTop[wall]);
+                secondHash = ValidationHashValue(secondHash, currentWallRight[wall]);
+                secondHash = ValidationHashValue(secondHash, currentWallBottom[wall]);
+            }
+            if (stage >= 2)
+            {
+                LONG chunkCount = (worldWidth / mazeChunkSize)
+                    * (worldHeight / mazeChunkSize);
+                for (LONG chunk = 0; chunk < chunkCount; ++chunk)
+                {
+                    secondHash = ValidationHashValue(secondHash,
+                        currentMazePassageMask[chunk]);
+                }
+            }
+            mazeAllSizeDeterminismFailure += firstValid != secondValid
+                || firstHash != secondHash;
         }
     }
 
@@ -11759,8 +13082,9 @@ int main()
     {
         missingRole += !roleSeen[role];
     }
-    listenerCountFailure += !room1ZeroListeners || room1ZeroListeners >= 100000
-        || room1AllListeners >= 100000;
+    listenerCountFailure += !room1ZeroListeners
+        || room1ZeroListeners >= DEAD_SIGNAL_VALIDATION_SEED_COUNT
+        || room1AllListeners >= DEAD_SIGNAL_VALIDATION_SEED_COUNT;
     for (BYTE role = 0; role < enemyRoleCount; ++role)
     {
         if (role != listenerEnemyRole)
@@ -11798,58 +13122,59 @@ int main()
         }
     }
 
-    unsigned long long mazeZeroProbabilityFailure = 0;
-    unsigned long long earlyZero = 0;
-    unsigned long long earlyQuadrants = 0;
-    unsigned long long middleZero = 0;
-    unsigned long long middleQuadrants = 0;
-    unsigned long long lateZero = 0;
-    unsigned long long lateQuadrants = 0;
-    for (LONG room = 0; room < roomCount; ++room)
+    unsigned long long mazeShapeDiversityFailure = !mazeSingleChunkCount
+        || !mazeCornerChunkCount || !mazeEmptyChunkCount;
+    unsigned long long mazeTypeMinimum = mazeHorizontalChunkCount;
+    if (mazeVerticalChunkCount < mazeTypeMinimum)
     {
-        if (room < 4)
-        {
-            earlyZero += mazeZeroQuadrants[room];
-            earlyQuadrants += mazeQuadrants[room];
-        }
-        else if (room < 8)
-        {
-            middleZero += mazeZeroQuadrants[room];
-            middleQuadrants += mazeQuadrants[room];
-        }
-        else
-        {
-            lateZero += mazeZeroQuadrants[room];
-            lateQuadrants += mazeQuadrants[room];
-        }
+        mazeTypeMinimum = mazeVerticalChunkCount;
     }
-    mazeZeroProbabilityFailure += !earlyZero || !middleZero || !lateZero
-        || earlyZero * middleQuadrants <= middleZero * earlyQuadrants
-        || middleZero * lateQuadrants <= lateZero * middleQuadrants;
-    unsigned long long mazeLengthGrowthFailure = 0;
+    if (mazeCornerChunkCount < mazeTypeMinimum)
+    {
+        mazeTypeMinimum = mazeCornerChunkCount;
+    }
+    unsigned long long mazeTypeMaximum = mazeHorizontalChunkCount;
+    if (mazeVerticalChunkCount > mazeTypeMaximum)
+    {
+        mazeTypeMaximum = mazeVerticalChunkCount;
+    }
+    if (mazeCornerChunkCount > mazeTypeMaximum)
+    {
+        mazeTypeMaximum = mazeCornerChunkCount;
+    }
+    unsigned long long mazeTypeRatioFailure = !mazeTypeMinimum
+        || mazeTypeMaximum * 100 > mazeTypeMinimum * 125;
+    unsigned long long mazeTypeTotal = mazeHorizontalChunkCount
+        + mazeVerticalChunkCount + mazeCornerChunkCount;
+    unsigned long long mazeTargetRatioFailure = !mazeTypeTotal
+        || mazeHorizontalChunkCount * 100 < mazeTypeTotal * 29
+        || mazeHorizontalChunkCount * 100 > mazeTypeTotal * 34
+        || mazeVerticalChunkCount * 100 < mazeTypeTotal * 29
+        || mazeVerticalChunkCount * 100 > mazeTypeTotal * 34
+        || mazeCornerChunkCount * 100 < mazeTypeTotal * 35
+        || mazeCornerChunkCount * 100 > mazeTypeTotal * 40;
+    unsigned long long mazeStraightPatternFailure
+        = mazeMaximumStraightRun > 3 || mazeParallelLongStripeCount;
+    unsigned long long mazePassageTotal = mazePassageHorizontalTotal
+        + mazePassageVerticalTotal;
+    unsigned long long mazePassageBiasFailure = !mazePassageTotal
+        || mazePassageHorizontalTotal * 100 < mazePassageTotal * 40
+        || mazePassageHorizontalTotal * 100 > mazePassageTotal * 60;
+    unsigned long long mazePassageTopologyFailure = !mazePassageTurnTotal
+        || !mazePassageBranchTotal || !mazePassageDeadEndTotal
+        || !mazePassageLoopTotal;
+    unsigned long long mazeConnectionRateFailure = !mazeTotalWallCount
+        || mazeConnectedWallCount * 100 < mazeTotalWallCount * 90;
     unsigned long long mazeDensityGrowthFailure = 0;
     for (LONG stage = 2; stage < 5; ++stage)
     {
-        unsigned long long previousWallCount = mazeLengthCount[stage - 1][0]
-            + mazeLengthCount[stage - 1][1];
-        unsigned long long currentStageWallCount = mazeLengthCount[stage][0]
-            + mazeLengthCount[stage][1];
         mazeDensityGrowthFailure += !mazeRoomCount[stage - 1] || !mazeRoomCount[stage]
-            || currentStageWallCount * mazeRoomCount[stage - 1]
-                <= previousWallCount * mazeRoomCount[stage];
-        for (LONG orientation = 0; orientation < 2; ++orientation)
-        {
-            mazeLengthGrowthFailure += !mazeLengthCount[stage - 1][orientation]
-                || !mazeLengthCount[stage][orientation]
-                || mazeLengthTotal[stage][orientation]
-                    * mazeLengthCount[stage - 1][orientation]
-                    <= mazeLengthTotal[stage - 1][orientation]
-                        * mazeLengthCount[stage][orientation];
-        }
+            || mazeWallTotal[stage] * mazeRoomCount[stage - 1]
+                < mazeWallTotal[stage - 1] * mazeRoomCount[stage];
     }
-    mazeOrientationFailure = mazeOrientationMask != 3;
 
-    printf("rooms=1200000 wrong_enemy=%llu wrong_size=%llu capacity=%llu invalid_role=%llu listener_distribution=%llu determinism=%llu\n",
+    printf("rooms=%llu wrong_enemy=%llu wrong_size=%llu capacity=%llu invalid_role=%llu listener_distribution=%llu determinism=%llu\n",
+        static_cast<unsigned long long>(DEAD_SIGNAL_VALIDATION_SEED_COUNT) * roomCount,
         wrongEnemyCount, wrongRoomSize, enemyCapacityOverflow, invalidRole,
         listenerCountFailure, deterministicMismatch);
     printf("roles=%llu/%llu/%llu/%llu/%llu room1_listener_zero=%llu all=%llu\n",
@@ -11862,10 +13187,43 @@ int main()
     printf("wall_trap=%llu exit_blocked=%llu player_exit_unreachable=%llu enemy_unreachable=%llu density=%llu\n",
         wallTrapOverlap, exitBlocked, unreachablePlayerExit, unreachableEnemy,
         densityCountFailure);
-    printf("maze_quadrant=%llu maze_bounds=%llu maze_thickness=%llu maze_orientation=%llu maze_zero_weight=%llu maze_density=%llu maze_length_growth=%llu\n",
-        mazeQuadrantCount, mazeQuadrantBoundsFailure, mazeThicknessFailure,
-        mazeOrientationFailure, mazeZeroProbabilityFailure, mazeDensityGrowthFailure,
-        mazeLengthGrowthFailure);
+    printf("maze_align=%llu maze_shape=%llu maze_mask=%llu maze_duplicate=%llu maze_isolated=%llu maze_door_safe=%llu\n",
+        mazeChunkAlignmentFailure, mazeWallShapeFailure, mazeChunkMaskFailure,
+        mazeDuplicateWallFailure, mazeIsolatedWallFailure, mazeDoorSafeFailure);
+    printf("maze_enemy_margin=%llu maze_enemy_door=%llu maze_layout=%llu maze_chunks=%llu/%llu/%llu maze_density=%llu coverage=%llu connection=%llu/%llu\n",
+        mazeEnemyMarginFailure, mazeEnemyDoorSafeFailure, mazeLayoutInvariantFailure,
+        mazeEmptyChunkCount, mazeSingleChunkCount, mazeCornerChunkCount,
+        mazeDensityGrowthFailure, mazeCoverageFailure, mazeConnectedWallCount,
+        mazeTotalWallCount);
+    printf("maze_types=%llu/%llu/%llu corners=%llu/%llu/%llu/%llu\n",
+        mazeHorizontalChunkCount, mazeVerticalChunkCount, mazeCornerChunkCount,
+        mazeCornerDirectionCount[0], mazeCornerDirectionCount[1],
+        mazeCornerDirectionCount[2], mazeCornerDirectionCount[3]);
+    printf("maze_outer_margin_walls=%llu initial_facing=%llu type_ratio=%llu\n",
+        mazeOuterMarginWallCount, mazeInitialFacingFailure,
+        mazeTypeRatioFailure);
+    printf("maze_straight_runs=%llu/%llu average_x100=%llu max=%llu parallel_long=%llu target_ratio=%llu\n",
+        mazeStraightRunTotal, mazeStraightRunCount,
+        mazeStraightRunCount ? mazeStraightRunTotal * 100 / mazeStraightRunCount : 0,
+        mazeMaximumStraightRun, mazeParallelLongStripeCount,
+        mazeTargetRatioFailure);
+    printf("maze_passages=%llu/%llu average_straight_x100=%llu max_straight=%llu turns=%llu branches=%llu dead_ends=%llu loops=%llu bias=%llu topology=%llu\n",
+        mazePassageHorizontalTotal, mazePassageVerticalTotal,
+        mazePassageStraightCount
+            ? mazePassageStraightTotal * 100 / mazePassageStraightCount : 0,
+        mazePassageMaximumStraight, mazePassageTurnTotal,
+        mazePassageBranchTotal, mazePassageDeadEndTotal,
+        mazePassageLoopTotal, mazePassageBiasFailure,
+        mazePassageTopologyFailure);
+    printf("maze_clearing_count=%llu overlap=%llu door=%llu player=%llu wall=%llu reachable=%llu access=%llu\n",
+        mazeClearingCountFailure, mazeClearingOverlapFailure, mazeClearingDoorFailure,
+        mazeClearingPlayerFailure, mazeClearingWallFailure,
+        mazeClearingReachabilityFailure, mazeClearingAccessFailure);
+    printf("maze_retry_wall=%llu component=%llu exit=%llu(%llu/%llu) spawn=%llu\n",
+        mazeRetryWallCountFailure, mazeRetryComponentFailure, mazeRetryExitFailure,
+        mazeRetryExitCellFailure, mazeRetryExitStateFailure, mazeRetrySpawnFailure);
+    printf("maze_all_sizes=%llu maze_all_sizes_determinism=%llu\n",
+        mazeAllSizeFailure, mazeAllSizeDeterminismFailure);
     printf("invalid_exit=%llu missing_exit=%ld duplicate_role_seen=%d missing_role=%ld upgrade_compat=%ld run_flow=%ld\n",
         invalidExitSide, missingExitSide, duplicateRoleSeen, missingRole,
         upgradeCompatibilityFailure, runFlowFailure);
@@ -11874,9 +13232,20 @@ int main()
         || enemyOverlap || listenerSpawnOverlap || wallOverlap
         || trapOverlap || exitOverlap || pressureInvalidSpawn || wallTrapOverlap
         || exitBlocked || unreachablePlayerExit || unreachableEnemy || densityCountFailure
-        || mazeQuadrantCount || mazeQuadrantBoundsFailure || mazeThicknessFailure
-        || mazeOrientationFailure || mazeZeroProbabilityFailure || mazeDensityGrowthFailure
-        || mazeLengthGrowthFailure
+        || mazeChunkAlignmentFailure || mazeWallShapeFailure || mazeChunkMaskFailure
+        || mazeDuplicateWallFailure || mazeDoorSafeFailure
+        || mazeEnemyMarginFailure || mazeEnemyDoorSafeFailure
+        || mazeLayoutInvariantFailure || mazeShapeDiversityFailure
+        || !mazeOuterMarginWallCount
+        || mazeInitialFacingFailure || mazePassageBiasFailure
+        || mazePassageTopologyFailure
+        || mazeDensityGrowthFailure || mazeCoverageFailure
+        || mazeConnectionRateFailure || mazeClearingCountFailure
+        || mazeClearingOverlapFailure || mazeClearingDoorFailure
+        || mazeClearingPlayerFailure || mazeClearingWallFailure
+        || mazeClearingReachabilityFailure || mazeClearingAccessFailure
+        || mazeAllSizeFailure
+        || mazeAllSizeDeterminismFailure
         || invalidExitSide || missingExitSide || !duplicateRoleSeen || missingRole
         || upgradeCompatibilityFailure || runFlowFailure;
 }
