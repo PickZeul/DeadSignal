@@ -1880,7 +1880,7 @@ constexpr LONG gameOverEndState = 1;
 constexpr LONG runClearEndState = 2;
 constexpr DWORD saveMagic = 0x56535344;
 constexpr DWORD saveVersion = 8;
-constexpr wchar_t saveFileName[] = L"DeadSignal.sav";
+wchar_t saveFileName[MAX_PATH];
 constexpr DWORD metaMagic = 0x4154454D;
 constexpr DWORD metaVersion = 3;
 constexpr DWORD previousMetaVersion = 2;
@@ -1891,7 +1891,37 @@ constexpr DWORD EncodeMetaVersion(BYTE bgmStep, BYTE sfxStep,
         + (masterVolumeMaximumStep + 1) * sfxStep) << 8)
         | (static_cast<DWORD>(character) << 16);
 }
-constexpr wchar_t metaFileName[] = L"DeadSignal.meta";
+wchar_t metaFileName[MAX_PATH];
+
+bool InitializeSavePaths()
+{
+    wchar_t executablePath[MAX_PATH];
+    DWORD pathLength = GetModuleFileNameW(nullptr, executablePath, MAX_PATH);
+    if (!pathLength || pathLength >= MAX_PATH)
+    {
+        return false;
+    }
+    while (pathLength && executablePath[pathLength - 1] != L'\\'
+        && executablePath[pathLength - 1] != L'/')
+    {
+        --pathLength;
+    }
+    if (!pathLength || pathLength + ARRAYSIZE(L"SaveData\\DeadSignal.meta")
+        > ARRAYSIZE(metaFileName))
+    {
+        return false;
+    }
+
+    executablePath[pathLength] = 0;
+    lstrcpyW(saveFileName, executablePath);
+    lstrcatW(saveFileName, L"SaveData");
+    bool directoryReady = CreateDirectoryW(saveFileName, nullptr)
+        || GetLastError() == ERROR_ALREADY_EXISTS;
+    lstrcpyW(metaFileName, saveFileName);
+    lstrcatW(saveFileName, L"\\DeadSignal.sav");
+    lstrcatW(metaFileName, L"\\DeadSignal.meta");
+    return directoryReady;
+}
 LONG applicationState = titleMainState;
 LONG menuSelection = 0;
 LONG titleStatus = 0;
@@ -9317,6 +9347,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
 {
+    InitializeSavePaths();
     ReportDeploymentByteSize();
     constexpr wchar_t windowClassName[] = L"DeadSignalWindow";
     if (!ReadMetaProfile())
