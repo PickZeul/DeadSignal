@@ -2,6 +2,8 @@
 Debug/
 Release/
 x64/
+_Build/
+BuildTemp/
 
 *.user
 *.obj
