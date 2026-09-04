@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <timeapi.h>
 #include <math.h>
+#include "resource.h"
 #if defined(DEAD_SIGNAL_B01_VALIDATION) || defined(DEAD_SIGNAL_B02_VALIDATION) \
     || defined(DEAD_SIGNAL_B03_VALIDATION) || defined(DEAD_SIGNAL_B101_VALIDATION) \
     || defined(DEAD_SIGNAL_STEP2_PRESENT_VALIDATION)
@@ -9,6 +10,245 @@
 
 
 #pragma comment(lib, "winmm.lib")
+
+constexpr ULONGLONG packageByteLimit = 1474560;
+
+bool AsciiStartsWithInsensitive(const char* text, const char* prefix)
+{
+    while (*prefix)
+    {
+        char left = *text++;
+        char right = *prefix++;
+        if (!left)
+        {
+            return false;
+        }
+        if (left >= 'a' && left <= 'z') left -= 'a' - 'A';
+        if (right >= 'a' && right <= 'z') right -= 'a' - 'A';
+        if (left != right)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool RuntimeImportName(const char* name)
+{
+    return AsciiStartsWithInsensitive(name, "VCRUNTIME")
+        || AsciiStartsWithInsensitive(name, "MSVCP")
+        || AsciiStartsWithInsensitive(name, "CONCRT")
+        || AsciiStartsWithInsensitive(name, "UCRTBASE")
+        || AsciiStartsWithInsensitive(name, "MSVCR");
+}
+
+bool WindowsUcrtContractName(const char* name)
+{
+    return AsciiStartsWithInsensitive(name, "API-MS-WIN-CRT-")
+        || AsciiStartsWithInsensitive(name, "EXT-MS-WIN-CRT-");
+}
+
+bool FileByteSize(const wchar_t* path, ULONGLONG& size)
+{
+    HANDLE file = CreateFileW(path, GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        return false;
+    }
+    LARGE_INTEGER length{};
+    bool valid = GetFileSizeEx(file, &length) && length.QuadPart >= 0;
+    CloseHandle(file);
+    if (valid)
+    {
+        size = static_cast<ULONGLONG>(length.QuadPart);
+    }
+    return valid;
+}
+
+void FormatByteCount(ULONGLONG value, wchar_t* output)
+{
+    wchar_t reverse[32];
+    LONG count = 0;
+    LONG digits = 0;
+    do
+    {
+        if (digits && digits % 3 == 0)
+        {
+            reverse[count++] = L',';
+        }
+        reverse[count++] = static_cast<wchar_t>(L'0' + value % 10);
+        value /= 10;
+        ++digits;
+    } while (value);
+    for (LONG index = 0; index < count; ++index)
+    {
+        output[index] = reverse[count - index - 1];
+    }
+    output[count] = 0;
+}
+
+bool RequiredRuntimeByteSize(ULONGLONG& size)
+{
+#ifndef _DLL
+    size = 0;
+    return true;
+#else
+    BYTE* image = reinterpret_cast<BYTE*>(GetModuleHandleW(nullptr));
+    if (!image)
+    {
+        return false;
+    }
+    IMAGE_DOS_HEADER* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(image);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+    {
+        return false;
+    }
+    IMAGE_NT_HEADERS* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(image + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+    {
+        return false;
+    }
+    DWORD importRva = nt->OptionalHeader.DataDirectory[
+        IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+    if (!importRva)
+    {
+        return false;
+    }
+
+    HMODULE countedModules[16]{};
+    LONG countedModuleCount = 0;
+    LONG runtimeImportCount = 0;
+    size = 0;
+    IMAGE_IMPORT_DESCRIPTOR* importDescriptor
+        = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(image + importRva);
+    for (; importDescriptor->Name; ++importDescriptor)
+    {
+        const char* name = reinterpret_cast<const char*>(
+            image + importDescriptor->Name);
+        if (WindowsUcrtContractName(name))
+        {
+            continue;
+        }
+        if (!RuntimeImportName(name))
+        {
+            continue;
+        }
+        ++runtimeImportCount;
+        HMODULE module = GetModuleHandleA(name);
+        if (!module)
+        {
+            return false;
+        }
+        bool counted = false;
+        for (LONG index = 0; index < countedModuleCount; ++index)
+        {
+            if (countedModules[index] == module)
+            {
+                counted = true;
+                break;
+            }
+        }
+        if (counted)
+        {
+            continue;
+        }
+        if (countedModuleCount >= 16)
+        {
+            return false;
+        }
+        wchar_t runtimePath[MAX_PATH];
+        DWORD pathLength = GetModuleFileNameW(module, runtimePath, MAX_PATH);
+        if (!pathLength || pathLength >= MAX_PATH)
+        {
+            return false;
+        }
+        ULONGLONG runtimeSize = 0;
+        if (!FileByteSize(runtimePath, runtimeSize))
+        {
+            return false;
+        }
+        countedModules[countedModuleCount++] = module;
+        size += runtimeSize;
+    }
+    return runtimeImportCount > 0;
+#endif
+}
+
+void ReportDeploymentByteSize()
+{
+    wchar_t executablePath[MAX_PATH];
+    DWORD pathLength = GetModuleFileNameW(nullptr, executablePath, MAX_PATH);
+    ULONGLONG executableSize = 0;
+    bool executableKnown = pathLength && pathLength < MAX_PATH
+        && FileByteSize(executablePath, executableSize);
+    ULONGLONG runtimeSize = 0;
+    bool runtimeKnown = RequiredRuntimeByteSize(runtimeSize);
+    wchar_t line[96];
+    wchar_t number[32];
+
+    OutputDebugStringW(L"[PACKAGE SIZE]\r\n");
+
+    if (executableKnown)
+    {
+        FormatByteCount(executableSize, number);
+        wsprintfW(line, L"EXE      : %s bytes\r\n", number);
+    }
+    else
+    {
+        lstrcpyW(line, L"EXE      : UNKNOWN\r\n");
+    }
+    OutputDebugStringW(line);
+
+    if (runtimeKnown)
+    {
+        FormatByteCount(runtimeSize, number);
+        wsprintfW(line, L"RUNTIME  : %s bytes\r\n", number);
+    }
+    else
+    {
+        lstrcpyW(line, L"RUNTIME  : UNKNOWN\r\n");
+    }
+    OutputDebugStringW(line);
+
+    bool packageKnown = executableKnown && runtimeKnown;
+    ULONGLONG packageSize = executableSize + runtimeSize;
+    if (packageKnown)
+    {
+        FormatByteCount(packageSize, number);
+        wsprintfW(line, L"PACKAGE  : %s bytes\r\n", number);
+    }
+    else
+    {
+        lstrcpyW(line, L"PACKAGE  : UNKNOWN\r\n");
+    }
+    OutputDebugStringW(line);
+
+    FormatByteCount(packageByteLimit, number);
+    wsprintfW(line, L"LIMIT    : %s bytes\r\n", number);
+    OutputDebugStringW(line);
+
+    if (packageKnown)
+    {
+        ULONGLONG usedHundredths
+            = (packageSize * 10000 + packageByteLimit / 2) / packageByteLimit;
+        wsprintfW(line, L"USED     : %lu.%02lu%%\r\n",
+            static_cast<DWORD>(usedHundredths / 100),
+            static_cast<DWORD>(usedHundredths % 100));
+        OutputDebugStringW(line);
+        ULONGLONG remaining = packageSize < packageByteLimit
+            ? packageByteLimit - packageSize : 0;
+        FormatByteCount(remaining, number);
+        wsprintfW(line, L"REMAIN   : %s bytes\r\n", number);
+    }
+    else
+    {
+        OutputDebugStringW(L"USED     : UNKNOWN\r\n");
+        lstrcpyW(line, L"REMAIN   : UNKNOWN\r\n");
+    }
+    OutputDebugStringW(line);
+}
 
 constexpr LONG framebufferWidth = 320;
 constexpr LONG framebufferHeight = 180;
@@ -124,6 +364,7 @@ constexpr float enemyScanDuration = 2.0f;
 constexpr float enemyAttackCooldownDuration = 1.0f;
 constexpr float enemyAttackWindupDuration = 0.3f;
 constexpr float enemyAttackContactTolerance = 1.0f;
+constexpr float enemyAttackRangeBalanceScale = 1.25f;
 constexpr float pressureEnragedAttackScale = 0.8f;
 constexpr float pressureAttackRangeScale = 1.15f;
 constexpr float EnemyAttackRangeScale(BYTE role)
@@ -138,12 +379,14 @@ constexpr float EnemyAttackRangeScale(BYTE role)
 constexpr float EnemyAttackRangeX(BYTE role)
 {
     return enemyHalfWidth + playerHalfWidth
-        + enemyAttackContactTolerance * EnemyAttackRangeScale(role);
+        + enemyAttackContactTolerance * enemyAttackRangeBalanceScale
+            * EnemyAttackRangeScale(role);
 }
 constexpr float EnemyAttackRangeY(BYTE role)
 {
     return enemyHalfHeight + playerHalfHeight
-        + enemyAttackContactTolerance * EnemyAttackRangeScale(role);
+        + enemyAttackContactTolerance * enemyAttackRangeBalanceScale
+            * EnemyAttackRangeScale(role);
 }
 constexpr bool PressureIsEnraged(LONG livingRegularEnemies)
 {
@@ -165,6 +408,7 @@ constexpr float detectionFillDuration = 2.4f;
 constexpr float detectionDecayDuration = 3.0f;
 constexpr float lostSightHoldDuration = 0.5f;
 constexpr LONG navigationCellSize = 8;
+constexpr float navigationSafetyMargin = 0.25f;
 constexpr LONG maxNavigationColumns = 100;
 constexpr LONG maxNavigationRows = 55;
 constexpr LONG maxNavigationNodeCount = maxNavigationColumns * maxNavigationRows;
@@ -1315,7 +1559,7 @@ void EnemyPoseOffset(BYTE role, BYTE frame, float facingAngle,
     offsetY = VisualRound(directionY * forward);
 }
 
-DWORD EnemyAttackEffectPixel(BYTE role, BYTE frame, float centerX,
+DWORD EnemyAttackIdentityEffectPixel(BYTE role, BYTE frame, float centerX,
     float centerY, float facingAngle, float pointX, float pointY)
 {
     if (frame != enemyAttackWindupFrame && frame != enemyAttackStrikeFrame)
@@ -1404,6 +1648,26 @@ DWORD EnemyAttackEffectPixel(BYTE role, BYTE frame, float centerX,
     return 0;
 }
 
+DWORD EnemyAttackEffectPixel(BYTE role, BYTE frame, float centerX,
+    float centerY, float facingAngle, float pointX, float pointY)
+{
+    DWORD identity = EnemyAttackIdentityEffectPixel(role, frame, centerX,
+        centerY, facingAngle, pointX, pointY);
+    if (identity || frame != enemyAttackWindupFrame)
+    {
+        return identity;
+    }
+    float differenceX = pointX - centerX;
+    float differenceY = pointY - centerY;
+    if (differenceX < 0.0f) differenceX = -differenceX;
+    if (differenceY < 0.0f) differenceY = -differenceY;
+    float rangeX = EnemyAttackRangeX(role);
+    float rangeY = EnemyAttackRangeY(role);
+    return differenceX <= rangeX && differenceY <= rangeY
+        && (differenceX >= rangeX - 0.65f || differenceY >= rangeY - 0.65f)
+        ? 0x00784828 : 0;
+}
+
 void PressurePoseOffset(BYTE frame, float facingAngle,
     LONG& offsetX, LONG& offsetY, bool enraged = false)
 {
@@ -1429,7 +1693,7 @@ void PressurePoseOffset(BYTE frame, float facingAngle,
     offsetY += VisualRound(directionY * forward);
 }
 
-DWORD PressureAttackEffectPixel(BYTE frame, float centerX, float centerY,
+DWORD PressureAttackIdentityEffectPixel(BYTE frame, float centerX, float centerY,
     float facingAngle, float pointX, float pointY, bool enraged = false)
 {
     if (frame != pressureAttackBraceFrame && frame != pressureAttackCrushFrame)
@@ -1462,6 +1726,26 @@ DWORD PressureAttackEffectPixel(BYTE frame, float centerX, float centerY,
         }
     }
     return 0;
+}
+
+DWORD PressureAttackEffectPixel(BYTE frame, float centerX, float centerY,
+    float facingAngle, float pointX, float pointY, bool enraged = false)
+{
+    DWORD identity = PressureAttackIdentityEffectPixel(frame, centerX, centerY,
+        facingAngle, pointX, pointY, enraged);
+    if (identity || frame != pressureAttackBraceFrame)
+    {
+        return identity;
+    }
+    float differenceX = pointX - centerX;
+    float differenceY = pointY - centerY;
+    if (differenceX < 0.0f) differenceX = -differenceX;
+    if (differenceY < 0.0f) differenceY = -differenceY;
+    float rangeX = EnemyAttackRangeX(pressureEnemyRole);
+    float rangeY = EnemyAttackRangeY(pressureEnemyRole);
+    return differenceX <= rangeX && differenceY <= rangeY
+        && (differenceX >= rangeX - 0.65f || differenceY >= rangeY - 0.65f)
+        ? (enraged ? 0x00A85028 : 0x00784828) : 0;
 }
 
 DWORD PressureEnrageEffectPixel(float centerX, float centerY, float facingAngle,
@@ -1942,11 +2226,13 @@ struct BgmState
     DWORD pulsePhase;
     DWORD rhythmPhase;
     DWORD signalPhase;
+    DWORD motifPhase;
     DWORD noiseState;
     DWORD modeSample;
     DWORD nextPulseSample;
     DWORD nextRhythmSample;
     DWORD nextStaticSample;
+    DWORD nextMotifSample;
     DWORD pulseRemaining;
     DWORD pulseDuration;
     DWORD rhythmRemaining;
@@ -1955,6 +2241,8 @@ struct BgmState
     DWORD signalDuration;
     DWORD staticRemaining;
     DWORD staticDuration;
+    DWORD motifRemaining;
+    DWORD motifDuration;
     DWORD transitionRemaining;
     DWORD startupRemaining;
     DWORD duckHold;
@@ -2407,10 +2695,13 @@ void ResetBgmPattern(BYTE mode)
         * (mode == bgmMenuMode ? 1 : 2) / 3;
     bgmState.nextStaticSample = audioSampleRate
         * (mode == bgmRunMode ? 3 : 5);
+    bgmState.nextMotifSample = mode == bgmRunMode
+        ? audioSampleRate * 6 : 0xFFFFFFFFu;
     bgmState.pulseRemaining = 0;
     bgmState.rhythmRemaining = 0;
     bgmState.signalRemaining = 0;
     bgmState.staticRemaining = 0;
+    bgmState.motifRemaining = 0;
     bgmState.rhythmIndex = 0;
     bgmState.rhythmPattern = 0;
     bgmState.phraseIndex = 0;
@@ -2487,13 +2778,18 @@ LONG BgmSample()
     phase = static_cast<LONG>(bgmState.harmonicPhase >> 24);
     triangle = phase < 128 ? phase * 2 - 127 : 383 - phase * 2;
     mixed += triangle / 127;
+    if (bgmState.currentMode == bgmRunMode)
+    {
+        mixed = mixed * 3 / 4;
+    }
     phase = static_cast<LONG>(bgmState.bodyPhase >> 24);
     triangle = phase < 128 ? phase * 2 - 127 : 383 - phase * 2;
     LONG bodyAmplitude = bgmState.currentMode == bgmMenuMode ? 4
         : (bgmState.currentMode == bgmRunMode
             ? 3 + (bgmTensionLevel ? 1 : 0) : 2);
     LONG bodyGain = bgmState.currentMode == bgmRunMode ? 7 : 8;
-    mixed += triangle * bodyAmplitude * bodyGain / (127 * 8);
+    mixed += triangle * bodyAmplitude * bodyGain
+        * (bgmState.currentMode == bgmRunMode ? 17 : 20) / (127 * 8 * 20);
 
     if (bgmState.modeSample >= bgmState.nextPulseSample)
     {
@@ -2517,7 +2813,8 @@ LONG BgmSample()
             pulseAmplitude = 36;
         }
         mixed += pulse * pulseAmplitude * envelope * 56
-            / (127 * 256 * 25 * 5);
+            * (bgmState.currentMode == bgmRunMode ? 5 : 4)
+            / (127 * 256 * 25 * 5 * 4);
         --bgmState.pulseRemaining;
     }
     if (bgmState.modeSample >= bgmState.nextRhythmSample)
@@ -2550,8 +2847,57 @@ LONG BgmSample()
         LONG signalAmplitude = bgmState.currentMode == bgmMenuMode ? 5 : 2;
         mixed += signal * signalAmplitude
             * static_cast<LONG>(bgmState.signalRemaining) * 7
-            / (static_cast<LONG>(bgmState.signalDuration) * 10);
+            * (bgmState.currentMode == bgmRunMode ? 5 : 4)
+            / (static_cast<LONG>(bgmState.signalDuration) * 10 * 4);
         --bgmState.signalRemaining;
+    }
+    if (bgmState.currentMode == bgmRunMode
+        && bgmState.modeSample >= bgmState.nextMotifSample)
+    {
+        bgmState.noiseState = bgmState.noiseState * 1664525u + 1013904223u;
+        bgmState.motifDuration = audioSampleRate * 760 / 1000;
+        bgmState.motifRemaining = bgmState.motifDuration;
+        DWORD variation = ((bgmState.noiseState >> 16) & 0x7FFF)
+            * audioSampleRate * 4 / 0x7FFF;
+        bgmState.nextMotifSample = bgmState.modeSample
+            + bgmState.motifDuration + audioSampleRate * 6 + variation;
+    }
+    if (bgmState.motifRemaining)
+    {
+        DWORD elapsed = bgmState.motifDuration - bgmState.motifRemaining;
+        constexpr DWORD secondGroupMilliseconds = 420;
+        DWORD secondGroupSample = audioSampleRate * secondGroupMilliseconds / 1000;
+        DWORD groupSample = elapsed < secondGroupSample
+            ? elapsed : elapsed - secondGroupSample;
+        constexpr DWORD noteStepMilliseconds = 95;
+        constexpr DWORD noteDurationMilliseconds = 62;
+        DWORD noteStep = audioSampleRate * noteStepMilliseconds / 1000;
+        DWORD noteDuration = audioSampleRate * noteDurationMilliseconds / 1000;
+        DWORD note = groupSample / noteStep;
+        DWORD noteSample = groupSample % noteStep;
+        if (note < 3 && noteSample < noteDuration)
+        {
+            constexpr WORD motifFrequency[3]{ 196, 233, 294 };
+            bgmState.motifPhase += motifFrequency[note] * sfxPhaseUnit;
+            phase = static_cast<LONG>(bgmState.motifPhase >> 24);
+            triangle = phase < 128 ? phase * 2 - 127 : 383 - phase * 2;
+            DWORD attack = audioSampleRate * 6 / 1000;
+            DWORD release = audioSampleRate * 20 / 1000;
+            LONG envelope = 256;
+            if (noteSample < attack)
+            {
+                envelope = static_cast<LONG>(noteSample * 256 / attack);
+            }
+            DWORD noteRemaining = noteDuration - noteSample;
+            if (noteRemaining < release)
+            {
+                LONG releaseEnvelope = static_cast<LONG>(
+                    noteRemaining * 256 / release);
+                if (releaseEnvelope < envelope) envelope = releaseEnvelope;
+            }
+            mixed += triangle * 3 * envelope / (127 * 256);
+        }
+        --bgmState.motifRemaining;
     }
     if (bgmState.modeSample >= bgmState.nextStaticSample)
     {
@@ -2606,6 +2952,11 @@ LONG ApplyCategoryVolume(LONG mixed, AudioCategory category)
     return mixed * volumeStep / masterVolumeMaximumStep;
 }
 
+constexpr LONG ApplySfxOutputGain(LONG mixed)
+{
+    return mixed * 3 / 5;
+}
+
 short ApplyMasterVolume(LONG mixed, BYTE volumeStep)
 {
     mixed = mixed * volumeStep / masterVolumeMaximumStep;
@@ -2623,8 +2974,11 @@ short MixAudioSample()
     }
     LONG bgmMixed = BgmSample();
     LONG bgmGain = bgmState.currentMode == bgmResultMode ? 256 : 333;
-    LONG mixed = ApplyCategoryVolume(sfxMixed * 256 * 4 / 5, audioCategorySfx)
-        + ApplyCategoryVolume(bgmMixed * bgmGain * 7 / 5, audioCategoryBgm);
+    LONG menuGainNumerator = bgmState.currentMode == bgmMenuMode ? 17 : 10;
+    LONG mixed = ApplySfxOutputGain(
+        ApplyCategoryVolume(sfxMixed * 256 * 4 / 5, audioCategorySfx))
+        + ApplyCategoryVolume(bgmMixed * bgmGain * menuGainNumerator * 7
+            / (10 * 5), audioCategoryBgm);
     return ApplyMasterVolume(mixed, masterVolumeStep);
 }
 
@@ -3573,7 +3927,7 @@ LONG CharacterSlashReach(BYTE character)
     {
         reach += characterGlobalLevel[character][1] * 2;
     }
-    return reach;
+    return (reach * 13 + 9) / 10;
 }
 
 LONG CharacterSlashWidth(BYTE character)
@@ -3587,7 +3941,7 @@ LONG CharacterSlashWidth(BYTE character)
     {
         width += characterGlobalLevel[character][1] * 2;
     }
-    return width;
+    return (width * 13 + 9) / 10;
 }
 
 float CharacterDashDistance(BYTE character)
@@ -3952,8 +4306,9 @@ bool PlayerMovementIsAudible(bool moved, bool dashing)
 
 LONG CurrentExecuteReach()
 {
-    return functionalUpgradeFlags & executeReachUpgradeFlag
+    LONG reach = functionalUpgradeFlags & executeReachUpgradeFlag
         ? executeReach * 2 : executeReach;
+    return (reach * 115 + 99) / 100;
 }
 
 void ApplyFieldMedic(LONG& playerHP)
@@ -4038,11 +4393,8 @@ BYTE SlashVisualPixel(BYTE character, float originX, float originY,
     float start = absoluteForwardX * playerHalfWidth
         + absoluteForwardY * playerHalfHeight;
     float depth = forward - start;
-    float reach = static_cast<float>(CharacterSlashReach(character))
-        + (character == mobilityCharacter || character == piercerCharacter
-            ? 2.0f : 1.0f);
-    float halfWidth = CharacterSlashWidth(character) * 0.5f
-        + (character == heavyCharacter ? 1.5f : 1.0f);
+    float reach = static_cast<float>(CharacterSlashReach(character));
+    float halfWidth = CharacterSlashWidth(character) * 0.5f;
     float absoluteLateral = lateral < 0.0f ? -lateral : lateral;
     if (depth < 0.0f || depth > reach || absoluteLateral > halfWidth)
     {
@@ -4596,13 +4948,22 @@ void SetRoomSizeStage(LONG stage)
     navigationNodeCount = navigationColumns * navigationRows;
 }
 
-LONG ListenerTargetForRoomSize(LONG stage, LONG enemyCount)
+BYTE RandomRegularEnemyRole(DWORD& state)
 {
-    LONG target = stage <= 2 ? 2 : (stage == 3 ? 3 : 4);
-    return target < enemyCount ? target : enemyCount;
+    constexpr BYTE weightedRoles[15]
+    {
+        patrollerEnemyRole, patrollerEnemyRole, patrollerEnemyRole,
+        watcherEnemyRole, watcherEnemyRole,
+        hunterEnemyRole, hunterEnemyRole, hunterEnemyRole,
+        listenerEnemyRole, listenerEnemyRole, listenerEnemyRole,
+        listenerEnemyRole, listenerEnemyRole,
+        spinnerEnemyRole, spinnerEnemyRole
+    };
+    return weightedRoles[NextRoomRandom(state) % 15];
 }
 
 bool WallBlocksSegment(float startX, float startY, float endX, float endY);
+bool NavigationCellValid(LONG column, LONG row);
 bool RoomLayoutConnected();
 
 bool GenerateMazeLayout(DWORD& state)
@@ -4687,14 +5048,9 @@ void SetupCurrentRoom()
     SetRoomSizeStage(sizeStage);
 
     DWORD roleState = RoomRandom(runSeed, currentRoom) ^ 0xD1B54A35u;
-    LONG listenerTarget = ListenerTargetForRoomSize(roomSizeStage,
-        currentEnemyCount);
-    constexpr BYTE remainingRoles[4]
-        = { patrollerEnemyRole, watcherEnemyRole, hunterEnemyRole, spinnerEnemyRole };
     for (LONG enemy = 0; enemy < currentEnemyCount; ++enemy)
     {
-        currentEnemyRole[enemy] = enemy < listenerTarget ? listenerEnemyRole
-            : remainingRoles[NextRoomRandom(roleState) % 4];
+        currentEnemyRole[enemy] = RandomRegularEnemyRole(roleState);
     }
 
     currentLayoutVariant = NextRoomRandom(state) >> 31;
@@ -4741,14 +5097,22 @@ void SetupCurrentRoom()
     {
         constexpr LONG pillarCountsByStage[5] = { 1, 4, 6, 12, 20 };
         LONG requestedWallCount = pillarCountsByStage[roomSizeStage - 1];
-        for (LONG attempt = 0; attempt < 2048 && currentWallCount < requestedWallCount;
-            ++attempt)
+        for (LONG layoutAttempt = 0; layoutAttempt < 32; ++layoutAttempt)
         {
-            LONG left = 24 + NextRoomRandom(state) % (worldWidth - 64);
-            LONG top = 24 + NextRoomRandom(state) % (worldHeight - 72);
-            if (RoomWallPlacementValid(left, top, left + 16, top + 24))
+            currentWallCount = 0;
+            for (LONG attempt = 0;
+                attempt < 2048 && currentWallCount < requestedWallCount; ++attempt)
             {
-                AddRoomWall(left, top, left + 16, top + 24);
+                LONG left = 24 + NextRoomRandom(state) % (worldWidth - 64);
+                LONG top = 24 + NextRoomRandom(state) % (worldHeight - 72);
+                if (RoomWallPlacementValid(left, top, left + 16, top + 24))
+                {
+                    AddRoomWall(left, top, left + 16, top + 24);
+                }
+            }
+            if (currentWallCount == requestedWallCount && RoomLayoutConnected())
+            {
+                break;
             }
         }
     }
@@ -4760,14 +5124,22 @@ void SetupCurrentRoom()
     {
         constexpr LONG mixedWallCountsByStage[5] = { 1, 2, 4, 7, 12 };
         LONG requestedWallCount = mixedWallCountsByStage[roomSizeStage - 1];
-        for (LONG attempt = 0; attempt < 1024 && currentWallCount < requestedWallCount;
-            ++attempt)
+        for (LONG layoutAttempt = 0; layoutAttempt < 32; ++layoutAttempt)
         {
-            LONG left = 24 + NextRoomRandom(state) % (worldWidth - 64);
-            LONG top = 24 + NextRoomRandom(state) % (worldHeight - 72);
-            if (RoomWallPlacementValid(left, top, left + 16, top + 24))
+            currentWallCount = 0;
+            for (LONG attempt = 0;
+                attempt < 1024 && currentWallCount < requestedWallCount; ++attempt)
             {
-                AddRoomWall(left, top, left + 16, top + 24);
+                LONG left = 24 + NextRoomRandom(state) % (worldWidth - 64);
+                LONG top = 24 + NextRoomRandom(state) % (worldHeight - 72);
+                if (RoomWallPlacementValid(left, top, left + 16, top + 24))
+                {
+                    AddRoomWall(left, top, left + 16, top + 24);
+                }
+            }
+            if (currentWallCount == requestedWallCount && RoomLayoutConnected())
+            {
+                break;
             }
         }
     }
@@ -4843,9 +5215,7 @@ void SetupCurrentRoom()
                     && cellY - enemyHalfHeight < currentEnemyStartY[other] + enemyHalfHeight
                     && cellY + enemyHalfHeight > currentEnemyStartY[other] - enemyHalfHeight;
             }
-            if (enemyOverlap || RectangleOverlapsRoomWall(cellX - enemyHalfWidth,
-                    cellY - enemyHalfHeight, cellX + enemyHalfWidth,
-                    cellY + enemyHalfHeight)
+            if (enemyOverlap || !NavigationCellValid(candidateColumn, candidateRow)
                 || RectangleOverlapsRoomTrap(cellX - enemyHalfWidth,
                     cellY - enemyHalfHeight, cellX + enemyHalfWidth,
                     cellY + enemyHalfHeight)
@@ -5122,8 +5492,11 @@ bool NavigationCellValid(LONG column, LONG row)
     }
     float centerX = enemyHalfWidth + column * navigationCellSize;
     float centerY = enemyHalfHeight + row * navigationCellSize;
-    return !RectangleOverlapsRoomWall(centerX - enemyHalfWidth,
-        centerY - enemyHalfHeight, centerX + enemyHalfWidth, centerY + enemyHalfHeight);
+    return !RectangleOverlapsRoomWall(
+        centerX - enemyHalfWidth - navigationSafetyMargin,
+        centerY - enemyHalfHeight - navigationSafetyMargin,
+        centerX + enemyHalfWidth + navigationSafetyMargin,
+        centerY + enemyHalfHeight + navigationSafetyMargin);
 }
 
 bool RoomLayoutConnected()
@@ -5296,8 +5669,13 @@ LONG FindEnemyPath(float startX, float startY, LONG targetColumn, LONG targetRow
 }
 
 bool MoveEnemyToward(float& enemyX, float& enemyY, float targetX, float targetY,
-    float speed, float deltaTime, float playerX, float playerY)
+    float speed, float deltaTime, float playerX, float playerY,
+    bool* wallBlocked = nullptr)
 {
+    if (wallBlocked)
+    {
+        *wallBlocked = false;
+    }
     float differenceX = targetX - enemyX;
     float differenceY = targetY - enemyY;
     float distance = sqrtf(differenceX * differenceX + differenceY * differenceY);
@@ -5339,6 +5717,7 @@ bool MoveEnemyToward(float& enemyX, float& enemyY, float targetX, float targetY,
                 && enemyY - enemyHalfHeight < currentWallBottom[wall]
                 && enemyY + enemyHalfHeight > currentWallTop[wall])
             {
+                if (wallBlocked) *wallBlocked = true;
                 nextX = movementDeltaX > 0.0f
                     ? currentWallLeft[wall] - enemyHalfWidth
                     : currentWallRight[wall] + enemyHalfWidth;
@@ -5385,6 +5764,7 @@ bool MoveEnemyToward(float& enemyX, float& enemyY, float targetX, float targetY,
                 && nextY - enemyHalfHeight < currentWallBottom[wall]
                 && nextY + enemyHalfHeight > currentWallTop[wall])
             {
+                if (wallBlocked) *wallBlocked = true;
                 nextY = movementDeltaY > 0.0f
                     ? currentWallTop[wall] - enemyHalfHeight
                     : currentWallBottom[wall] + enemyHalfHeight;
@@ -5418,6 +5798,18 @@ bool MoveEnemyToward(float& enemyX, float& enemyY, float targetX, float targetY,
     differenceX = targetX - enemyX;
     differenceY = targetY - enemyY;
     return differenceX * differenceX + differenceY * differenceY < 0.25f;
+}
+
+void ReplanEnemyPathAfterWall(bool wallBlocked, bool reached,
+    float enemyX, float enemyY, float targetX, float targetY,
+    unsigned short* path, LONG& pathCount, LONG& pathIndex)
+{
+    if (wallBlocked && !reached)
+    {
+        pathCount = FindEnemyPath(enemyX, enemyY,
+            NavigationColumn(targetX), NavigationRow(targetY), path);
+        pathIndex = 0;
+    }
 }
 
 bool EnemyWallPositionValid(float centerX, float centerY)
@@ -8025,20 +8417,24 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
 {
+    ReportDeploymentByteSize();
     constexpr wchar_t windowClassName[] = L"DeadSignalWindow";
     if (!ReadMetaProfile())
     {
         WriteMetaProfile();
     }
 
-    WNDCLASSW windowClass{};
+    WNDCLASSEXW windowClass{};
+    windowClass.cbSize = sizeof(windowClass);
     windowClass.style = CS_HREDRAW | CS_VREDRAW;
     windowClass.lpfnWndProc = WindowProcedure;
     windowClass.hInstance = instance;
+    windowClass.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_DEADSIGNAL));
+    windowClass.hIconSm = windowClass.hIcon;
     windowClass.hbrBackground = nullptr;
     windowClass.lpszClassName = windowClassName;
 
-    if (!RegisterClassW(&windowClass))
+    if (!RegisterClassExW(&windowClass))
     {
         return 0;
     }
@@ -9271,11 +9667,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                                 }
                                 enemyFacingAngle = atan2f(movementTargetY - enemyY,
                                     movementTargetX - enemyX);
-                                if (MoveEnemyToward(enemyX, enemyY,
+                                bool pathWallBlocked = false;
+                                bool reached = MoveEnemyToward(enemyX, enemyY,
                                     movementTargetX, movementTargetY,
                                     enemy.role == hunterEnemyRole
                                         ? hunterAlertSpeed : enemyAlertSpeed,
-                                    deltaTime, playerX, playerY))
+                                    deltaTime, playerX, playerY, &pathWallBlocked);
+                                ReplanEnemyPathAfterWall(pathWallBlocked, reached,
+                                    enemyX, enemyY, searchTargetX, searchTargetY,
+                                    navigationPath[enemyIndex], searchPathCount,
+                                    searchPathIndex);
+                                if (reached)
                                 {
                                     if (searchPathIndex < searchPathCount)
                                     {
@@ -9307,9 +9709,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                     enemyFacingAngle = TurnToward(enemyFacingAngle,
                         atan2f(movementTargetY - enemyY, movementTargetX - enemyX),
                         enemyFacingTurnSpeed * deltaTime);
-                    if (MoveEnemyToward(enemyX, enemyY,
+                    bool pathWallBlocked = false;
+                    bool reached = MoveEnemyToward(enemyX, enemyY,
                         movementTargetX, movementTargetY,
-                        enemyPatrolSpeed, deltaTime, playerX, playerY))
+                        enemyPatrolSpeed, deltaTime, playerX, playerY,
+                        &pathWallBlocked);
+                    ReplanEnemyPathAfterWall(pathWallBlocked, reached,
+                        enemyX, enemyY, searchTargetX, searchTargetY,
+                        navigationPath[enemyIndex], searchPathCount,
+                        searchPathIndex);
+                    if (reached)
                     {
                         if (searchPathIndex < searchPathCount)
                         {
@@ -9389,9 +9798,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                                 movementTargetY = enemyHalfHeight
                                     + (node / navigationColumns) * navigationCellSize;
                             }
+                            bool pathWallBlocked = false;
                             bool reached = MoveEnemyToward(enemyX, enemyY,
                                 movementTargetX, movementTargetY,
-                                enemyPatrolSpeed, deltaTime, playerX, playerY);
+                                enemyPatrolSpeed, deltaTime, playerX, playerY,
+                                &pathWallBlocked);
+                            ReplanEnemyPathAfterWall(pathWallBlocked, reached,
+                                enemyX, enemyY, searchTargetX, searchTargetY,
+                                navigationPath[enemyIndex], searchPathCount,
+                                searchPathIndex);
                             bool playerContact = enemyX - enemyHalfWidth
                                 <= playerX + playerHalfWidth
                                 && enemyX + enemyHalfWidth >= playerX - playerHalfWidth
@@ -9507,9 +9922,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                                 + remainingY * remainingY);
                             float previousX = enemyX;
                             float previousY = enemyY;
-                            if (MoveEnemyToward(enemyX, enemyY,
+                            bool pathWallBlocked = false;
+                            bool reached = MoveEnemyToward(enemyX, enemyY,
                                 movementTargetX, movementTargetY,
-                                enemyPatrolSpeed, deltaTime, playerX, playerY))
+                                enemyPatrolSpeed, deltaTime, playerX, playerY,
+                                &pathWallBlocked);
+                            ReplanEnemyPathAfterWall(pathWallBlocked, reached,
+                                enemyX, enemyY, enemyPatrolReturnX,
+                                currentEnemyStartY[enemyIndex],
+                                navigationPath[enemyIndex], searchPathCount,
+                                searchPathIndex);
+                            if (reached)
                             {
                                 enemyX = movementTargetX;
                                 enemyY = movementTargetY;
@@ -9646,10 +10069,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int)
                             movementTargetY = enemyHalfHeight
                                 + (node / navigationColumns) * navigationCellSize;
                         }
-                        if (MoveEnemyToward(pressureEnemy.x, pressureEnemy.y,
+                        bool pathWallBlocked = false;
+                        bool reached = MoveEnemyToward(
+                            pressureEnemy.x, pressureEnemy.y,
                             movementTargetX, movementTargetY,
                             currentPressureMoveSpeed,
-                            deltaTime, playerX, playerY))
+                            deltaTime, playerX, playerY, &pathWallBlocked);
+                        ReplanEnemyPathAfterWall(pathWallBlocked, reached,
+                            pressureEnemy.x, pressureEnemy.y,
+                            pressureEnemy.searchTargetX,
+                            pressureEnemy.searchTargetY,
+                            navigationPath[pressureEnemyIndex],
+                            pressureEnemy.searchPathCount,
+                            pressureEnemy.searchPathIndex);
+                        if (reached)
                         {
                             if (pressureEnemy.searchPathIndex
                                 < pressureEnemy.searchPathCount)
@@ -11034,6 +11467,9 @@ int main()
     unsigned long long invalidExitSide = 0;
     bool exitSeen[4]{};
     bool roleSeen[enemyRoleCount]{};
+    unsigned long long roleCount[enemyRoleCount]{};
+    unsigned long long room1ZeroListeners = 0;
+    unsigned long long room1AllListeners = 0;
     bool duplicateRoleSeen = false;
 
     for (DWORD seed = 1; seed <= 100000; ++seed)
@@ -11092,6 +11528,7 @@ int main()
                 else
                 {
                     roleSeen[role] = true;
+                    ++roleCount[role];
                     generatedListenerCount += role == listenerEnemyRole;
                     for (LONG other = 0; other < enemy; ++other)
                     {
@@ -11099,8 +11536,11 @@ int main()
                     }
                 }
             }
-            listenerCountFailure += generatedListenerCount
-                != ListenerTargetForRoomSize(roomSizeStage, currentEnemyCount);
+            if (currentRoom == 0)
+            {
+                room1ZeroListeners += generatedListenerCount == 0;
+                room1AllListeners += generatedListenerCount == currentEnemyCount;
+            }
             duplicateRoleSeen |= roomHasDuplicateRole;
 
             MarkValidationReachable();
@@ -11319,6 +11759,15 @@ int main()
     {
         missingRole += !roleSeen[role];
     }
+    listenerCountFailure += !room1ZeroListeners || room1ZeroListeners >= 100000
+        || room1AllListeners >= 100000;
+    for (BYTE role = 0; role < enemyRoleCount; ++role)
+    {
+        if (role != listenerEnemyRole)
+        {
+            listenerCountFailure += roleCount[listenerEnemyRole] <= roleCount[role];
+        }
+    }
     LONG upgradeCompatibilityFailure = 0;
     LONG runFlowFailure = 0;
     for (LONG room = 0; room < roomCount; ++room)
@@ -11400,9 +11849,13 @@ int main()
     }
     mazeOrientationFailure = mazeOrientationMask != 3;
 
-    printf("rooms=1200000 wrong_enemy=%llu wrong_size=%llu capacity=%llu invalid_role=%llu listener_count=%llu determinism=%llu\n",
+    printf("rooms=1200000 wrong_enemy=%llu wrong_size=%llu capacity=%llu invalid_role=%llu listener_distribution=%llu determinism=%llu\n",
         wrongEnemyCount, wrongRoomSize, enemyCapacityOverflow, invalidRole,
         listenerCountFailure, deterministicMismatch);
+    printf("roles=%llu/%llu/%llu/%llu/%llu room1_listener_zero=%llu all=%llu\n",
+        roleCount[patrollerEnemyRole], roleCount[hunterEnemyRole],
+        roleCount[listenerEnemyRole], roleCount[watcherEnemyRole],
+        roleCount[spinnerEnemyRole], room1ZeroListeners, room1AllListeners);
     printf("player_overlap=%llu enemy_overlap=%llu listener_overlap=%llu wall_invalid=%llu trap_overlap=%llu exit_overlap=%llu pressure_invalid=%llu\n",
         playerOverlap, enemyOverlap, listenerSpawnOverlap, wallOverlap, trapOverlap,
         exitOverlap, pressureInvalidSpawn);
@@ -12537,8 +12990,8 @@ int main()
     constexpr float expectedMove[characterCount]{ 60.0f, 68.0f, 57.0f, 45.0f, 66.0f };
     constexpr float expectedCooldown[characterCount]
         { 0.5f, 0.5f, 0.6f, 0.75f, 0.25f };
-    constexpr LONG expectedReach[characterCount]{ 8, 7, 16, 6, 6 };
-    constexpr LONG expectedWidth[characterCount]{ 8, 7, 3, 12, 6 };
+    constexpr LONG expectedReach[characterCount]{ 11, 10, 21, 8, 8 };
+    constexpr LONG expectedWidth[characterCount]{ 11, 10, 4, 16, 8 };
     constexpr LONG expectedDamage[characterCount]{ 10, 10, 15, 20, 10 };
     constexpr LONG expectedCap[characterCount]{ 3, 2, 1, 4, 2 };
     constexpr float expectedDash[characterCount]{ 32.0f, 35.2f, 32.0f, 28.8f, 32.0f };
@@ -12556,6 +13009,37 @@ int main()
             || CharacterDashCapacity(character) != 1;
     }
     printf("section_base=%ld\n", failures);
+
+    DWORD room1RoleCount[enemyRoleCount]{};
+    DWORD room1ZeroListenerCount = 0;
+    DWORD room1AllListenerCount = 0;
+    for (DWORD seed = 1; seed <= 100000; ++seed)
+    {
+        DWORD roleState = RoomRandom(seed, 0) ^ 0xD1B54A35u;
+        LONG listeners = 0;
+        for (LONG enemy = 0; enemy < 2; ++enemy)
+        {
+            BYTE role = RandomRegularEnemyRole(roleState);
+            ++room1RoleCount[role];
+            listeners += role == listenerEnemyRole;
+        }
+        room1ZeroListenerCount += listeners == 0;
+        room1AllListenerCount += listeners == 2;
+    }
+    for (BYTE role = 0; role < enemyRoleCount; ++role)
+    {
+        failures += !room1RoleCount[role];
+        if (role != listenerEnemyRole)
+        {
+            failures += room1RoleCount[listenerEnemyRole] <= room1RoleCount[role];
+        }
+    }
+    failures += !room1ZeroListenerCount || !room1AllListenerCount;
+    printf("section_room1_roles=%ld roles=%lu/%lu/%lu/%lu/%lu listener_zero=%lu all=%lu\n",
+        failures, room1RoleCount[patrollerEnemyRole],
+        room1RoleCount[hunterEnemyRole], room1RoleCount[listenerEnemyRole],
+        room1RoleCount[watcherEnemyRole], room1RoleCount[spinnerEnemyRole],
+        room1ZeroListenerCount, room1AllListenerCount);
 
     constexpr LONG expectedKillHits[characterCount]{ 3, 3, 2, 2, 3 };
     constexpr float expectedKillTime[characterCount]
@@ -12645,18 +13129,18 @@ int main()
             }
         }
         failures += outlineRight - outlineLeft + 1
-                != (cardinalX[direction] ? 16 : 3)
+                != (cardinalX[direction] ? 21 : 4)
             || outlineBottom - outlineTop + 1
-                != (cardinalY[direction] ? 16 : 3);
+                != (cardinalY[direction] ? 21 : 4);
     }
     failures += !PiercerSlashHitsEnemy(100.0f, 100.0f, 1, 0,
-            123.9f, 100.0f)
+            128.9f, 100.0f)
         || PiercerSlashHitsEnemy(100.0f, 100.0f, 1, 0,
-            124.0f, 100.0f)
+            129.0f, 100.0f)
         || !PiercerSlashHitsEnemy(100.0f, 100.0f, 1, 0,
-            110.0f, 92.5f)
+            110.0f, 92.0f)
         || PiercerSlashHitsEnemy(100.0f, 100.0f, 1, 0,
-            110.0f, 107.5f);
+            110.0f, 108.0f);
     printf("section_geometry=%ld\n", failures);
 
     characterGlobalLevel[basicCharacter][0] = 2;
@@ -12664,8 +13148,8 @@ int main()
     characterGlobalLevel[basicCharacter][2] = 2;
     failures += CharacterDashCapacity(basicCharacter) != 3
         || CharacterMaximumHP(basicCharacter) != 120
-        || CharacterSlashReach(basicCharacter) != 9
-        || CharacterSlashWidth(basicCharacter) != 9
+        || CharacterSlashReach(basicCharacter) != 12
+        || CharacterSlashWidth(basicCharacter) != 12
         || CharacterDashCapacity(rapidCharacter) != 1;
     characterGlobalLevel[mobilityCharacter][0] = 3;
     characterGlobalLevel[mobilityCharacter][1] = 2;
@@ -12678,8 +13162,8 @@ int main()
     characterGlobalLevel[piercerCharacter][1] = 2;
     characterGlobalLevel[piercerCharacter][2] = 1;
     failures += CharacterDashCapacity(piercerCharacter) != 2
-        || CharacterSlashReach(piercerCharacter) != 20
-        || CharacterSlashWidth(piercerCharacter) != 3
+        || CharacterSlashReach(piercerCharacter) != 26
+        || CharacterSlashWidth(piercerCharacter) != 4
         || CharacterSlashHitCap(piercerCharacter) != 2
         || fabsf(CharacterMoveSpeed(piercerCharacter) - 57.0f) > 0.0001f;
     characterGlobalLevel[heavyCharacter][0] = 2;
@@ -12687,8 +13171,8 @@ int main()
     characterGlobalLevel[heavyCharacter][2] = 2;
     failures += CharacterDashCapacity(heavyCharacter) != 1
         || CharacterMaximumHP(heavyCharacter) != 180
-        || CharacterSlashReach(heavyCharacter) != 6
-        || CharacterSlashWidth(heavyCharacter) != 16
+        || CharacterSlashReach(heavyCharacter) != 8
+        || CharacterSlashWidth(heavyCharacter) != 21
         || fabsf(CharacterMoveSpeed(heavyCharacter) - 49.5f) > 0.0001f;
     characterGlobalLevel[rapidCharacter][0] = 1;
     characterGlobalLevel[rapidCharacter][1] = 2;
@@ -12771,15 +13255,15 @@ int main()
     moveUpgradeStack = 0;
     functionalUpgradeFlags = executeReachUpgradeFlag;
     RecalculateAugmentStats(runMove, runSlash, runDash);
-    failures += CharacterSlashReach(piercerCharacter) != 20
-        || CharacterSlashWidth(piercerCharacter) != 3
-        || CurrentExecuteReach() != 8;
+    failures += CharacterSlashReach(piercerCharacter) != 26
+        || CharacterSlashWidth(piercerCharacter) != 4
+        || CurrentExecuteReach() != 10;
     selectedCharacter = heavyCharacter;
     slashUpgradeStack = 1;
     functionalUpgradeFlags = 0;
     RecalculateAugmentStats(runMove, runSlash, runDash);
-    failures += CharacterSlashReach(heavyCharacter) != 6
-        || CharacterSlashWidth(heavyCharacter) != 16
+    failures += CharacterSlashReach(heavyCharacter) != 8
+        || CharacterSlashWidth(heavyCharacter) != 21
         || fabsf(runSlash - 0.6f) > 0.0001f
         || CharacterDashCapacity(heavyCharacter) != 1;
     selectedCharacter = rapidCharacter;
@@ -12788,8 +13272,8 @@ int main()
     failures += fabsf(runSlash - 0.12f) > 0.0001f || runSlash <= 0.0f;
     selectedCharacter = basicCharacter;
     slashUpgradeStack = 0;
-    failures += CharacterSlashReach(basicCharacter) != 9
-        || CharacterSlashWidth(basicCharacter) != 9;
+    failures += CharacterSlashReach(basicCharacter) != 12
+        || CharacterSlashWidth(basicCharacter) != 12;
     printf("section_growth=%ld\n", failures);
 
     ResetMetaProfile();
@@ -13135,6 +13619,15 @@ int main()
     masterVolumeStep = masterVolumeMaximumStep;
     bgmVolumeStep = defaultBgmVolumeStep;
     sfxVolumeStep = defaultSfxVolumeStep;
+    v11AudioFailures += ApplySfxOutputGain(
+            ApplyCategoryVolume(1000, audioCategorySfx)) != 600;
+    sfxVolumeStep = 0;
+    v11AudioFailures += ApplySfxOutputGain(
+            ApplyCategoryVolume(1000, audioCategorySfx)) != 0;
+    sfxVolumeStep = 4;
+    v11AudioFailures += ApplyMasterVolume(ApplySfxOutputGain(
+            ApplyCategoryVolume(1000, audioCategorySfx)), 5) != 120;
+    sfxVolumeStep = defaultSfxVolumeStep;
     applicationState = titleMainState;
     runEndState = 0;
     alertEventActive = false;
@@ -13250,6 +13743,7 @@ int main()
         DWORD rhythmSamples;
         DWORD signalSamples;
         DWORD staticSamples;
+        DWORD motifSamples;
         DWORD segmentHash[6];
     };
     auto MeasureBgmDensity = [](BYTE mode, BYTE tension)
@@ -13294,6 +13788,7 @@ int main()
                 metrics.rhythmSamples += bgmState.rhythmRemaining != 0;
                 metrics.signalSamples += bgmState.signalRemaining != 0;
                 metrics.staticSamples += bgmState.staticRemaining != 0;
+                metrics.motifSamples += bgmState.motifRemaining != 0;
                 hash = (hash ^ static_cast<unsigned short>(mixed)) * 16777619u;
             }
             metrics.segmentHash[segment] = hash;
@@ -13309,7 +13804,7 @@ int main()
     v111AudioFailures += !titleDensity.energy || !calmDensity.energy
         || titleDensity.maximumSilence > audioSampleRate / 10
         || calmDensity.maximumSilence > audioSampleRate / 10
-        || titleDensity.peak >= 12288 || calmDensity.peak >= 12288
+        || titleDensity.peak >= 24576 || calmDensity.peak >= 12288
         || alertDensity.peak >= 12288
         || suspicionDensity.energy <= calmDensity.energy
         || alertDensity.energy <= suspicionDensity.energy;
@@ -13337,12 +13832,12 @@ int main()
     {
         BgmSample();
     }
-    constexpr BYTE readabilitySounds[6]
+    constexpr BYTE readabilitySounds[7]
     {
         sfxWindupPatroller, sfxAlert, sfxExecuteHeavy,
-        sfxPlayerHit, sfxPressureEnrage, sfxTrapWarning
+        sfxPlayerHit, sfxPressureEnrage, sfxTrapWarning, sfxAttackPressure
     };
-    for (BYTE index = 0; index < 6; ++index)
+    for (BYTE index = 0; index < 7; ++index)
     {
         ResetSfxVoices();
         sfxStartCount[readabilitySounds[index]] = 0;
@@ -13358,8 +13853,7 @@ int main()
             if (magnitude > peak) peak = magnitude;
             clipped += mixed == 32767 || mixed == -32768;
         }
-        v111AudioFailures += peak <= alertDensity.peak
-            || clipped > static_cast<LONG>(duration / 20);
+        v111AudioFailures += !peak || clipped;
     }
     ResetBgmState();
     ResetSfxVoices();
@@ -13399,6 +13893,8 @@ int main()
         || titleDensity.rhythmSamples <= calmDensity.rhythmSamples
         || titleDensity.signalSamples == 0
         || titleDensity.staticSamples == 0
+        || titleDensity.motifSamples != 0
+        || calmDensity.motifSamples == 0
         || calmDensity.staticSamples <= titleDensity.staticSamples
         || titleDensity.staticSamples >= densitySampleCount / 50
         || calmDensity.staticSamples >= densitySampleCount / 50;
@@ -13467,10 +13963,11 @@ int main()
     }
     v112AudioFailures += !uiWithMutedBgm;
     failures += v112AudioFailures;
-    printf("section_v112_bgm=%ld menu/run activity=%lu/%lu rhythm=%lu/%lu static=%lu/%lu transition=%u\n",
+    printf("section_v112_bgm=%ld menu/run activity=%lu/%lu rhythm=%lu/%lu static=%lu/%lu motif=%lu/%lu transition=%u\n",
         v112AudioFailures, titleDensity.pulseSamples, calmDensity.pulseSamples,
         titleDensity.rhythmSamples, calmDensity.rhythmSamples,
         titleDensity.staticSamples, calmDensity.staticSamples,
+        titleDensity.motifSamples, calmDensity.motifSamples,
         static_cast<unsigned>(bgmState.transitionRemaining));
     applicationState = titleMainState;
     upgradeMenuActive = false;
@@ -14806,7 +15303,7 @@ int main()
 
     ResetMetaProfile();
     constexpr LONG slashVisualMinimum[characterCount]{ 20, 7, 18, 35, 8 };
-    constexpr LONG slashVisualMaximum[characterCount]{ 64, 48, 64, 128, 48 };
+    constexpr LONG slashVisualMaximum[characterCount]{ 100, 80, 100, 220, 80 };
     constexpr LONG visualDirectionX[8]{ 1, 1, 0, -1, -1, -1, 0, 1 };
     constexpr LONG visualDirectionY[8]{ 0, 1, 1, 1, 0, -1, -1, -1 };
     for (BYTE character = 0; character < characterCount; ++character)
@@ -15072,10 +15569,10 @@ int main()
         || executeVisualPixels[heavyCharacter] <= 62
         || executeVisualPixels[rapidCharacter] <= 24
         || !SlashVisualPixel(basicCharacter, 100.0f, 100.0f,
-            1, 0, 112.5f, 100.5f)
+            1, 0, 114.5f, 100.5f)
         || !pressurePixels || detectionFillDuration != 2.4f
         || CharacterDashDistance(heavyCharacter) != dashDistance * 0.9f
-        || CharacterSlashReach(basicCharacter) != slashReach;
+        || CharacterSlashReach(basicCharacter) != 11;
     printf("section_v07=%ld dash=%ld/%ld/%ld/%ld/%ld attack=%ld/%ld/%ld/%ld/%ld pressure=%ld\n",
         failures, dashVisualPixels[0], dashVisualPixels[1],
         dashVisualPixels[2], dashVisualPixels[3], dashVisualPixels[4],
@@ -15167,6 +15664,49 @@ int main()
         || executeVisualPixels[heavyCharacter] <= 72
         || executeVisualPixels[rapidCharacter] <= 28
         || sizeof(SaveCheckpoint) != 32 || sizeof(MetaProfile) != 32;
+
+    BYTE savedFunctionalFlags = functionalUpgradeFlags;
+    functionalUpgradeFlags = 0;
+    failures += CurrentExecuteReach() != 5;
+    functionalUpgradeFlags = executeReachUpgradeFlag;
+    failures += CurrentExecuteReach() != 10;
+    functionalUpgradeFlags = savedFunctionalFlags;
+    failures += enemyAttackRangeBalanceScale != 1.25f
+        || !EnemyAttackEffectPixel(patrollerEnemyRole,
+            enemyAttackWindupFrame, 100.0f, 100.0f, 0.0f,
+            100.0f + EnemyAttackRangeX(patrollerEnemyRole) - 0.1f, 100.0f)
+        || EnemyAttackEffectPixel(patrollerEnemyRole,
+            enemyAttackWindupFrame, 100.0f, 100.0f, 0.0f,
+            100.0f + EnemyAttackRangeX(patrollerEnemyRole) + 0.1f, 100.0f);
+
+    SetRoomSizeStage(2);
+    currentWallCount = 1;
+    currentWallLeft[0] = 96;
+    currentWallTop[0] = 64;
+    currentWallRight[0] = 104;
+    currentWallBottom[0] = 112;
+    LONG clearanceRow = NavigationRow(90.0f);
+    failures += NavigationCellValid(11, clearanceRow)
+        || !NavigationCellValid(10, clearanceRow);
+    float blockedEnemyX = 92.0f;
+    float blockedEnemyY = enemyHalfHeight + clearanceRow * navigationCellSize;
+    bool wallBlocked = false;
+    bool blockedReached = MoveEnemyToward(blockedEnemyX, blockedEnemyY,
+        116.0f, blockedEnemyY, enemyAlertSpeed, 0.02f,
+        300.0f, 160.0f, &wallBlocked);
+    LONG clearancePathCount = 0;
+    LONG clearancePathIndex = 0;
+    ReplanEnemyPathAfterWall(wallBlocked, blockedReached,
+        blockedEnemyX, blockedEnemyY, 116.0f, blockedEnemyY,
+        navigationPath[0], clearancePathCount, clearancePathIndex);
+    failures += !wallBlocked || blockedReached || clearancePathCount <= 0;
+    for (LONG pathNode = 0; pathNode < clearancePathCount; ++pathNode)
+    {
+        LONG node = navigationPath[0][pathNode];
+        failures += !NavigationCellValid(node % navigationColumns,
+            node / navigationColumns);
+    }
+    currentWallCount = 0;
     printf("section_v08=%ld windup=%ld/%ld/%ld/%ld/%ld range=%.2f/%.2f/%.2f/%.2f/%.2f pressure=%d\n",
         failures, windupPixels[0], windupPixels[1], windupPixels[2],
         windupPixels[3], windupPixels[4],
